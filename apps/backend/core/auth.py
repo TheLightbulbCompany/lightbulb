@@ -109,12 +109,6 @@ def resolve_owner_id(auth: AuthContext) -> str:
     return auth.user_id
 
 
-def require_org(auth: AuthContext) -> None:
-    """The doors that mint an identity, credential, grant, outside link or paid thing stay org-only for now."""
-    if not auth.org_id:
-        raise _workspace_required()
-
-
 def is_org_owner_id(owner_id: str) -> bool:
     """Whether an owner_id names a Clerk organization.
 

@@ -8,7 +8,7 @@ from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field, model_validator
 
-from core.auth import AuthContext, get_current_user, require_org
+from core.auth import AuthContext, get_current_user
 from core.repositories import integrations_repo, tasks_repo
 from core.services import runtime_rpc as service
 from core.services import messaging, token_custody
@@ -160,7 +160,6 @@ async def runtime_model(owner_id: str, body: RuntimeModelRequest, request: Reque
     responses={202: {"model": RuntimeOperationAccepted}},
 )
 async def runtime_rpc(request: RuntimeRpcRequest, response: Response, auth: AuthContext = Depends(get_current_user)):
-    require_org(auth)  # the provisioned runtime (and agents.create)
     status, payload = await service.execute(auth, request)
     response.status_code = status
     return payload

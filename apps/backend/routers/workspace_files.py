@@ -8,7 +8,7 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
-from core.auth import AuthContext, get_current_user, require_org, resolve_owner_id
+from core.auth import AuthContext, get_current_user, resolve_owner_id
 from core.dynamodb import run_in_thread
 from core.services import hermes_profiles
 
@@ -221,7 +221,6 @@ async def write_workspace_file(
     auth: AuthContext = Depends(get_current_user),
 ):
     """Write a file to the agent's workspace or config directory."""
-    require_org(auth)  # writes into the profile a runtime reads
     owner_id = resolve_owner_id(auth)
     _require_agent_id(agent_id)
     if body.tab not in ("workspace", "config"):

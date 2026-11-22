@@ -19,7 +19,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
 
-from core.auth import AuthContext, get_current_user, require_org, require_org_admin, resolve_owner_id
+from core.auth import AuthContext, get_current_user, require_org_admin, resolve_owner_id
 from core.billing import bedrock_aip
 from core.billing.bedrock_aip import CONNECTOR_ROLE_NAME
 from core.config import settings
@@ -574,7 +574,6 @@ async def aws_credentials(body: AwsCredentialsBody, request: Request):
 @router.post("/{provider}")
 async def connect_paste(provider: str, body: PasteBody, auth: AuthContext = Depends(get_current_user)):
     started_ms = int(time.time() * 1000)
-    require_org(auth)  # stores a credential for the tenant
     require_org_admin(auth)
     owner_id = resolve_owner_id(auth)
     p = _get_provider_or_404(provider, owner_id)
@@ -638,7 +637,6 @@ async def aws_setup(provider: str, auth: AuthContext = Depends(get_current_user)
     CloudFormation quick-create flow. Does NOT mark the integration connected —
     that is aws-complete's job, once the owner has stood up the cross-account
     role and pasted its ARN back."""
-    require_org(auth)  # mints the STS ExternalId an AWS role trusts
     require_org_admin(auth)
     owner_id = resolve_owner_id(auth)
     p = _get_provider_or_404(provider, owner_id)
@@ -714,7 +712,6 @@ async def aws_complete(provider: str, body: AwsCompleteBody, auth: AuthContext =
     The vend endpoint (POST /aws/credentials) assumes EXACTLY the stored ARN;
     this validation is the gate that keeps a bad ARN from ever being stored."""
     started_ms = int(time.time() * 1000)
-    require_org(auth)
     require_org_admin(auth)
     owner_id = resolve_owner_id(auth)
     p = _get_provider_or_404(provider, owner_id)
@@ -1028,7 +1025,6 @@ async def put_byo_app(
     """Store the owner's OWN OAuth app for a byo-required provider. Once stored,
     `_byo_active` returns True for this owner — the prerequisite for connecting a
     BYO-required provider via their own app."""
-    require_org(auth)
     require_org_admin(auth)
     owner_id = resolve_owner_id(auth)
     p = _get_provider_or_404(provider, owner_id)
@@ -1096,7 +1092,6 @@ async def authorize(
     return_to: Literal["web", "app", "ios"] = "web",
     auth: AuthContext = Depends(get_current_user),
 ):
-    require_org(auth)  # starts a provider OAuth grant (state row, client registration)
     require_org_admin(auth)
     # Origin is stored on the OAuth state row, never trusted from the callback.
     return await _start_oauth(resolve_owner_id(auth), provider, origin=return_to if return_to != "web" else None)

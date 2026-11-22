@@ -33,7 +33,7 @@ from ulid import ULID
 from core.temporal import client as temporal_client
 from core.temporal.automations import SKIP_TEXTS, FireInput
 
-from core.auth import AuthContext, get_current_user, require_org, require_org_admin, resolve_owner_id
+from core.auth import AuthContext, get_current_user, require_org_admin, resolve_owner_id
 from core.config import settings
 from core.repositories import automations_repo, messaging_repo, tasks_repo
 from core.repositories.tasks_repo import IllegalTransition, VersionConflict
@@ -110,7 +110,6 @@ async def from_integration(
 ) -> dict:
     """Arm a webhook-triggered automation from a connected integration's events (a ``HOOK#`` row) —
     or, with ``routine_id``, add them to an automation the owner already has."""
-    require_org(auth)
     require_org_admin(auth)
     owner_id = resolve_owner_id(auth)
     await require_always_on_entitlement(owner_id, message=WEBHOOK_AUTOMATIONS_MESSAGE)
@@ -143,7 +142,6 @@ async def set_webhook_secret(
 
     Stores the secret and arms the caller's ``HOOK#`` row for ``public_id`` (404 when there is none).
     """
-    require_org(auth)  # stores a provider signing secret
     require_org_admin(auth)
     owner_id = resolve_owner_id(auth)
 
@@ -412,7 +410,6 @@ async def list_automations(auth: AuthContext = Depends(get_current_user)) -> dic
 
 @router.post("")
 async def create_automation(body: AutomationIn, auth: AuthContext = Depends(get_current_user)) -> dict:
-    require_org(auth)  # a Temporal Schedule and provider webhooks
     ws = await _ws(auth)
     check_dm_owner(body.deliver_to, auth.user_id)
     await check_deliver_room(body.deliver_to, ws, auth.user_id)

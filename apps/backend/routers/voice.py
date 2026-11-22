@@ -26,7 +26,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from boto3.dynamodb.conditions import Key
-from core.auth import AuthContext, get_current_user, require_org, require_org_admin, resolve_owner_id
+from core.auth import AuthContext, get_current_user, require_org_admin, resolve_owner_id
 from core.dynamodb import get_item, messaging_table, owner_pk, query_all, run_in_thread, utc_now_iso
 from core.billing import voice_billing, voice_plan
 from core.engine import engine
@@ -360,7 +360,6 @@ async def assign_number(body: NumberIn | None = None, auth: AuthContext = Depend
             ws, body.path, body.areaCode, body.carrier, body.mode, user_id=auth.user_id
         )
         return {"numberChoice": choice}
-    require_org(auth)  # the bodyless branch takes the environment's shared line
     try:
         return {"number": await voice_onboarding.assign_number(resolve_owner_id(auth), auth.user_id)}
     except voice_onboarding.NoNumber as exc:

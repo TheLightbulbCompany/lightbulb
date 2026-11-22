@@ -20,7 +20,6 @@ from core.dynamodb import run_in_thread
 from core.auth import (
     AuthContext,
     get_current_user,
-    require_org,
     resolve_owner_id,
 )
 from core.config import settings
@@ -380,7 +379,6 @@ async def create_room_message(
     request: CreateMessageRequest,
     auth: AuthContext = Depends(get_current_user),
 ):
-    require_org(auth)  # a message can reach the model (addressing) and wake agents
     return await service.create_human_message(auth, room_id, request)
 
 

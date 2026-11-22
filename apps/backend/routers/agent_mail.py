@@ -26,7 +26,6 @@ from core.auth import (
     AuthContext,
     get_current_user,
     is_org_owner_id,
-    require_org,
     require_org_admin,
     resolve_owner_id,
 )
@@ -220,7 +219,6 @@ class AddressSettings(BaseModel):
 
 @router.patch("/address")
 async def patch_address(body: AddressSettings, auth: AuthContext = Depends(get_current_user)) -> dict:
-    require_org(auth)
     require_org_admin(auth)
     owner_id = resolve_owner_id(auth)
     row, owner_email = await _team_row(owner_id)

@@ -7,8 +7,7 @@ calls where a door writes them), carrying MARKER; then B, signed in, makes the c
   * path id (`a_id=True`: B names A's room, task, key...): B gets 403 or 404, never 200;
   * token only: B's call succeeds, and no AWS call it makes names A either (B reads and writes only B's keys).
 `ok` overrides the expected statuses for a door whose answer to B is something else (the reason is beside it);
-`says` names the text that makes a refusal the tenant check rather than a generic one; `org_only` doors refuse a
-person (409 workspace_required) for now.
+`says` names the text that makes a refusal the tenant check rather than a generic one.
 Each case runs twice (`tenants`): as personal accounts (no `o` claim) and as two orgs.
 
 `test_every_tenant_door_has_a_case` walks the app: a new door with no case fails (no sampling);
@@ -73,7 +72,6 @@ class Case:
     a_id: bool = False  # path id: B names A's resource
     ok: tuple[int, ...] = ()  # what this door answers B, when not the default
     says: str = ""  # text B's answer must carry: the refusal is the tenant check, not a generic one
-    org_only: bool = False  # mints, buys or bills: a person with no org gets 409 for now
     files: bool = False  # a multipart image upload
 
     def __str__(self) -> str:
@@ -160,11 +158,7 @@ async def seed_messaging(a, b, mp, calls) -> dict:
     )
     rid = room["roomId"]
     text = {"clientMessageId": str(uuid.uuid4()), "text": f"{MARKER} hi", "replyToMessageId": None}
-    as_a = AuthContext(user_id=a.user_id, org_id=a.org_id, human_session=True)  # the send door is org-only
-    message = await messaging.create_human_message(
-        as_a, rid, messaging.CreateMessageRequest(**text, threadRootMessageId=None)
-    )
-    message = {"messageId": str(message.message_id)}
+    message = await ok(a, "POST", f"/api/v1/messaging/rooms/{rid}/messages", {**text, "threadRootMessageId": None})
     image = await ok(
         a, "POST", f"/api/v1/messaging/rooms/{rid}/attachments", files={"image": ("a.png", PNG, "image/png")}
     )
@@ -272,7 +266,7 @@ async def seed_automations(a, b, mp, calls) -> dict:
     await billing_rows(a, b)  # both paid: B's webhook automation reaches the seed
     fake(mp, calls, "core.services.automation_schedule.upsert")
     fake(mp, calls, "core.services.automation_schedule.delete")
-    made, _ = await automations_repo.create_schedule(  # what POST /automations writes (org-only)
+    made, _ = await automations_repo.create_schedule(  # what POST /automations writes
         a.tenant, {"scheduleId": "sched-a", "name": f"{MARKER} auto", "ownerUserId": a.user_id,
                    "policyText": f"{MARKER} do it", "cron": [], "tz": "UTC"},
     )  # fmt: skip
@@ -530,7 +524,7 @@ CASES = [
     Case("messaging", "DELETE", "/api/v1/messaging/rooms/{room}/members/human/{member}", a_id=True),
     Case("messaging", "POST", "/api/v1/messaging/rooms/{room}/leave", a_id=True),
     Case("messaging", "GET", "/api/v1/messaging/rooms/{room}/messages", a_id=True),
-    Case("messaging", "POST", "/api/v1/messaging/rooms/{room}/messages", MSG, a_id=True, org_only=True),
+    Case("messaging", "POST", "/api/v1/messaging/rooms/{room}/messages", MSG, a_id=True),
     Case("messaging", "POST", "/api/v1/messaging/rooms/{room}/attachments", a_id=True, files=True),
     Case("messaging", "GET", "/api/v1/messaging/rooms/{room}/attachments/{attachment}", a_id=True),
     Case("messaging", "GET", "/api/v1/messaging/rooms/{room}/attachments/{attachment}/url", a_id=True),
@@ -542,7 +536,7 @@ CASES = [
     Case("messaging", "POST", "/api/v1/messaging/runs/{run}/steer", {"text": "go"}, a_id=True),
     # huddles: a room member of a room the caller's tenant owns
     Case("huddles", "GET", "/api/v1/huddles/{room}", a_id=True),
-    Case("huddles", "POST", "/api/v1/huddles/{room}/join", a_id=True, org_only=True),
+    Case("huddles", "POST", "/api/v1/huddles/{room}/join", a_id=True),
     # voice: tenant = caller; the owner sets the agent, number, forward check and draft
     Case("voice", "GET", "/api/v1/voice/timeline"),
     Case("voice", "GET", "/api/v1/voice/usage"),
@@ -561,24 +555,23 @@ CASES = [
     Case("billing", "GET", "/api/v1/billing/trial-recap"),
     Case("billing", "GET", "/api/v1/billing/credits/balance"),
     Case("billing", "POST", "/api/v1/billing/portal"),
-    Case("billing", "POST", "/api/v1/billing/checkout", {"plan": "workspace"}, org_only=True),
-    Case("billing", "POST", "/api/v1/billing/front-desk", {}, org_only=True),
+    Case("billing", "POST", "/api/v1/billing/checkout", {"plan": "workspace"}),
+    Case("billing", "POST", "/api/v1/billing/front-desk", {}),
     Case("billing", "GET", "/api/v1/billing/voice-plan"),
     Case("billing", "POST", "/api/v1/billing/voice-plan/checkout", VOICE_PLAN),
     Case("billing", "DELETE", "/api/v1/billing/voice-plan", query={"expectedOwnerId": "{b_tenant}"}),
     # apple_iap: tenant = caller (selling is off in prod)
-    Case("apple_iap", "POST", "/api/v1/billing/apple/purchase-intent", org_only=True),
+    Case("apple_iap", "POST", "/api/v1/billing/apple/purchase-intent"),
     Case(
         "apple_iap",
         "POST",
         "/api/v1/billing/apple/link",
         {"signed_transaction": "not-a-jws"},
         ok=(503,),
-        org_only=True,
     ),  # no Apple keys in tests: the org case proves only that nothing of A's moves
     # company_link_wallet: tenant = caller
     Case("company_link_wallet", "GET", "/api/v1/company/link-wallet/status"),
-    Case("company_link_wallet", "POST", "/api/v1/company/link-wallet/connect", org_only=True),
+    Case("company_link_wallet", "POST", "/api/v1/company/link-wallet/connect"),
     Case("company_link_wallet", "POST", "/api/v1/company/link-wallet/disconnect"),
     Case("company_link_wallet", "GET", "/api/v1/company/link-wallet/limits"),
     Case(
@@ -586,7 +579,6 @@ CASES = [
         "PUT",
         "/api/v1/company/link-wallet/limits",
         {"perPurchaseCents": 5, "projectMonthlyCents": 9},
-        org_only=True,
     ),
     Case("company_link_wallet", "GET", "/api/v1/company/link-wallet/purchases"),
     Case(
@@ -594,7 +586,6 @@ CASES = [
         "POST",
         "/api/v1/company/link-wallet/purchases/{request}/approval-link",
         a_id=True,
-        org_only=True,
     ),
     # tasks: tenant = caller; the owner exports
     Case("tasks", "GET", "/api/v1/tasks"),
@@ -616,13 +607,12 @@ CASES = [
     ),
     # automations: tenant = caller; the owner wires triggers
     Case("automations", "GET", "/api/v1/automations"),
-    Case("automations", "POST", "/api/v1/automations", {"name": "b", "instructions": "b"}, org_only=True),
+    Case("automations", "POST", "/api/v1/automations", {"name": "b", "instructions": "b"}),
     Case(
         "automations",
         "POST",
         "/api/v1/automations/from-integration",
         {"provider": "stripe", "event_ids": ["invoice.payment_failed"]},
-        org_only=True,
     ),
     Case(
         "automations",
@@ -630,7 +620,6 @@ CASES = [
         "/api/v1/automations/{hook}/webhook-secret",
         {"webhook_secret": "whsec_b"},
         a_id=True,
-        org_only=True,
     ),
     Case("automations", "GET", "/api/v1/automations/{sid}", a_id=True),
     Case("automations", "GET", "/api/v1/automations/{sid}/runs", a_id=True),
@@ -666,10 +655,9 @@ CASES = [
         {"path": "USER.md", "content": "taken", "tab": "config"},
         a_id=True,
         ok=(200,),
-        org_only=True,
     ),
     # memory: tenant = caller
-    Case("memory", "POST", "/api/v1/memory/recall", {"question": "what"}, org_only=True),
+    Case("memory", "POST", "/api/v1/memory/recall", {"question": "what"}),
     # agent_text: tenant = caller
     Case("agent_text", "GET", "/api/v1/agent-text/line"),
     Case("agent_text", "POST", "/api/v1/agent-text/me/phone/code"),
@@ -686,7 +674,7 @@ CASES = [
     Case("agent_text", "POST", "/api/v1/agent-text/thread", {"key": "{key}", "mode": "human"}, a_id=True),
     # agent_mail: tenant = caller; mail keys and transcripts are read at the caller's own team address
     Case("agent_mail", "GET", "/api/v1/agent-mail/address"),  # an org's read creates its mailbox; a person's reads
-    Case("agent_mail", "PATCH", "/api/v1/agent-mail/address", {"send_to_anyone": False}, org_only=True),
+    Case("agent_mail", "PATCH", "/api/v1/agent-mail/address", {"send_to_anyone": False}),
     Case("agent_mail", "GET", "/api/v1/agent-mail/inbox"),
     Case("agent_mail", "GET", "/api/v1/agent-mail/inbox/new", query={"since": "2026-01-01T00:00:00+00:00"}),
     Case("agent_mail", "GET", "/api/v1/agent-mail/message", query={"key": "{key}"}, a_id=True),
@@ -705,12 +693,12 @@ CASES = [
     Case("container", "POST", "/api/v1/browser/input", {"type": "key", "key": "a"}, ok=(409,)),  # no live page
     # connections: tenant = caller; the owner manages connections
     Case("connections", "GET", "/api/v1/connections"),
-    Case("connections", "POST", "/api/v1/connections/parallel", {"token": "b"}, org_only=True),
+    Case("connections", "POST", "/api/v1/connections/parallel", {"token": "b"}),
     Case("connections", "DELETE", "/api/v1/connections/github"),
     Case(
-        "connections", "GET", "/api/v1/connections/github/authorize", ok=(503,), org_only=True
+        "connections", "GET", "/api/v1/connections/github/authorize", ok=(503,)
     ),  # no GitHub OAuth app in tests: the org case proves only that nothing of A's moves
-    Case("connections", "GET", "/api/v1/connections/aws/aws-setup", org_only=True),
+    Case("connections", "GET", "/api/v1/connections/aws/aws-setup"),
     Case(
         "connections",
         "POST",
@@ -718,11 +706,8 @@ CASES = [
         {"role_arn": "arn:aws:iam::123456789012:role/lightbulb-connector"},
         ok=(409,),
         says="aws-setup",
-        org_only=True,
     ),  # A ran aws-setup, B did not: A's external id is not B's
-    Case(
-        "connections", "PUT", "/api/v1/connections/x/byo-app", {"client_id": "b", "client_secret": "b"}, org_only=True
-    ),
+    Case("connections", "PUT", "/api/v1/connections/x/byo-app", {"client_id": "b", "client_secret": "b"}),
     Case("connections", "DELETE", "/api/v1/connections/x/byo-app"),
     # oauth: tenant = caller; the ChatGPT binding belongs to the tenant that started it
     Case("oauth", "GET", "/api/v1/oauth/chatgpt/status"),
@@ -737,7 +722,7 @@ CASES = [
     Case("debug", "DELETE", "/api/v1/debug/user-data"),
     # config: tenant = caller
     Case("config", "GET", "/api/v1/config"),
-    Case("config", "PATCH", "/api/v1/config", {"patch": {"x": 1}}, org_only=True),
+    Case("config", "PATCH", "/api/v1/config", {"patch": {"x": 1}}),
     # orgs: unchanged for orgs; a user id in /orgs/{id}/... is not an org anyone joins or manages
     Case("orgs", "GET", "/api/v1/orgs/{a_tenant}/join-link", a_id=True),
     Case("orgs", "POST", "/api/v1/orgs/{a_tenant}/join-link", a_id=True),
@@ -778,7 +763,6 @@ CASES = [
         "/api/v1/runtime/rpc",
         {"requestId": "{new}", "method": "health", "params": {}},
         ok=(503,),
-        org_only=True,
     ),  # B has no runtime
     Case("runtime_rpc", "GET", "/api/v1/runtime/operations/{op}", a_id=True),
     # main: the signed-in person
@@ -810,12 +794,9 @@ async def test_cross_account(case, tenants, calls, ddb, monkeypatch):
     out = [c for c in calls if case.a_id is False or c[0] != "aws"]  # a path id is looked up; nothing else may name A
     seen = json.dumps(out, default=str)
     assert snapshot(ddb, *needles) == before, "B's call changed A's rows"
-    if case.org_only and not b.org_id:
-        assert r.status_code == 409 and "workspace_required" in r.text, f"{r.status_code} {r.text[:300]}"
-    else:
-        expected = case.ok or ((403, 404) if case.a_id else tuple(range(200, 400)))
-        assert r.status_code in expected, f"{r.status_code} {r.text[:400]}"
-        assert case.says in r.text, r.text[:400]
+    expected = case.ok or ((403, 404) if case.a_id else tuple(range(200, 400)))
+    assert r.status_code in expected, f"{r.status_code} {r.text[:400]}"
+    assert case.says in r.text, r.text[:400]
     reply = r.text
     for sent in {*path.split("/"), *map(str, (query or {}).values())} & needles:
         reply = reply.replace(sent, "")  # a refusal may echo the id B sent, and only that
@@ -936,42 +917,26 @@ async def test_org_claim_still_wins_interim(tenants):
     assert resolve_owner_id(ctx) == (b.org_id or b.user_id)
 
 
-# Every door that would mint, buy or bill for a person with no org, and what it answers.
+# The doors that still refuse a person on their own tenant, and what they answer: the ChatGPT sign-in needs the
+# paid workspace plan (402, exactly as for an unpaid org), and the member, invite and join-link doors are an org's
+# own (a person's tenant has no other people; those doors are being deleted).
 REFUSED = [
-    ("POST", "/api/v1/billing/checkout", {"plan": "workspace"}, 409),
-    ("POST", "/api/v1/billing/front-desk", {}, 409),
-    ("POST", "/api/v1/billing/apple/purchase-intent", None, 409),
-    ("POST", "/api/v1/billing/apple/link", {"signed_transaction": "x"}, 409),
-    ("PATCH", "/api/v1/agent-mail/address", {"send_to_anyone": False}, 409),
-    ("GET", "/api/v1/connections/aws/aws-setup", None, 409),  # mints the STS ExternalId
-    ("GET", "/api/v1/connections/github/authorize", None, 409),  # starts a provider OAuth grant
-    ("POST", "/api/v1/connections/parallel", {"token": "t"}, 409),  # stores a credential
-    ("PUT", "/api/v1/connections/x/byo-app", {"client_id": "c", "client_secret": "s"}, 409),
-    ("POST", "/api/v1/connections/aws/aws-complete", {"role_arn": "arn:aws:iam::1:role/lightbulb-connector"}, 409),
-    ("POST", "/api/v1/company/link-wallet/connect", None, 409),  # links an outside wallet
-    ("PUT", "/api/v1/company/link-wallet/limits", {"perPurchaseCents": 1, "projectMonthlyCents": 1}, 409),
-    ("POST", "/api/v1/company/link-wallet/purchases/" + "0" * 32 + "/approval-link", None, 409),
-    ("POST", "/api/v1/messaging/rooms/{room}/messages", MSG, 409),  # addressing reaches the model
-    ("POST", "/api/v1/huddles/{room}/join", None, 409),  # a LiveKit room and the voice worker
-    ("POST", "/api/v1/memory/recall", {"question": "q"}, 409),  # AgentCore memory retrieval
-    ("PUT", "/api/v1/container/workspace/ceo/file", {"path": "USER.md", "content": "x", "tab": "config"}, 409),
-    ("POST", "/api/v1/automations", {"name": "n", "instructions": "i"}, 409),  # a Temporal Schedule
-    ("POST", "/api/v1/automations/from-integration", {"provider": "stripe", "event_ids": ["x"]}, 409),
-    ("POST", "/api/v1/runtime/rpc", {"requestId": "{new}", "method": "agents.create", "params": {}}, 409),
-    ("PATCH", "/api/v1/config", {"patch": {"x": 1}}, 409),  # writes every agent's config.yaml
-    ("PUT", "/api/v1/automations/hook1/webhook-secret", {"webhook_secret": "whsec_x"}, 409),
-    ("POST", "/api/v1/voice/number", {}, 409),  # with no body: takes the environment's shared line
-    ("POST", "/api/v1/oauth/chatgpt/start", None, 402),  # needs the paid workspace plan, whose checkout refuses
+    ("POST", "/api/v1/oauth/chatgpt/start", None, 402),
+    ("GET", "/api/v1/orgs/{b_tenant}/join-link", None, 403),
+    ("POST", "/api/v1/orgs/{b_tenant}/join-link", None, 403),
+    ("DELETE", "/api/v1/orgs/{b_tenant}/join-link", None, 403),
+    ("GET", "/api/v1/orgs/{b_tenant}/invitations", None, 403),
+    ("POST", "/api/v1/orgs/{b_tenant}/invitations", {"email": "x@example.com"}, 403),
+    ("DELETE", "/api/v1/orgs/{b_tenant}/invitations/inv_1", None, 403),
 ]
 
 
 @pytest.mark.parametrize(("method", "path", "body", "status"), REFUSED, ids=[f"{m} {p}" for m, p, _, _ in REFUSED])
-async def test_no_org_caller_reads_own_empty_data_and_cannot_mint_buy_or_bill(
+async def test_no_org_caller_reads_own_empty_data_and_is_refused_only_where_listed(
     method, path, body, status, ddb, calls, jwks, monkeypatch
 ):
     """A session with no org is the person's tenant on every door, and may provision it (see the container cases).
-    It reads its own, empty data; every door that would mint it a key or a line, or bill it, refuses for now, and
-    nothing is written or sent for it."""
+    It reads its own, empty data; the doors in REFUSED refuse it, and nothing is written or sent for it."""
     for name in ("LINK_CLIENT_ID", "LINK_CLIENT_SECRET", "LINK_PUBLISHABLE_KEY"):  # the wallet doors exist
         monkeypatch.setattr(settings, name, "test")
     person = Tenant("user_solo", None)
@@ -984,8 +949,6 @@ async def test_no_org_caller_reads_own_empty_data_and_cannot_mint_buy_or_bill(
     ids = {"b_tenant": person.user_id, "room": room["roomId"], "new": str(uuid.uuid4())}
     r = await call(person, method, fill(path, ids), fill(body, ids))
     assert r.status_code == status, r.text[:300]
-    if status == 409:
-        assert r.json()["detail"]["code"] == "workspace_required"
     assert not [c for c in calls if c[0] in ("stripe", "http", "fake")]
     assert await container_repo.get_by_owner_id(person.user_id) is None
     assert await billing_repo.get_by_owner_id(person.user_id) is None
@@ -1240,3 +1203,81 @@ async def test_voice_plan_doors_refuse_another_tenants_expected_owner(tenants, d
         assert r.status_code == 409 and r.json()["detail"]["code"] == "workspace_changed", r.text[:300]
     assert not [c for c in calls if c[0] == "stripe"]
     assert snapshot(ddb, MARKER, a.user_id, a.tenant) == before
+
+
+# --- a person with no organization uses the product end to end ------------------------------------------------
+
+
+async def test_person_provisions_posts_and_dispatches_only_on_their_own_tenant(ddb, calls, jwks, monkeypatch):
+    """A person with no org provisions their tenant (the provision runner's own steps; only AgentCore, the outermost
+    client, is faked), posts in their own room, and the turn's dispatch row is written for their tenant and room. A
+    second person can neither read nor post in that room."""
+    from core.services import provision_dispatch
+    from scripts import provision_runner
+
+    for name in ("prepare_hermes_workspace", "provision_hermes_runtime", "reconcile_runtime"):
+        fake(monkeypatch, calls, f"core.services.hermes_provisioning.{name}")
+
+    async def run_provision(owner_id: str) -> bool:  # the Step Functions execution, run in-process
+        assert await provision_runner.run(owner_id) == provision_runner.EXIT_OK
+        return True
+
+    monkeypatch.setattr(provision_dispatch, "dispatch_provision", run_provision)
+    monkeypatch.setattr("routers.container.dispatch_provision", run_provision)
+    person, other = Tenant("user_solo", None), Tenant("user_other", None)
+    await ok(person, "POST", "/api/v1/container/provision")
+    assert (await billing_repo.get_by_owner_id(person.user_id))["subscription_status"] == "trial_local"
+    rooms = (await ok(person, "GET", "/api/v1/messaging/rooms"))["rooms"]
+    room = next(r for r in rooms if r.get("kind") == "channel")
+    assert room["workspaceId"] == (await ok(person, "GET", "/api/v1/messaging/live-config"))["workspaceId"]
+    text = {"clientMessageId": str(uuid.uuid4()), "text": "What should we do first?", "replyToMessageId": None}
+    sent = await ok(person, "POST", f"/api/v1/messaging/rooms/{room['roomId']}/messages",
+                    {**text, "threadRootMessageId": None})  # fmt: skip
+    table = messaging_repo._table()
+    work = [i for i in table.scan()["Items"] if str(i.get("sk", "")).startswith("WORK#")]
+    (admit,) = work  # the turn's admission row: the work consumer runs it on the person's own runtime
+    assert admit["sk"] == messaging_repo.work_admit_sk(sent["messageSeq"]) and admit["pk"] == f"ROOM#{room['roomId']}"
+    assert admit["payload"] == {"kind": "admit", "roomId": room["roomId"], "throughSeq": sent["messageSeq"]}
+    assert admit["messageGroupId"] == messaging_repo._sha256(f"admit|{person.user_id}|{room['roomId']}")
+    assert (await messaging_repo.get_room(room["roomId"]))["ownerId"] == person.user_id
+
+    before = snapshot(ddb, person.user_id, room["roomId"])
+    read = await call(other, "GET", f"/api/v1/messaging/rooms/{room['roomId']}/messages")
+    post = await call(other, "POST", f"/api/v1/messaging/rooms/{room['roomId']}/messages",
+                      {**text, "clientMessageId": str(uuid.uuid4()), "threadRootMessageId": None})  # fmt: skip
+    assert read.status_code in (403, 404) and post.status_code in (403, 404), (read.text[:200], post.text[:200])
+    assert snapshot(ddb, person.user_id, room["roomId"]) == before
+
+
+async def test_person_workspace_checkout_bills_no_seats_and_never_reads_an_org_roster(ddb, calls, jwks, monkeypatch):
+    """A person's tenant is one human: the Team checkout carries no seat item and the seat count never asks Clerk for
+    an org roster (a person's id is no org, and a strict roster read would fail every subscription webhook)."""
+    from core.services import billing_service, clerk_admin
+
+    async def no_roster(*args, **kwargs):
+        raise AssertionError("a person's seats read an org roster")
+
+    monkeypatch.setattr(clerk_admin, "list_organization_members", no_roster)
+    await seed_billing(Tenant("user_a", None), Tenant("user_b", None), monkeypatch, calls)
+    monkeypatch.setattr(settings, "STRIPE_SEAT_PRICE_ID", "price_seat")
+    person = Tenant("user_solo", None)
+    assert await billing_service.seats_for_workspace(person.user_id) == 0
+    calls.clear()
+    assert (await call(person, "POST", "/api/v1/billing/checkout", {"plan": "workspace"})).status_code == 200
+    (session,) = _stripe_posts(calls, "/v1/checkout/sessions")
+    assert "price_seat" not in session.values() and session["metadata[workspace_id]"] == person.user_id
+    row = await billing_repo.get_by_owner_id(person.user_id, consistent_read=True)
+    assert row["subscription_status"] == "trial_local" and row["owner_type"] == "personal"
+
+
+async def test_person_takes_the_shared_line_only_when_no_tenant_holds_it(tenants, ddb, calls, monkeypatch):
+    """The bodyless `POST /voice/number` gives the environment's one shared line to the first tenant, for a person as
+    for an org; B then gets 409 and A's line is unchanged."""
+    a, b = tenants
+    monkeypatch.setattr(settings, "VOICE_LINE_NUMBER", "+15550100009")
+    await workspaces(a, b)
+    assert (await ok(a, "POST", "/api/v1/voice/number", {}))["number"] == "+15550100009"
+    before = snapshot(ddb, a.tenant, a.user_id, "+15550100009")
+    r = await call(b, "POST", "/api/v1/voice/number", {})
+    assert r.status_code == 409, r.text[:300]
+    assert snapshot(ddb, a.tenant, a.user_id, "+15550100009") == before

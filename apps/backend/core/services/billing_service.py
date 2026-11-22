@@ -572,10 +572,13 @@ async def seats_for_workspace(owner_id: str) -> int:
     """Billable seats: human members past :data:`SEATS_INCLUDED`.
 
     Every Clerk org member is a human (agents are not Clerk members). STRICT
-    roster read: a Clerk blip raises rather than reading as zero members.
+    roster read: a Clerk blip raises rather than reading as zero members. A person's tenant is one human.
     """
+    from core.auth import is_org_owner_id
     from core.services.clerk_admin import list_organization_members
 
+    if not is_org_owner_id(owner_id):
+        return 0
     return max(0, len(await list_organization_members(owner_id, strict=True)) - SEATS_INCLUDED)
 
 

@@ -323,6 +323,10 @@ export class LightbulbStage extends cdk.Stage {
       },
     );
     observability.addDependency(database);
+    // The alarms come after the services they watch: W89 (no healthy engine target) treats missing data as
+    // breaching and pages in prod, so it must not exist before the engine service has registered its targets.
+    // `backendService` already implies this order; this keeps it if that prop goes.
+    observability.addDependency(service);
 
     // Both envs: a runtime resolved to openrouter_managed needs this stack's gate URL,
     // so the stack itself can't be env-gated.

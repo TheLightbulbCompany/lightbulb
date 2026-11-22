@@ -1852,9 +1852,9 @@ jobs:
       - Build-Synth
       - Assets-FileAsset21
       - dev-lightbulb-dev-database-Deploy
+      - dev-lightbulb-dev-service-Deploy
       - dev-lightbulb-dev-network-Deploy
       - dev-lightbulb-dev-container-Deploy
-      - dev-lightbulb-dev-service-Deploy
       - dev-lightbulb-dev-api-Deploy
     runs-on: ${{ vars.DEPLOY_RUNNER }}
     steps:
@@ -2575,9 +2575,9 @@ jobs:
       - Build-Synth
       - Assets-FileAsset35
       - prod-lightbulb-prod-database-Deploy
+      - prod-lightbulb-prod-service-Deploy
       - prod-lightbulb-prod-network-Deploy
       - prod-lightbulb-prod-container-Deploy
-      - prod-lightbulb-prod-service-Deploy
       - prod-lightbulb-prod-api-Deploy
       - dev-lightbulb-dev-auth-Deploy
       - dev-lightbulb-dev-dns-Deploy

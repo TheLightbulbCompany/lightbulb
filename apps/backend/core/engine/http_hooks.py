@@ -8,7 +8,7 @@ on the ids they get), never an empty answer. A call goes again only when it was 
 
 Budgets: `context` and `event` 8 s an attempt, 12 s in all (`transport.HOOK_*`), under every caller's own limit: a
 Temporal activity's 30 s start-to-close, the work Lambda's 180 s, and the runtime's 20 s wait on a callback route. A
-`tool` gets 18 s (`transport.TOOL_*`): it runs only on the runtime's tool routes, whose plugin waits 20 s."""
+`tool` gets 15 s (`transport.TOOL_*`): it runs only on the runtime's tool routes, whose plugin waits 20 s."""
 
 from __future__ import annotations
 
@@ -24,6 +24,8 @@ _PREFIX = "/api/v1/internal/engine"
 
 #: A tool call that timed out after it was sent: the product may still have done it.
 TOOL_TIMEOUT = "timed_out: the action may still have completed; check before trying again"
+#: A tool call that never reached the product: nothing was done.
+TOOL_NOT_SENT = "not_sent: the action was not sent; nothing was done"
 
 
 async def _send(
@@ -40,10 +42,14 @@ async def _send(
 
 
 async def tool(name: ToolName, call: ToolCall) -> dict:
-    """A timeout after the call went out reaches the agent's tool as a 504 that says the action may have run."""
+    """No timeout reaches the agent's tool as a bare 500: a 503 when the call never reached the product (a connect or
+    pool timeout, a refused connection), a 504 that says the action may have run otherwise (a read or write timeout,
+    or the deadline, which can fire after the request went out)."""
     try:
         return await _send(f"/tools/{name}", call, transport.TOOL_ATTEMPT_S, transport.TOOL_BUDGET_S)
-    except (TimeoutError, httpx.ReadTimeout, httpx.WriteTimeout) as exc:
+    except (httpx.ConnectTimeout, httpx.PoolTimeout, httpx.ConnectError) as exc:
+        raise HTTPException(status_code=503, detail=TOOL_NOT_SENT) from exc
+    except (TimeoutError, httpx.TimeoutException) as exc:
         raise HTTPException(status_code=504, detail=TOOL_TIMEOUT) from exc
 
 

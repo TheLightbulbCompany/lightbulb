@@ -52,3 +52,7 @@ next-env.d.ts
 
 # Playwright
 /playwright-report
+
+# Written by `next dev` (Next.js agent docs); never committed.
+/AGENTS.md
+/CLAUDE.md

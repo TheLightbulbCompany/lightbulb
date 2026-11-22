@@ -11,7 +11,7 @@ import {
   type ReactNode,
 } from "react";
 import { useAuth } from "@clerk/nextjs";
-import useSWR, { mutate, preload } from "swr";
+import useSWR, { preload } from "swr";
 import {
   ApiError,
   createMessagingClient,
@@ -67,22 +67,21 @@ const LiveEventsContext = createContext<LiveEventsContextValue | null>(null);
 
 /** `preloadRooms`: start the room list here (the chat surface only; Settings has no room list). */
 export function LiveEventsProvider({ children, preloadRooms = false }: { children: ReactNode; preloadRooms?: boolean }) {
-  const { getToken, isLoaded, userId, orgId } = useAuth();
+  const { getToken, isLoaded, userId } = useAuth();
   const api = useApi();
   const messaging = useMemo(() => createMessagingClient(api), [api]);
   const runtimeClient = useMemo(() => createRuntimeClient(api, () => crypto.randomUUID()), [api]);
-  const ownerScope = orgId ?? userId ?? null;
-  // Keyed by the signed-in workspace and person: a task list is one viewer's (the server keeps only the tasks they may
-  // view), so an org switch or another person signing in here never reuses the last one's lists (dev walk 12).
-  const taskScope = [orgId, userId].filter(Boolean).join(":");
+  // The account is the signed-in person: another person signing in here never reuses the last one's lists (dev walk 12).
+  const ownerScope = userId ?? null;
+  const taskScope = userId ?? "";
   const tasks = useMemo(() => createTasksClient(api, taskScope), [api, taskScope]);
   const refreshTask = useTaskChangedRefresh(tasks);
   const httpReady = !!isLoaded && !!userId;
   // The room list gates "Loading chats…". Start it with this provider's first reads instead of
   // when the workspace mounts; useRooms picks up the in-flight request under the same key.
   useEffect(() => {
-    if (preloadRooms && httpReady && userId) void preload(roomsListKey(userId, orgId), () => messaging.listRooms()).catch(() => undefined);
-  }, [preloadRooms, httpReady, userId, orgId, messaging]);
+    if (preloadRooms && httpReady && userId) void preload(roomsListKey(userId, null), () => messaging.listRooms()).catch(() => undefined);
+  }, [preloadRooms, httpReady, userId, messaging]);
   const { data: liveConfig, error: configError, mutate: refreshConfig } = useSWR(
     httpReady ? ["messaging-live-config", userId, ownerScope] : null,
     () => messaging.getLiveConfig(),
@@ -115,12 +114,9 @@ export function LiveEventsProvider({ children, preloadRooms = false }: { childre
   const chatHandlers = useRef(new Set<(frame: ChatIncomingMessage, event: LiveEventOf<"room.run.frame">) => void>());
 
   const dispatchEvent = useCallback((event: LiveEvent) => {
-    if (event.type === "runtime.resource.invalidated" && (event.payload.resource === "onboarding" || event.payload.resource === "health")) {
-      void mutate(["/container/status", `${userId}:${orgId}`]);
-    }
     if (event.type === "task.changed") refreshTask(event.payload);
     for (const handler of eventHandlers.current) handler(event);
-  }, [userId, orgId, refreshTask]);
+  }, [refreshTask]);
   const dispatchChat = useCallback((frame: ChatIncomingMessage, event: LiveEventOf<"room.run.frame">) => {
     for (const handler of chatHandlers.current) handler(frame, event);
   }, []);

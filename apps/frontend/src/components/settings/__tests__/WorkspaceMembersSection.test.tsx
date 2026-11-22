@@ -298,27 +298,22 @@ describe("WorkspaceMembersSection", () => {
     expect(teams.read).toHaveBeenCalledWith(null);
   });
 
-  it("offers workspace creation instead of a link on a personal workspace", () => {
+  it("shows a person's own account nothing, and never a way back into /onboarding", () => {
     clerk.organization = null;
     clerk.membership = null;
-    render(<WorkspaceMembersSection />);
+    const { container } = render(<WorkspaceMembersSection />);
 
-    expect(screen.getByTestId("members-personal")).toBeInTheDocument();
-    expect(screen.queryByTestId("members-join-link")).not.toBeInTheDocument();
-    expect(screen.getByRole("link", { name: /create a workspace/i })).toHaveAttribute(
-      "href",
-      "/onboarding",
-    );
+    expect(container).toBeEmptyDOMElement();
+    expect(screen.queryByRole("link")).not.toBeInTheDocument();
   });
 
   it("renders nothing decisive while Clerk is still resolving the org", () => {
     // An unset organization during the load window must not read as personal —
-    // that would flash the create-a-workspace card at an org admin.
+    // that would hide the section from an org admin.
     clerk.isLoaded = false;
     clerk.organization = null;
     render(<WorkspaceMembersSection />);
 
-    expect(screen.queryByTestId("members-personal")).not.toBeInTheDocument();
     expect(screen.getByRole("status", { name: /loading members/i })).toBeInTheDocument();
   });
 

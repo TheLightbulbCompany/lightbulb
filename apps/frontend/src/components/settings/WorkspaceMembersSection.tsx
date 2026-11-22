@@ -1,7 +1,6 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import Link from "next/link";
 import { useClerk, useOrganization } from "@clerk/nextjs";
 
 import { ApiError, useApi } from "@/lib/api";
@@ -188,23 +187,8 @@ export function WorkspaceMembersSection() {
     );
   }
 
-  // Personal workspace: there is no org for anyone to join, and the backend
-  // would 409 on the missing org claim. Point at the one surface that creates
-  // one rather than rendering a control that cannot succeed.
-  if (!organization) {
-    return (
-      <div className="settings-card" data-testid="members-personal">
-        <div className="settings-card-title">You&apos;re on a personal workspace</div>
-        <div className="settings-card-desc">
-          Personal workspaces are just you and your agents — there&apos;s nobody to invite.
-          Create a shared workspace to bring teammates in.
-        </div>
-        <Link href="/onboarding" className="settings-btn-outline" style={{ textDecoration: "none" }}>
-          Create a workspace
-        </Link>
-      </div>
-    );
-  }
+  // A person's own account: there is nobody to invite and nothing to create (Task 6 deletes this section).
+  if (!organization) return null;
 
   // Defence in depth. The nav already hides this panel from non-admin members
   // (ADMIN_ONLY_PANELS) and the backend re-checks with `require_org_admin`;

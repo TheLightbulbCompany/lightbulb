@@ -278,7 +278,7 @@ function externalReferrer(): { referrer: string | null; domain: string | null } 
 // comparison and legal pages, the [seoSlug] pages) is a marketing route for landing_viewed.
 const APP_ROUTE_PREFIXES = [
   "/voice", "/chat", "/settings", "/onboarding", "/sign-in", "/sign-up", "/admin", "/join", "/welcome",
-  "/auth", "/oauth", "/checkout_redirect", "/session-tasks", "/meet-bot", "/api",
+  "/auth", "/oauth", "/checkout_redirect", "/meet-bot", "/api",
 ];
 
 /** A page of the website (T23): where a visit lands, as opposed to the signed-in app. */

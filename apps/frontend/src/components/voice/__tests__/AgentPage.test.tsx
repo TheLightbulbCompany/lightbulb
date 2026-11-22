@@ -1,7 +1,6 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, expect, it, vi } from "vitest";
 
-vi.mock("@clerk/nextjs", () => ({ useOrganization: () => ({ organization: { name: "Salon" } }) }));
 vi.mock("../VoicePlanCard", () => ({ VoicePlanCard: () => <section aria-label="Voice plan" /> }));
 vi.mock("next/link", () => ({ default: ({ children, href }: { children: React.ReactNode; href: string }) => <a href={href}>{children}</a> }));
 const post = vi.hoisted(() => vi.fn());
@@ -87,7 +86,7 @@ it("hides what does nothing yet, and the waitlist toggle (10 Nov demo ruling)", 
   expect(screen.getByRole("link", { name: "Test call" }).getAttribute("href")).toBe("tel:+14155550199");
 });
 
-it("names the business typed at setup, not the workspace", () => {
+it("names the business typed at setup, and never an organization name", () => {
   cfg.value = { ...cfg.value, business: "Corner Barbers" };
   const { unmount } = render(<AgentPage />);
   expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Nova · Corner Barbers");
@@ -95,7 +94,7 @@ it("names the business typed at setup, not the workspace", () => {
   unmount();
   cfg.value = { ...cfg.value, business: "" };
   render(<AgentPage />);
-  expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Nova · Salon"); // the workspace, as a fallback
+  expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Nova · your business");
   expect(screen.getAllByText(/\(415\) 555-0199/).length).toBeGreaterThan(0); // the number, formatted
 });
 

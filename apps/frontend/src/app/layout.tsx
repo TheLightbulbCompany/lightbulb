@@ -11,11 +11,7 @@ import { VercelAnalytics } from "@/components/VercelAnalytics";
 import { SupportProvider } from "@/components/support/SupportProvider";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import {
-  clerkAppearance,
-  clerkLocalization,
-  clerkTaskUrls,
-} from "@/lib/clerkAppearance";
+import { clerkAppearance } from "@/lib/clerkAppearance";
 import { SITE_URL } from "@/lib/domain";
 import { OG_IMAGE, SITE_DESCRIPTION, SITE_TITLE } from "@/lib/seo";
 import "./globals.css";
@@ -76,11 +72,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <ClerkProvider
-      appearance={clerkAppearance}
-      localization={clerkLocalization}
-      taskUrls={clerkTaskUrls}
-    >
+    <ClerkProvider appearance={clerkAppearance}>
       {/* suppressHydrationWarning: THEME_SCRIPT writes data-lb-theme onto
           <html> for returning dark-mode visitors, which the server markup
           does not carry. */}

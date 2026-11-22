@@ -6,7 +6,6 @@ vi.mock("@/components/voice/data", () => hooks);
 // Keep the real VoicePlanCard; isolate its server state and payment boundary.
 vi.mock("swr", () => ({ default: hooks.usePlan }));
 vi.mock("@/lib/api", () => ({ useApi: () => ({}) }));
-vi.mock("@/hooks/useIsWorkspaceAdmin", () => ({ useIsWorkspaceAdmin: () => true }));
 vi.mock("@/hooks/useConnections", () => ({ useConnections: () => ({ connections: [{ provider: "google", status: "disconnected" }], startOAuth: vi.fn() }) }));
 vi.mock("@/components/settings/WorkspaceMembersSection", () => ({ WorkspaceMembersSection: () => <p>members</p> }));
 vi.mock("@/components/settings/DailySummaryCard", () => ({ DailySummaryCard: () => <p>daily</p> }));

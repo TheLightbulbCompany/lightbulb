@@ -4,14 +4,12 @@ import { beforeEach, expect, it, vi } from "vitest";
 import { SWRConfig } from "swr";
 
 const state = vi.hoisted(() => ({
-  admin: true,
-  orgId: "org-1",
   userId: "user-1",
   plan: {} as Record<string, unknown>,
   get: vi.fn(), post: vi.fn(), del: vi.fn(), open: vi.fn(),
 }));
-vi.mock("@clerk/nextjs", () => ({ useAuth: () => ({ orgId: state.orgId, userId: state.userId, isLoaded: true }) }));
-vi.mock("@/hooks/useIsWorkspaceAdmin", () => ({ useIsWorkspaceAdmin: () => state.admin }));
+// A person's session carries no organization: the plan is the signed-in user's own.
+vi.mock("@clerk/nextjs", () => ({ useAuth: () => ({ userId: state.userId, isLoaded: true }) }));
 vi.mock("@/lib/api", () => ({ useApi: () => ({ get: state.get, post: state.post, del: state.del }) }));
 vi.mock("@/lib/externalAuth", () => ({ openAuthUrl: state.open }));
 
@@ -22,10 +20,8 @@ function tree() {
 }
 
 beforeEach(() => {
-  state.admin = true;
-  state.orgId = "org-1";
   state.userId = "user-1";
-  state.plan = { ownerId: "org-1", status: "not_enrolled", available: true, planVersion: "voice-agents-v1", monthlyUsd: 250, includedMinutes: 1500, overageUsdPerMinute: 0.35 };
+  state.plan = { ownerId: "user-1", status: "not_enrolled", available: true, planVersion: "voice-agents-v1", monthlyUsd: 250, includedMinutes: 1500, overageUsdPerMinute: 0.35 };
   state.get.mockReset().mockImplementation(async () => state.plan);
   state.post.mockReset().mockImplementation(async () => {
     state.plan = { ...state.plan, status: "pending_payment" };
@@ -38,7 +34,7 @@ beforeEach(() => {
   state.open.mockReset().mockResolvedValue(true);
 });
 
-it("requires explicit terms acceptance and binds checkout to the displayed workspace", async () => {
+it("test_scopes_keyed_on_user: requires explicit terms acceptance and binds checkout to the signed-in person's account", async () => {
   render(tree());
   const button = await screen.findByRole("button", { name: "Continue to payment" });
   expect(button).toBeDisabled();
@@ -46,7 +42,7 @@ it("requires explicit terms acceptance and binds checkout to the displayed works
   fireEvent.click(screen.getByRole("checkbox", { name: /I agree/ }));
   fireEvent.click(button);
   await waitFor(() => expect(state.post).toHaveBeenCalledWith("/billing/voice-plan/checkout", {
-    expectedOwnerId: "org-1", planVersion: "voice-agents-v1", acceptMonthlyUsd: 250, acceptIncludedMinutes: 1500, acceptOverageUsdPerMinute: 0.35,
+    expectedOwnerId: "user-1", planVersion: "voice-agents-v1", acceptMonthlyUsd: 250, acceptIncludedMinutes: 1500, acceptOverageUsdPerMinute: 0.35,
   }));
   expect(await screen.findByText("Waiting for payment to confirm")).toBeInTheDocument();
   expect(screen.queryByText("Phone plan active")).not.toBeInTheDocument();
@@ -70,16 +66,19 @@ it("shows inactive enrollment without a purchase action", async () => {
   expect(state.post).not.toHaveBeenCalled();
 });
 
-it("does not expose billing mutations to a member or a mismatched workspace", async () => {
-  state.admin = false;
+it("a session whose tenant is still an organization can pay, manage and cancel its organization's plan", async () => {
+  state.plan = { ...state.plan, ownerId: "org-1" }; // the server resolved the caller's tenant to their org
   const view = render(tree());
-  expect(await screen.findByText("Only an admin of this business can change the plan.")).toBeInTheDocument();
-  expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
-  state.admin = true;
-  state.orgId = "org-2";
+  fireEvent.click(await screen.findByRole("checkbox", { name: /I agree/ }));
+  fireEvent.click(screen.getByRole("button", { name: "Continue to payment" }));
+  await waitFor(() => expect(state.post).toHaveBeenCalledWith("/billing/voice-plan/checkout", expect.objectContaining({ expectedOwnerId: "org-1" })));
+  state.plan = { ...state.plan, status: "active" };
   view.rerender(tree());
-  expect(await screen.findByText("Loading your plan…")).toBeInTheDocument();
-  expect(screen.queryByRole("button", { name: "Continue to payment" })).not.toBeInTheDocument();
+  fireEvent.click(await screen.findByRole("button", { name: "Manage billing" }));
+  await waitFor(() => expect(state.post).toHaveBeenCalledWith("/billing/portal", {}));
+  fireEvent.click(screen.getByRole("button", { name: "Cancel renewal" }));
+  fireEvent.click(screen.getByRole("button", { name: "Confirm cancellation" }));
+  await waitFor(() => expect(state.del).toHaveBeenCalledWith("/billing/voice-plan?expectedOwnerId=org-1"));
 });
 
 it("confirms cancellation inline and waits for provider-confirmed end date", async () => {
@@ -88,17 +87,18 @@ it("confirms cancellation inline and waits for provider-confirmed end date", asy
   fireEvent.click(await screen.findByRole("button", { name: "Cancel renewal" }));
   expect(state.del).not.toHaveBeenCalled();
   fireEvent.click(screen.getByRole("button", { name: "Confirm cancellation" }));
-  await waitFor(() => expect(state.del).toHaveBeenCalledWith("/billing/voice-plan?expectedOwnerId=org-1"));
+  await waitFor(() => expect(state.del).toHaveBeenCalledWith("/billing/voice-plan?expectedOwnerId=user-1"));
   expect(await screen.findByText("Renewal canceled")).toBeInTheDocument();
   expect(screen.getByText(/Access continues through/)).toHaveTextContent("UTC");
 });
 
-it("requires fresh consent when another admin signs into the same workspace", async () => {
+it("requires fresh consent when another person signs in", async () => {
   const view = render(tree());
   await screen.findByRole("button", { name: "Continue to payment" });
   fireEvent.click(screen.getByRole("checkbox", { name: /I agree/ }));
   expect(screen.getByRole("button", { name: "Continue to payment" })).toBeEnabled();
   state.userId = "user-2";
+  state.plan = { ...state.plan, ownerId: "user-2" };
   view.rerender(tree());
   expect(await screen.findByRole("checkbox", { name: /I agree/ })).not.toBeChecked();
   expect(screen.getByRole("button", { name: "Continue to payment" })).toBeDisabled();

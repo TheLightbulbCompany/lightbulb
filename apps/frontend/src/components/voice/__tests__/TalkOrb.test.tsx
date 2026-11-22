@@ -18,9 +18,9 @@ const huddle = vi.hoisted(() => ({
   error: null as { code: string } | null, join: vi.fn(), leave: vi.fn(), dismissError: vi.fn(),
 }));
 vi.mock("@/components/huddle/HuddleProvider", () => ({ CEO_IDENTITY: "agent-ceo", useHuddle: () => huddle }));
-vi.mock("@/components/huddle/useAssistantDm", () => ({
-  useAssistantDm: () => ({ roomId: "dm1", kind: "dm", members: [{ kind: "human", id: "u" }, { kind: "agent", id: "a1" }] }),
-}));
+const DM = { roomId: "dm1", kind: "dm", members: [{ kind: "human", id: "u" }, { kind: "agent", id: "a1" }] };
+const dm = vi.hoisted(() => ({ value: null as object | null }));
+vi.mock("@/components/huddle/useAssistantDm", () => ({ useAssistantDm: () => dm.value }));
 const questions = vi.hoisted(() => ({ data: [] as object[] }));
 vi.mock("../data", () => ({ useQuestions: () => questions }));
 
@@ -33,7 +33,7 @@ Object.defineProperty(navigator, "permissions", { configurable: true, value: { q
 
 let now = 1_000;
 beforeEach(() => {
-  lk.attrs = {}; lk.agent = null; lk.lines = []; questions.data = [];
+  lk.attrs = {}; lk.agent = null; lk.lines = []; questions.data = []; dm.value = DM;
   Object.assign(huddle, { roomId: null, roomName: null, joining: null, room: null, error: null });
   huddle.join.mockReset(); huddle.leave.mockClear(); mic.mockClear(); rpc.mockClear(); perm.state = "prompt"; connectedRoom.localParticipant.isMicrophoneEnabled = false;
   vi.spyOn(Date, "now").mockImplementation(() => now);
@@ -59,6 +59,17 @@ it("a tap starts a hands-free talk: the mic opens and stays open after the relea
   expect(orb()).toHaveAttribute("data-state", "listening");
   expect(status()).toHaveTextContent("Listening");
   expect(status()).toHaveAttribute("aria-live", "polite");
+});
+
+it("the orb gets its room when the welcome DM appears after first-open provisioning, without a reload", () => {
+  dm.value = null; // first lookup: provisioning has not seeded the DM yet
+  const { rerender } = render(<TalkOrb name="Nova" compact />);
+  tap();
+  expect(huddle.join).not.toHaveBeenCalled();
+  dm.value = DM; // the lookup found it (live event or the bounded retry)
+  rerender(<TalkOrb name="Nova" compact />);
+  tap();
+  expect(huddle.join).toHaveBeenCalledWith("dm1", "Nova");
 });
 
 it("a hold past 350 ms closes only input on release and keeps the conversation open", () => {

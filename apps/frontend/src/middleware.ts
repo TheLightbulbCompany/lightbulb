@@ -51,9 +51,7 @@ function isAdminHostAllowedNonAdminPath(pathname: string): boolean {
     pathname === "/sign-in" ||
     pathname.startsWith("/sign-in/") ||
     pathname === "/sign-up" ||
-    pathname.startsWith("/sign-up/") ||
-    pathname === "/session-tasks/choose-organization" ||
-    pathname.startsWith("/session-tasks/choose-organization/")
+    pathname.startsWith("/sign-up/")
   );
 }
 

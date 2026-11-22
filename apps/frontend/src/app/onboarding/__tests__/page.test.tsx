@@ -4,18 +4,16 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import OnboardingPage from "../page";
 
 const clerk = vi.hoisted(() => ({
-  listsPresent: true, loaded: true, orgId: null as string | null, organization: null as { id: string } | null,
-  memberships: [] as Array<{ organization: { id: string } }>,
-  invitations: [] as Array<{ id: string; publicOrganizationData: { id: string; name: string }; accept: () => Promise<unknown> }>,
-  setActive: vi.fn().mockResolvedValue(undefined), replace: vi.fn(), update: vi.fn(), firstName: "Ada" as string | null,
-  revalidateInvitations: vi.fn().mockResolvedValue(undefined), revalidateMemberships: vi.fn().mockResolvedValue(undefined),
-  selectProps: vi.fn(), createOrganization: vi.fn(),
-  apiGet: vi.fn(), apiPost: vi.fn(),
+  loaded: true, replace: vi.fn(), update: vi.fn(), firstName: "Ada" as string | null,
+  apiGet: vi.fn(), apiPost: vi.fn(), save: vi.fn(),
+  config: { business: "", onboardingStep: undefined } as Record<string, unknown> | undefined,
+  configError: undefined as Error | undefined,
 }));
 vi.mock("@/lib/api", async () => {
   const { ApiError } = await vi.importActual<typeof import("@lightbulb/shared")>("@lightbulb/shared");
   return { ApiError, useApi: () => ({ get: clerk.apiGet, post: clerk.apiPost }) };
 });
+vi.mock("@/components/voice/data", () => ({ useAgentConfig: () => ({ data: clerk.config, error: clerk.configError, save: clerk.save }) }));
 vi.mock("next/navigation", () => ({ useRouter: () => ({ replace: clerk.replace, push: clerk.replace }), useSearchParams: () => new URLSearchParams() }));
 const analytics = vi.hoisted(() => ({ capture: vi.fn(), clearWorkspaceDoor: vi.fn() }));
 vi.mock("@/lib/analytics", () => ({
@@ -24,76 +22,34 @@ vi.mock("@/lib/analytics", () => ({
   readWorkspaceDoor: () => null,
   clearWorkspaceDoor: analytics.clearWorkspaceDoor,
 }));
+// Only useUser (the name gate, the user id) is read from Clerk: any organization hook is undefined here and throws.
 vi.mock("@clerk/nextjs", () => ({
-  useAuth: () => ({ isLoaded: clerk.loaded, isSignedIn: true, orgId: clerk.orgId }),
-  useUser: () => ({ isLoaded: clerk.loaded, user: { unsafeMetadata: {}, update: clerk.update, firstName: clerk.firstName } }),
-  useOrganization: () => ({ isLoaded: clerk.loaded, organization: clerk.organization }),
-  useOrganizationList: () => ({ isLoaded: clerk.loaded, setActive: clerk.setActive, createOrganization: clerk.createOrganization,
-    userMemberships: { data: clerk.listsPresent ? clerk.memberships : undefined, isLoading: false, revalidate: clerk.revalidateMemberships },
-    userInvitations: { data: clerk.listsPresent ? clerk.invitations : undefined, isLoading: false, revalidate: clerk.revalidateInvitations },
-  }),
-  OrganizationList: (props: unknown) => { clerk.selectProps(props); return null; },
+  useUser: () => ({ isLoaded: clerk.loaded, user: { id: "user_a", unsafeMetadata: {}, update: clerk.update, firstName: clerk.firstName } }),
 }));
 beforeEach(() => {
-  Object.assign(clerk, { listsPresent: true, loaded: true, orgId: null, organization: null, memberships: [], invitations: [], firstName: "Ada" });
+  Object.assign(clerk, { loaded: true, firstName: "Ada", config: { business: "", onboardingStep: undefined }, configError: undefined });
   vi.clearAllMocks();
-  clerk.setActive.mockResolvedValue(undefined);
-  clerk.update.mockResolvedValue(undefined);
-  clerk.revalidateInvitations.mockResolvedValue(undefined);
-  clerk.revalidateMemberships.mockResolvedValue(undefined);
+  clerk.save.mockResolvedValue(undefined);
+  localStorage.clear();
 });
-describe("workspace onboarding", () => {
-  it("asks a person with no name for one before the create-workspace form", () => {
+describe("business onboarding", () => {
+  it("asks a person with no name for one before the business form", () => {
     clerk.firstName = null;
-    clerk.memberships = [{ organization: { id: "org_only" } }];
     window.history.replaceState(null, "", "/onboarding");
     render(<OnboardingPage />);
     expect(clerk.replace).toHaveBeenCalledWith("/welcome/name?returnTo=%2Fonboarding");
     expect(clerk.replace).toHaveBeenCalledTimes(1);
     expect(screen.queryByLabelText("Business name")).not.toBeInTheDocument();
-    expect(clerk.setActive).not.toHaveBeenCalled();
+    expect(clerk.apiPost).not.toHaveBeenCalled();
   });
-  it("does not offer creation until membership and invitation lists are available", () => {
-    clerk.listsPresent = false;
-    render(<OnboardingPage />);
-    expect(screen.queryByLabelText("Business name")).not.toBeInTheDocument();
-    expect(clerk.replace).not.toHaveBeenCalled();
-    expect(screen.getByRole("status")).toHaveTextContent("Loading");
-  });
-  it("puts the create form first and the join option under it, without requiring a signup intent", () => {
-    render(<OnboardingPage />);
-    expect(screen.getByRole("heading", { level: 1, name: "Set up your business" })).toBeInTheDocument();
-    expect(screen.getAllByRole("heading").map((h) => h.textContent)).toEqual(["Set up your business", "Joining a team instead?"]);
-    expect(screen.getByText("Invited by email? Open that email on this device and tap its link.")).toBeInTheDocument();
-    const name = screen.getByLabelText("Business name");
-    expect(name.compareDocumentPosition(screen.getByLabelText("Paste a join link")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Continue" })).toBeDisabled();
-    expect(clerk.replace).not.toHaveBeenCalled();
-  });
-  it.each([
-    ["https://thelightbulb.company/join/org_abc123#t0k3n", "/join/org_abc123#t0k3n"],
-    ["  /join/org_abc123#t0k3n ", "/join/org_abc123#t0k3n"],
-  ])("routes a pasted join link %j to the join page", (pasted, target) => {
-    render(<OnboardingPage />);
-    fireEvent.change(screen.getByLabelText("Paste a join link"), { target: { value: pasted } });
-    fireEvent.click(screen.getByRole("button", { name: "Join" }));
-    expect(clerk.replace).toHaveBeenCalledWith(target);
-  });
-  it.each(["hello", "https://thelightbulb.company/join/org_abc123", "https://example.com/chat#x"])("refuses %j as a join link", (pasted) => {
-    render(<OnboardingPage />);
-    fireEvent.change(screen.getByLabelText("Paste a join link"), { target: { value: pasted } });
-    fireEvent.click(screen.getByRole("button", { name: "Join" }));
-    expect(screen.getByRole("alert")).toHaveTextContent("That doesn't look like a Lightbulb join link.");
-    expect(clerk.replace).not.toHaveBeenCalled();
-    expect(screen.getByLabelText("Business name")).toBeInTheDocument();
-  });
-  it("previews the agents' address from the name, then holds the slug BEFORE creating the org", async () => {
+  it("test_onboarding_claims_slug_with_name_and_no_clerk_call", async () => {
     clerk.apiGet.mockImplementation(async (path: string) => ({
       slug: new URLSearchParams(path.split("?")[1]).get("slug"), available: true, reason: null, domain: "dev.thelightbulb.company",
     }));
     clerk.apiPost.mockResolvedValue({ slug: "bench-club" });
-    clerk.createOrganization.mockResolvedValue({ id: "org_new" });
     render(<OnboardingPage />);
+    expect(screen.getByRole("heading", { level: 1, name: "Set up your business" })).toBeInTheDocument();
+    expect(screen.queryByLabelText("Paste a join link")).not.toBeInTheDocument();
     fireEvent.change(screen.getByLabelText("Business name"), { target: { value: "Bench Club!" } });
     // The address is one line with "Change", not a second field to fill in.
     await waitFor(() => expect(screen.getByText("agents@bench-club.dev.thelightbulb.company")).toBeInTheDocument());
@@ -101,19 +57,117 @@ describe("workspace onboarding", () => {
     fireEvent.change(screen.getByLabelText(/How did you first hear about us/), { target: { value: "reddit" } });
     fireEvent.change(screen.getByLabelText("Tell us more"), { target: { value: "r/startups" } });
     fireEvent.click(screen.getByRole("button", { name: "Continue" }));
-    await waitFor(() => expect(clerk.setActive).toHaveBeenCalledWith({ organization: "org_new" }));
-    expect(clerk.apiPost).toHaveBeenCalledWith("/company/slug/hold", { slug: "bench-club" });
-    // Where they came from is stashed before the org exists (the webhook adopts it).
-    expect(clerk.apiPost).toHaveBeenCalledWith("/company/source", {
-      answer: "reddit", detail: "r/startups", door: "sign_up", first_touch: { utm_source: "reddit" }, last_touch: {},
-    });
-    expect(analytics.clearWorkspaceDoor).toHaveBeenCalled(); // the door was this visit's, not history
+    await waitFor(() => expect(clerk.replace).toHaveBeenCalledWith("/voice"));
+    expect(clerk.apiPost.mock.calls).toEqual([
+      ["/company/source", { answer: "reddit", detail: "r/startups", door: "sign_up", first_touch: { utm_source: "reddit" }, last_touch: {} }],
+      ["/company/slug/hold", { slug: "bench-club" }],
+      ["/company/slug/claim", { slug: "bench-club", name: "Bench Club!" }],
+    ]);
+    // The name is the business the assistant's setup starts from.
+    expect(clerk.save).toHaveBeenCalledWith({ business: "Bench Club!", onboardingStep: 1 });
+    expect(analytics.clearWorkspaceDoor).toHaveBeenCalled();
     expect(analytics.capture).toHaveBeenCalledWith("source_reported", expect.objectContaining({
-      surface: "sign_up", answer: "reddit", has_detail: true, workspace_id: "org_new", $set_once: { self_reported_source: "reddit" },
+      surface: "sign_up", answer: "reddit", has_detail: true, $set_once: { self_reported_source: "reddit" },
     }));
-    await waitFor(() => expect(clerk.apiPost).toHaveBeenCalledWith("/company/slug/claim", { slug: "bench-club" }));
-    expect(clerk.apiPost.mock.invocationCallOrder[0]).toBeLessThan(clerk.createOrganization.mock.invocationCallOrder[0]);
-    expect(clerk.createOrganization).toHaveBeenCalledWith({ name: "Bench Club!" });
+  });
+  it("keeps an address the account already claimed and still saves the business", async () => {
+    const { ApiError } = await vi.importActual<typeof import("@lightbulb/shared")>("@lightbulb/shared");
+    clerk.apiGet.mockImplementation(async () => ({ slug: "acme", available: true, reason: null, domain: "thelightbulb.company" }));
+    clerk.apiPost.mockImplementation(async (path: string) => {
+      if (path === "/company/slug/claim") throw new ApiError(409, { detail: "slug_already_claimed" }, "slug_already_claimed");
+      return {};
+    });
+    render(<OnboardingPage />);
+    fireEvent.change(screen.getByLabelText("Business name"), { target: { value: "Acme" } });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    await waitFor(() => expect(clerk.replace).toHaveBeenCalledWith("/voice"));
+    expect(clerk.save).toHaveBeenCalledWith({ business: "Acme", onboardingStep: 1 });
+  });
+  it("waits for the assistant's document before it can continue", async () => {
+    clerk.config = undefined;
+    clerk.apiGet.mockImplementation(async () => ({ slug: "acme", available: true, reason: null, domain: "thelightbulb.company" }));
+    render(<OnboardingPage />);
+    fireEvent.change(screen.getByLabelText("Business name"), { target: { value: "Acme" } });
+    await waitFor(() => expect(screen.getByText("agents@acme.thelightbulb.company")).toBeInTheDocument());
+    expect(screen.getByRole("button", { name: "Continue" })).toBeDisabled();
+  });
+  it("sends an account that already has a business back to /voice before any write", async () => {
+    clerk.config = { business: "Acme", live: true };
+    clerk.apiGet.mockImplementation(async () => ({ slug: "other", available: true, reason: null, domain: "thelightbulb.company" }));
+    render(<OnboardingPage />);
+    await waitFor(() => expect(clerk.replace).toHaveBeenCalledWith("/voice"));
+    fireEvent.change(screen.getByLabelText("Business name"), { target: { value: "Other" } });
+    await waitFor(() => expect(screen.getByText("agents@other.thelightbulb.company")).toBeInTheDocument());
+    expect(screen.getByRole("button", { name: "Continue" })).toBeDisabled();
+    fireEvent.submit(screen.getByRole("button", { name: "Continue" }).closest("form")!);
+    expect(clerk.apiPost).not.toHaveBeenCalled();
+    expect(clerk.save).not.toHaveBeenCalled();
+  });
+  it("writes nothing to the assistant when the claim fails, and says so", async () => {
+    const { ApiError } = await vi.importActual<typeof import("@lightbulb/shared")>("@lightbulb/shared");
+    clerk.apiGet.mockImplementation(async () => ({ slug: "acme", available: true, reason: null, domain: "thelightbulb.company" }));
+    clerk.apiPost.mockImplementation(async (path: string) => {
+      if (path === "/company/slug/claim") throw new ApiError(500, { detail: "boom" }, "boom");
+      return {};
+    });
+    render(<OnboardingPage />);
+    fireEvent.change(screen.getByLabelText("Business name"), { target: { value: "Acme" } });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("We couldn't set up your business. Please try again.");
+    expect(clerk.save).not.toHaveBeenCalled();
+    expect(clerk.replace).not.toHaveBeenCalled();
+  });
+  it("says so when the assistant's setup cannot be read, instead of a silent disabled button", () => {
+    clerk.config = undefined;
+    clerk.configError = new Error("offline");
+    render(<OnboardingPage />);
+    expect(screen.getByRole("alert")).toHaveTextContent("We couldn't load your setup. Reload the page to try again.");
+  });
+  it("claim went through, the save failed, the page reloaded: setup finishes with the same address and no second slug", async () => {
+    const { ApiError } = await vi.importActual<typeof import("@lightbulb/shared")>("@lightbulb/shared");
+    let claimedBy: string | null = null; // the server's slug table, for one slug
+    clerk.apiGet.mockImplementation(async (path: string) => {
+      const slug = new URLSearchParams(path.split("?")[1]).get("slug");
+      return { slug, available: !claimedBy, reason: claimedBy ? "taken" : null, domain: "thelightbulb.company" };
+    });
+    clerk.apiPost.mockImplementation(async (path: string) => {
+      if (path === "/company/slug/hold" && claimedBy) throw new ApiError(409, { detail: "slug_taken" }, "slug_taken");
+      if (path === "/company/slug/claim") claimedBy = "user_a"; // replays for the same tenant succeed
+      return {};
+    });
+    clerk.save.mockRejectedValueOnce(new Error("offline"));
+    const first = render(<OnboardingPage />);
+    fireEvent.change(screen.getByLabelText("Business name"), { target: { value: "Acme" } });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("We couldn't set up your business. Please try again.");
+    first.unmount(); // reload
+
+    render(<OnboardingPage />);
+    fireEvent.change(screen.getByLabelText("Business name"), { target: { value: "Acme" } });
+    await waitFor(() => expect(screen.getByText("agents@acme.thelightbulb.company")).toBeInTheDocument());
+    expect(screen.queryByText("That address is taken. Try another.")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    await waitFor(() => expect(clerk.replace).toHaveBeenCalledWith("/voice"));
+    const slugs = clerk.apiPost.mock.calls.filter(([p]) => p !== "/company/source").map(([p, b]) => [p, (b as { slug: string }).slug]);
+    expect(slugs).toEqual([["/company/slug/hold", "acme"], ["/company/slug/claim", "acme"], ["/company/slug/claim", "acme"]]);
+    expect(clerk.save).toHaveBeenLastCalledWith({ business: "Acme", onboardingStep: 1 });
+  });
+  it("on another device, a hold refused for the person's own claimed address is confirmed by the claim", async () => {
+    const { ApiError } = await vi.importActual<typeof import("@lightbulb/shared")>("@lightbulb/shared");
+    clerk.apiGet.mockImplementation(async () => ({ slug: "acme", available: true, reason: null, domain: "thelightbulb.company" }));
+    clerk.apiPost.mockImplementation(async (path: string) => {
+      if (path === "/company/slug/hold") throw new ApiError(409, { detail: "slug_taken" }, "slug_taken");
+      return {};
+    });
+    render(<OnboardingPage />);
+    fireEvent.change(screen.getByLabelText("Business name"), { target: { value: "Acme" } });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    await waitFor(() => expect(clerk.replace).toHaveBeenCalledWith("/voice"));
+    expect(clerk.apiPost).toHaveBeenCalledWith("/company/slug/claim", { slug: "acme", name: "Acme" });
   });
   it("lets the owner edit the slug, and blocks creation while it is taken", async () => {
     clerk.apiGet.mockImplementation(async (path: string) => {
@@ -157,7 +211,7 @@ describe("workspace onboarding", () => {
     await new Promise((r) => setTimeout(r, 20));
     expect(screen.getByText("agents@abc.thelightbulb.company")).toBeInTheDocument();
   });
-  it("a lost race says so and never creates the org", async () => {
+  it("a lost race says so and saves nothing", async () => {
     const { ApiError } = await vi.importActual<typeof import("@lightbulb/shared")>("@lightbulb/shared");
     clerk.apiGet.mockImplementation(async () => ({ slug: "acme", available: true, reason: null, domain: "thelightbulb.company" }));
     clerk.apiPost.mockRejectedValue(new ApiError(409, { detail: "slug_taken" }, "slug_taken"));
@@ -166,75 +220,7 @@ describe("workspace onboarding", () => {
     await waitFor(() => expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled());
     fireEvent.click(screen.getByRole("button", { name: "Continue" }));
     await waitFor(() => expect(screen.getByText("That address is taken. Try another.")).toBeInTheDocument());
-    expect(clerk.createOrganization).not.toHaveBeenCalled();
-  });
-  it("offers Clerk selection instead of activating an arbitrary membership", () => {
-    clerk.memberships = [{ organization: { id: "org_a" } }, { organization: { id: "org_b" } }];
-    render(<OnboardingPage />);
-    expect(screen.getByRole("heading", { name: "Choose your business" })).toBeInTheDocument();
-    expect(clerk.selectProps).toHaveBeenCalledWith(expect.objectContaining({ hidePersonal: true, afterSelectOrganizationUrl: "/onboarding" }));
-    expect(clerk.setActive).not.toHaveBeenCalled();
-  });
-  it("activates the only membership, then waits for UI and auth agreement before continuing", async () => {
-    clerk.memberships = [{ organization: { id: "org_a" } }];
-    const { rerender } = render(<OnboardingPage />);
-    await waitFor(() => expect(clerk.setActive).toHaveBeenCalledWith({ organization: "org_a" }));
+    expect(clerk.save).not.toHaveBeenCalled();
     expect(clerk.replace).not.toHaveBeenCalled();
-    clerk.organization = { id: "org_a" }; rerender(<OnboardingPage />);
-    expect(clerk.replace).not.toHaveBeenCalled();
-    clerk.orgId = "org_a"; rerender(<OnboardingPage />);
-    await waitFor(() => expect(clerk.replace).toHaveBeenCalledWith("/voice"));
-    expect(clerk.update).not.toHaveBeenCalled();
-  });
-  it("accepts invitations before any existing workspace and activates the invited workspace", async () => {
-    clerk.organization = { id: "org_old" }; clerk.orgId = "org_old";
-    clerk.memberships = [{ organization: { id: "org_old" } }];
-    const accept = vi.fn().mockResolvedValue(undefined);
-    clerk.invitations = [{ id: "inv_1", publicOrganizationData: { id: "org_invited", name: "Invited workspace" }, accept }];
-    render(<OnboardingPage />);
-    expect(clerk.replace).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole("button", { name: "Accept" }));
-    await waitFor(() => expect(clerk.setActive).toHaveBeenCalledWith({ organization: "org_invited" }));
-    expect(accept).toHaveBeenCalledOnce();
-    expect(clerk.revalidateInvitations).toHaveBeenCalled();
-    expect(clerk.revalidateMemberships).toHaveBeenCalled();
-    expect(screen.queryByLabelText("Business name")).not.toBeInTheDocument();
-    expect(clerk.update).not.toHaveBeenCalled();
-  });
-  it("shows an actionable error when invitation acceptance fails", async () => {
-    clerk.invitations = [{ id: "inv_1", publicOrganizationData: { id: "org_invited", name: "Invited workspace" }, accept: vi.fn().mockRejectedValue(new Error("offline")) }];
-    render(<OnboardingPage />);
-    fireEvent.click(screen.getByRole("button", { name: "Accept" }));
-    expect(await screen.findByRole("alert")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Accept" })).toBeEnabled();
-    expect(clerk.setActive).not.toHaveBeenCalled();
-  });
-  it("holds the invited workspace through activation failure instead of redirecting to the old one", async () => {
-    clerk.organization = { id: "org_old" }; clerk.orgId = "org_old";
-    clerk.memberships = [{ organization: { id: "org_old" } }];
-    clerk.invitations = [{ id: "inv_1", publicOrganizationData: { id: "org_invited", name: "Invited workspace" }, accept: vi.fn().mockResolvedValue(undefined) }];
-    clerk.revalidateInvitations.mockImplementation(async () => { clerk.invitations = []; });
-    clerk.setActive.mockRejectedValueOnce(new Error("offline"));
-    render(<OnboardingPage />);
-    fireEvent.click(screen.getByRole("button", { name: "Accept" }));
-    expect(await screen.findByRole("alert")).toBeInTheDocument();
-    expect(clerk.replace).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
-    await waitFor(() => expect(clerk.setActive).toHaveBeenCalledTimes(2));
-    expect(clerk.setActive).toHaveBeenLastCalledWith({ organization: "org_invited" });
-  });
-  it("allows a second invitation after the first workspace has been activated", async () => {
-    const accepted = vi.fn().mockResolvedValue(undefined);
-    clerk.invitations = [
-      { id: "inv_1", publicOrganizationData: { id: "org_a", name: "A" }, accept: accepted },
-      { id: "inv_2", publicOrganizationData: { id: "org_b", name: "B" }, accept: accepted },
-    ];
-    clerk.revalidateInvitations.mockImplementation(async () => { clerk.invitations = clerk.invitations.slice(1); });
-    render(<OnboardingPage />);
-    fireEvent.click(screen.getAllByRole("button", { name: "Accept" })[0]);
-    await waitFor(() => expect(clerk.setActive).toHaveBeenCalledWith({ organization: "org_a" }));
-    expect(screen.getByRole("button", { name: "Accept" })).toBeEnabled();
-    fireEvent.click(screen.getByRole("button", { name: "Accept" }));
-    await waitFor(() => expect(clerk.setActive).toHaveBeenCalledWith({ organization: "org_b" }));
   });
 });

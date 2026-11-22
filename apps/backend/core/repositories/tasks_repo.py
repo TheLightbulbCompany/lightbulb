@@ -658,10 +658,11 @@ async def list_partition(ws: str) -> list[dict]:
         kwargs["ExclusiveStartKey"] = page["LastEvaluatedKey"]
 
 
-async def delete_partition(ws: str) -> int:
-    """Delete every row under `WS#{ws}` (META included) and the agent-id pointers that name `ws`; the count."""
+async def delete_partition(ws: str, rows: list[dict]) -> int:
+    """Delete `rows` (the partition `list_partition` read, META included) and the agent-id pointers that still
+    name `ws`; the count."""
     table = _table()
-    keys = [{"pk": r["pk"], "sk": r["sk"]} for r in await list_partition(ws)]
+    keys = [{"pk": r["pk"], "sk": r["sk"]} for r in rows]
     for k in [k for k in keys if k["sk"].startswith(ts.agent_sk(""))]:
         pointer = {"pk": ts.agent_owner_pk(k["sk"].removeprefix(ts.agent_sk(""))), "sk": ts.AGENT_OWNER_SK}
         resp = await run_in_thread(table.get_item, Key=pointer, ConsistentRead=True)

@@ -260,57 +260,97 @@ def _attempts(table, ws: str) -> dict[str, tuple[str, str]]:
     return runs
 
 
+POOL = "arn:aws:bedrock-agentcore:us-east-1:000000000000:runtime/pool"
+
+
 @pytest.fixture
 def runtime(monkeypatch):
+    """The stop door (`hermes_provisioning.stop_runtime_session`) as a recorder, the shared pool configured, no
+    session-ledger rows, and no containers row read at all: the stop must not need one."""
+    from core.config import settings
     from core.engine import api as engine_api
 
-    from core.config import settings
-
-    monkeypatch.setattr(settings, "HERMES_SHARED_RUNTIME_ARN", "arn:aws:bedrock-agentcore:us-east-1:0:runtime/pool")
-    container = AsyncMock(return_value={"owner_id": A, "status": "running"})
+    monkeypatch.setattr(settings, "HERMES_SHARED_RUNTIME_ARN", POOL)
     stop = AsyncMock(return_value=True)
-    monkeypatch.setattr(engine_api.container_repo, "get_by_owner_id", container)
-    monkeypatch.setattr(engine_api.runtime_runs, "stop_task_session", stop)
-    return SimpleNamespace(container=container, stop=stop)
+    ledger: dict[str, dict] = {}
+    monkeypatch.setattr(engine_api.hermes_provisioning, "stop_runtime_session", stop)
+    monkeypatch.setattr(
+        engine_api.container_repo, "get_session_sync", lambda o, *, task_id=None: ledger.get(task_id, {})
+    )
+    monkeypatch.setattr(engine_api.container_repo, "get_by_owner_id", AsyncMock(side_effect=AssertionError("no row")))
+    return SimpleNamespace(stop=stop, ledger=ledger)
+
+
+def _a_rows(table) -> set:
+    return {r for r in _rows(table) if r[0] == ts.ws_pk(A)}
 
 
 @pytest.mark.asyncio
 async def test_open_task_sessions_are_stopped_while_their_rows_name_them(world, runtime):
     runs = _attempts(world.table, A)
+    runtime.ledger[runs["own"][0]] = {"arn": "arn:legacy-writer"}  # the ledger's writer wins over the pool
     seen_rows = []
-    runtime.stop.side_effect = lambda *a: seen_rows.append(len(_rows(world.table))) or True
+    runtime.stop.side_effect = lambda *a, **k: seen_rows.append(len(_a_rows(world.table))) or True
 
     detail = await account_wipe.wipe_engine_state(A)
 
-    runtime.stop.assert_awaited_once_with(A, *runs["own"])  # not the workspace-session or ended one
-    assert seen_rows and seen_rows[0] > 0  # stopped before the partition went
-    assert "stopped 1 task session(s)" in detail
-    assert not {r for r in _rows(world.table) if r[0] == ts.ws_pk(A)}
+    # only the live attempt in its own task session; not the workspace-session one, not the ended one
+    runtime.stop.assert_awaited_once_with(A, "arn:legacy-writer", task_id=runs["own"][0])
+    assert seen_rows[0] > 0  # stopped before the partition went
+    assert "stopped 1 task session(s)" in detail and not _a_rows(world.table)
 
 
 @pytest.mark.asyncio
-async def test_an_unconfirmed_task_stop_keeps_the_rows_for_a_rerun(world, runtime):
+async def test_a_failed_stop_survives_the_runtime_teardown_and_a_rerun_stops_it(world, runtime):
+    """The step fails, the wipe's runtime step still runs and deletes the containers row (never read here), and the
+    re-run stops the session from its row and the pool before deleting anything."""
     runs = _attempts(world.table, A)
     runtime.stop.return_value = False
 
     with pytest.raises(RuntimeError, match=runs["own"][0]):
         await account_wipe.wipe_engine_state(A)
-    assert {r for r in _rows(world.table) if r[0] == ts.ws_pk(A)}  # kept: they name the session
+    assert _a_rows(world.table)  # kept: they name the session
 
+    runtime.stop.reset_mock()
     runtime.stop.return_value = True
     await account_wipe.wipe_engine_state(A)
-    assert not {r for r in _rows(world.table) if r[0] == ts.ws_pk(A)}
+    runtime.stop.assert_awaited_once_with(A, POOL, task_id=runs["own"][0])
+    assert not _a_rows(world.table)
 
 
 @pytest.mark.asyncio
-async def test_no_runtime_left_means_no_task_session_to_stop(world, runtime):
-    _attempts(world.table, A)
-    runtime.container.return_value = None  # the runtime step already ran
+async def test_an_attempt_written_after_the_first_read_is_stopped(world, runtime):
+    from core.services import runtime_transport
 
+    _attempts(world.table, A)
+    late = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{A}/late"))
+
+    def begin_attempt_lands(*a, **k):  # a terminated workflow's in-flight begin_attempt writes after the read
+        if k["task_id"] != late:
+            world.table.put_item(
+                Item={"pk": ts.ws_pk(A), "sk": ts.attempt_sk(late, 1), "type": "attempt", "taskId": late, "n": 1,
+                      "runId": "r", "sessionId": runtime_transport.session_id_for(A, late), "status": "dispatched"},
+            )  # fmt: skip
+        return True
+
+    runtime.stop.side_effect = begin_attempt_lands
     await account_wipe.wipe_engine_state(A)
 
+    assert late in {c.kwargs["task_id"] for c in runtime.stop.await_args_list}
+    assert not _a_rows(world.table)
+
+
+@pytest.mark.asyncio
+async def test_no_runtime_arn_with_open_task_sessions_fails_and_keeps_the_rows(world, runtime, monkeypatch):
+    from core.config import settings
+
+    runs = _attempts(world.table, A)
+    monkeypatch.setattr(settings, "HERMES_SHARED_RUNTIME_ARN", "")
+
+    with pytest.raises(RuntimeError, match=runs["own"][0]):
+        await account_wipe.wipe_engine_state(A)
     runtime.stop.assert_not_awaited()
-    assert not {r for r in _rows(world.table) if r[0] == ts.ws_pk(A)}
+    assert _a_rows(world.table)
 
 
 @pytest.mark.asyncio

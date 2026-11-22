@@ -11,6 +11,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import boto3
+import httpx
 import pytest
 from moto import mock_aws
 from temporalio.service import RPCError, RPCStatusCode
@@ -114,15 +115,17 @@ def world(monkeypatch):
         }
         owned = {A: [*(r for r in rooms if r.startswith("room-a-")), "room-shared"], B: ["room-b"]}
         leave = AsyncMock()
+        gone = AsyncMock(return_value=True)  # Recall: the ended meeting's bot is done
         connections = AsyncMock(return_value=2)
         with (
             patch.object(account_wipe.messaging_repo, "list_owner_room_ids", AsyncMock(side_effect=owned.get)),
             patch.object(account_wipe.messaging_repo, "get_room", AsyncMock(side_effect=rooms.get)),
             patch("core.voice.meetings.records.meeting_bots.leave", leave),
+            patch("core.voice.meetings.records.meeting_bots.gone", gone),
             patch("core.voice.meetings.records.livekit_huddles.close_room", AsyncMock()),
             patch.object(account_wipe.connection_service, "delete_all_for_user", connections),
         ):
-            yield SimpleNamespace(table=table, temporal=fake, leave=leave, connections=connections)
+            yield SimpleNamespace(table=table, temporal=fake, leave=leave, gone=gone, connections=connections)
         temporal_client.set_client(None)
 
 
@@ -133,8 +136,10 @@ async def test_wipe_engine_state_clears_tasks_schedules_bots(world):
     assert not {r for r in _rows(world.table) if A in r[0] or r[0] == ts.agent_owner_pk(f"{A}-ag1")}
     assert set(world.temporal.terminated) == _workflows(A)
     assert ts.schedule_workflow_id(A, "s1") not in world.temporal.schedules
-    # every bot still on a meeting row is pulled, a cancelled or failed one too; only an ended meeting's is left
+    # every bot still on a meeting row is pulled, a cancelled or failed one too; an ended meeting's only if Recall
+    # says it is not done (asked once)
     assert sorted(c.args[0] for c in world.leave.await_args_list) == ["bot-a1", "bot-a2", "bot-a4", "bot-a5"]
+    world.gone.assert_awaited_once_with("bot-a3")
     world.connections.assert_awaited_once_with(A)
     assert "terminated 6 workflow(s)" in detail and "deleted 1 schedule(s), 5 tasks row(s)" in detail
 
@@ -222,7 +227,6 @@ async def test_a_temporal_failure_still_reports_the_stuck_bot_ids(world):
 )
 async def test_a_bot_already_gone_is_done(monkeypatch, caplog, answers):
     """A re-run of a wipe whose rooms survived meets bots Recall no longer has; that is success, not a stuck bot."""
-    import httpx
 
     from core.voice.meetings import meeting_bots
 
@@ -370,3 +374,47 @@ async def test_the_partition_is_read_strongly_consistent(world, monkeypatch):
     monkeypatch.setattr(tasks_repo, "_table", lambda: _Spy())
     await tasks_repo.list_partition(A)
     assert reads == [True]
+
+
+@pytest.mark.asyncio
+async def test_an_ended_meeting_whose_bot_is_still_in_the_call_is_pulled(world):
+    """The idle leave marks the meeting ended before pulling the bot; when that pull failed the bot is still there."""
+    world.gone.return_value = False
+
+    await account_wipe.wipe_engine_state(A)
+
+    assert "bot-a3" in {c.args[0] for c in world.leave.await_args_list}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "answer, done",
+    [
+        (httpx.Response(404), True),
+        (httpx.Response(200, json={"status_changes": [{"code": "in_call_recording"}, {"code": "done"}]}), True),
+        (httpx.Response(200, json={"status_changes": [{"code": "in_call_recording"}]}), False),
+    ],
+)
+async def test_gone_asks_recall(monkeypatch, answer, done):
+    from core.voice.meetings import meeting_bots
+
+    monkeypatch.setattr(meeting_bots, "_transport", httpx.MockTransport(lambda r: answer))
+    assert await meeting_bots.gone("bot-x") is done
+
+
+@pytest.mark.asyncio
+async def test_a_later_attempt_of_a_task_already_stopped_is_stopped_too(world, runtime):
+    """Pass 1 stops attempt 1; attempt 2 of the same task lands meanwhile, under the same session id."""
+    runs = _attempts(world.table, A)
+    task_id = runs["own"][0]
+
+    def attempt_two_lands(*a, **k):
+        item = dict(world.table.get_item(Key={"pk": ts.ws_pk(A), "sk": ts.attempt_sk(task_id, 1)})["Item"])
+        world.table.put_item(Item={**item, "sk": ts.attempt_sk(task_id, 2), "n": 2, "runId": "r2"})
+        return True
+
+    runtime.stop.side_effect = attempt_two_lands
+    await account_wipe.wipe_engine_state(A)
+
+    assert [c.kwargs["task_id"] for c in runtime.stop.await_args_list] == [task_id, task_id]
+    assert not _a_rows(world.table)

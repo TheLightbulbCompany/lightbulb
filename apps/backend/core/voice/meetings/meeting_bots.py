@@ -193,6 +193,17 @@ async def leave(bot_id: str) -> None:
         logger.warning("meeting bot %s: Recall has no such bot (404), counted as gone", bot_id)
 
 
+async def gone(bot_id: str) -> bool:
+    """Whether Recall is done with the bot: its last status is an ending one, or it has no such bot (404)."""
+    try:
+        bot = await _call("GET", f"/api/v1/bot/{bot_id}/")
+    except RecallError as exc:
+        if exc.code != "404":
+            raise
+        return True
+    return (bot.get("status_changes") or [{}])[-1].get("code") in _ENDED
+
+
 async def say(bot_id: str, text: str) -> None:
     """One line in the meeting's chat, to everyone (Meet takes 500 characters)."""
     await _call("POST", f"/api/v1/bot/{bot_id}/send_chat_message/", {"to": "everyone", "message": text[:500]})

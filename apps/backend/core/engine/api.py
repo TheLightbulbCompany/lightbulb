@@ -957,18 +957,18 @@ async def delete_tenant(tenant_id: str) -> dict[str, int]:
     # Terminating a TaskWorkflow skips its attempt cleanup, and a run in its own task session outlives the
     # workspace session the runtime teardown stops (the pool is shared): stop each one while its row names it.
     # Twice: a terminated workflow's in-flight `begin_attempt` can still write an Attempt after the first read.
-    stopped: set[str] = set()
+    stopped: set[tuple[str, int]] = set()  # by attempt: a later attempt can restart the session under the same id
     unstopped: list[str] = []
     for _ in range(2):
         rows = await tasks_repo.list_partition(tenant_id)
         for att in rows:
-            task_id = att.get("taskId")
-            if att.get("type") != "attempt" or att.get("status") == "ended" or task_id in stopped:
+            task_id, attempt = att.get("taskId"), (att.get("taskId"), int(att.get("n") or 0))
+            if att.get("type") != "attempt" or att.get("status") == "ended" or attempt in stopped:
                 continue
             if not learning.is_task_session_attempt(tenant_id, task_id, att):
                 continue  # a workspace-session run is stopped with that session by the runtime teardown
             if await _stop_task_session(tenant_id, task_id):
-                stopped.add(task_id)
+                stopped.add(attempt)
             elif task_id not in unstopped:
                 unstopped.append(task_id)
     if unstopped:  # keep the rows that name them, so a re-run stops them

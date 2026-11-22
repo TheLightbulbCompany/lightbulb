@@ -177,9 +177,12 @@ async def with_link(owner_id: str, room_id: str, task: dict, line: str) -> str:
 
 async def end_meeting(room_id: str, meeting: dict) -> None:
     """The meeting stops: a booked bot is cancelled or a joined one leaves (`meeting_bots.leave`), and the Meet's
-    LiveKit room closes (best effort). A cancelled or failed meeting that still holds a bot id is one whose earlier
-    leave failed, so it is pulled too. Raises a `RecallError` when Recall refuses."""
-    if (bot := meeting.get("recallBotId")) and meeting.get("status") != "ended":
+    LiveKit room closes (best effort). Every bot id still on the row is pulled: a cancelled or failed meeting holding
+    one is one whose earlier leave failed, and an ended meeting keeps its bot id (the idle leave marks it ended before
+    pulling the bot, and that pull can fail), so an ended one is asked of Recall first (one GET). Raises a
+    `RecallError` when Recall refuses."""
+    bot = meeting.get("recallBotId")
+    if bot and not (meeting.get("status") == "ended" and await meeting_bots.gone(bot)):
         await meeting_bots.leave(bot)
     await livekit_huddles.close_room(room_id, meet=True)
 

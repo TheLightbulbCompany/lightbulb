@@ -475,12 +475,13 @@ async def test_a_failed_create_meters_the_run_it_left_behind(world, monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_workspace_actor_person_task_is_clamped_in_an_org_only(world):
+async def test_a_system_actor_person_task_is_clamped(world):
     mail = {"triggerId": "mail:m1", "source": "mail", "ref": {"text": "hi"}}
     org = await acts._ensure_task(
-        WS, ts.new_task_id(), {**mail, "actorUserId": WS}, "shared", "queued", title="x", visibility="person"
-    )
-    assert org["audience"]["kind"] == "workspace"  # nobody's user id is an org id
+        WS, ts.new_task_id(), {**mail, "actorUserId": WS, "actorKind": "system"}, "shared", "queued", title="x",
+        visibility="person",
+    )  # fmt: skip
+    assert org["audience"]["kind"] == "workspace"  # no person behind it: nobody to show it to
     me = "user_solo"
     personal = await acts._ensure_task(
         me, ts.new_task_id(), {**mail, "actorUserId": me}, "shared", "queued", title="x", visibility="person"

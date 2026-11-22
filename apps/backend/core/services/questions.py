@@ -339,21 +339,24 @@ async def answerers(
     return ids, rule, base
 
 
-async def can_answer_now(ws: str, q: dict, user_id: str) -> bool:
+async def can_answer_now(ws: str, q: dict, user_id: str, *, member: bool = False) -> bool:
     """Spec 05 §3.3 "re-checks authority": in the stored list AND still a workspace member AND today's rule (from
     today's policy) still admits them. An admin demoted, a member removed, or a policy tightened since the ask
-    (outreach/money moves → admins only) is refused. Fails closed on a row with no stored rule."""
+    (outreach/money moves → admins only) is refused. Fails closed on a row with no stored rule. `member`: the caller
+    already vouches that `user_id` is a workspace member, so only an admin rule reads the members."""
     if user_id not in (q.get("answerers") or []) or not q.get("answererRule"):
         return False
-    members = await _members(ws)
-    if user_id not in members:
+    members = None if member else await _members(ws)
+    if members is not None and user_id not in members:
         return False
     if q["answererRule"] == "inviter":
         return user_id in (q.get("baseAnswerers") or [])
     rule = await _current_rule(ws, q.get("subkind"))
     if rule != "admins" and user_id in (q.get("baseAnswerers") or []):
         return True  # requester, app creator or governance holder, and today's rule still has that seat
-    return rule.endswith("admins") and members[user_id] == "org:admin"
+    if not rule.endswith("admins"):
+        return False
+    return (members if members is not None else await _members(ws)).get(user_id) == "org:admin"
 
 
 @dataclass(frozen=True)

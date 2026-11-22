@@ -42,9 +42,10 @@ async def _is_workspace_member(ws: str, user_id: str) -> bool:
     return ws in await _user_org_ids(user_id)
 
 
-async def can_view(task: dict, user_id: str) -> bool:
+async def can_view(task: dict, user_id: str, *, member: bool = False) -> bool:
     """DM ⇒ requester; room ⇒ current members of the home room; workspace ⇒ every member; plus anyone in
-    `audience.userIds` (Lane Q adds a Question's answerers there when it opens, contracts §5)."""
+    `audience.userIds` (Lane Q adds a Question's answerers there when it opens, contracts §5). `member`: the caller
+    already vouches that `user_id` is the workspace's member (an engine operation's member principal)."""
     if not user_id:
         return False
     audience = task.get("audience") or {}
@@ -54,7 +55,7 @@ async def can_view(task: dict, user_id: str) -> bool:
     if kind == "room" and audience.get("roomId"):
         return await messaging_repo.get_member(audience["roomId"], "human", user_id) is not None
     if kind == "workspace":
-        return await _is_workspace_member(task["pk"].removeprefix("WS#"), user_id)
+        return member or await _is_workspace_member(task["pk"].removeprefix("WS#"), user_id)
     return False
 
 

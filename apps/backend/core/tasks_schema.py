@@ -708,6 +708,8 @@ class Trigger(_Row):
     admission: Admission
     lane: str  # "shared" or router_lane_key(user)
     actor_user_id: str | None = None
+    # "system": no person behind it (mail, text), so a person-visible task has nobody to show it to
+    actor_kind: Literal["person", "system"] | None = None
     routed_to: dict[str, str] | None = None
     received_at: str
     rule_match: RuleMatch | None = None

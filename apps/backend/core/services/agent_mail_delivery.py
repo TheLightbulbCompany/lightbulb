@@ -46,6 +46,7 @@ async def deliver_to_agent(
             # No person sent it: the workspace is the actor, so the tasks it starts have an owner (and a
             # person-visible one is not refused) and are billed like other owner-less usage (`owner_id`).
             actor_user_id=owner_id,
+            actor_kind="system",
             received_at=now,
             created_at=now,
             updated_at=now,

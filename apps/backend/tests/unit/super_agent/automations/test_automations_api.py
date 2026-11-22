@@ -520,6 +520,23 @@ async def test_propose_creates_draft_and_posts_card(internal):
     assert kw["text"].endswith("Turn it on with the button on the card.")  # the card's Turn on, never "confirm"
 
 
+async def test_propose_from_mail_records_the_tenant_as_owner(internal):
+    """A mail task has nobody behind it: the automation it proposes is the tenant's, and its fires say so
+    (`fire_automation` sets `actorKind: "system"`), never a person id nobody holds."""
+    tid = "mail:<m1@example.com>"
+    await tasks_repo.put_trigger(WS, {
+        "triggerId": tid, "source": "mail", "admission": "respond", "lane": "shared", "actorUserId": WS,
+        "actorKind": "system", "ref": {"text": "hi"}, "receivedAt": "2026-11-05T10:00:00+00:00",
+    })  # fmt: skip
+    body = {"name": "Weekly", "instructions": "Summarise the inbox.", "cron": ["0 9 * * 1"], "triggerIds": [tid],
+            "roomId": ROOM, "deliverTo": "none"}  # fmt: skip
+    r = internal.api.client.post(
+        f"/api/v1/internal/automations/{WS}/propose", json=body, headers={"Authorization": "Bearer t"}
+    )
+    assert r.status_code == 200, r.text
+    assert (await repo.get_schedule(WS, r.json()["automationId"]))["ownerUserId"] == WS
+
+
 async def test_a_phone_caller_never_proposes_an_automation(internal):
     tid = ts.trigger_id("voice", "call-1", "turn-0")
     await tasks_repo.put_trigger(WS, {

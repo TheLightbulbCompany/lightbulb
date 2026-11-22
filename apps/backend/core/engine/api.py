@@ -20,12 +20,13 @@ from typing import Any, TypeVar
 
 from fastapi import HTTPException
 from temporalio.client import WorkflowUpdateFailedError
-from temporalio.service import RPCError
+from temporalio.service import RPCError, RPCStatusCode
 
 from core import tasks_schema as ts
 from core.auth import AuthContext
 from core.constants import SYSTEM_ACTOR_ID
-from core.dynamodb import utc_now_iso
+from core.config import settings
+from core.dynamodb import run_in_thread, utc_now_iso
 from core.engine import hooks
 from core.engine.contract import (
     PRODUCT_META_FIELDS,
@@ -46,10 +47,21 @@ from core.engine.contract import (
     start_task_id,
 )
 from core.engine.hooks import EngineEvent
-from core.repositories import effects_repo, messaging_repo, questions_repo, tasks_repo
-from core.services import admission, chat_gate, container_rpc, messaging, questions, task_conversation, tasks_access
+from core.repositories import automations_repo, container_repo, effects_repo, messaging_repo, questions_repo, tasks_repo
+from core.services import (
+    admission,
+    automation_schedule,
+    chat_gate,
+    container_rpc,
+    hermes_provisioning,
+    messaging,
+    questions,
+    task_conversation,
+    tasks_access,
+)
 from core.services.messaging import human_display_name
 from core.temporal import client as temporal_client
+from core.temporal import learning
 from core.temporal.task_questions import AnswerRef
 from core.temporal.types import ActionRequest, StopRequest
 
@@ -914,3 +926,67 @@ def warm(tenant_id: str, agent_ids: list[str], conversation_id: str | None = Non
                 logger.info("voice profile prewarm failed agent=%s", agent_id, exc_info=True)
 
     _fire(wake())
+
+
+# --- terminal wipe ------------------------------------------------------------------------------------------------
+
+#: Every workflow id that names a tenant starts with one of these (`tasks_schema`, `automation_schedule`,
+#: `automation_hooks.keeper_id`, `routers.hooks`). The Router's is exactly `router:{ws}`, terminated by name.
+_TENANT_WORKFLOW_PREFIXES = ("task", "learn", "gwatch", "fire", "hook")
+
+
+async def delete_tenant(tenant_id: str) -> dict[str, int]:
+    """Stop and delete the tenant's engine state, for a terminal wipe: every automation's Temporal Schedule is
+    deleted, every running workflow it names terminated, every open attempt's own task session stopped, then its
+    tasks partition (META included) and agent-id pointers. Idempotent: what is already gone is skipped; a task
+    session that does not confirm its stop raises and keeps the partition. Returns what it did, counted."""
+    if not tenant_id or any(c in tenant_id for c in "'\"\\"):
+        raise ValueError("bad tenant id")
+    client = temporal_client.get_client()
+    names = " OR ".join(f"WorkflowId STARTS_WITH '{p}:{tenant_id}:'" for p in _TENANT_WORKFLOW_PREFIXES)
+
+    async def terminate(wid: str) -> int:
+        try:
+            await client.get_workflow_handle(wid).terminate("account wiped")
+            return 1
+        except RPCError as exc:
+            if exc.status != RPCStatusCode.NOT_FOUND:
+                raise
+            return 0
+
+    schedules = await automations_repo.list_schedules(tenant_id)  # first, so none starts a fire after the scan
+    for row in schedules:
+        await automation_schedule.delete(tenant_id, row["scheduleId"])
+    terminated = await terminate(ts.router_workflow_id(tenant_id))  # by name: no query, no visibility lag
+    async for wf in client.list_workflows(f"ExecutionStatus = 'Running' AND ({names})"):
+        terminated += await terminate(wf.id)
+    # Terminating a TaskWorkflow skips its attempt cleanup, and a run in its own task session outlives the
+    # workspace session the runtime teardown stops (the pool is shared): stop each one while its row names it.
+    # Twice: a terminated workflow's in-flight `begin_attempt` can still write an Attempt after the first read.
+    stopped: set[tuple[str, int]] = set()  # by attempt: a later attempt can restart the session under the same id
+    unstopped: list[str] = []
+    for _ in range(2):
+        rows = await tasks_repo.list_partition(tenant_id)
+        for att in rows:
+            task_id, attempt = att.get("taskId"), (att.get("taskId"), int(att.get("n") or 0))
+            if att.get("type") != "attempt" or att.get("status") == "ended" or attempt in stopped:
+                continue
+            if not learning.is_task_session_attempt(tenant_id, task_id, att):
+                continue  # a workspace-session run is stopped with that session by the runtime teardown
+            if await _stop_task_session(tenant_id, task_id):
+                stopped.add(attempt)
+            elif task_id not in unstopped:
+                unstopped.append(task_id)
+    if unstopped:  # keep the rows that name them, so a re-run stops them
+        raise RuntimeError(f"task session(s) not confirmed stopped: {', '.join(unstopped)}; tasks rows kept")
+    deleted = await tasks_repo.delete_partition(tenant_id, rows)
+    return {"workflows": terminated, "schedules": len(schedules), "sessions": len(stopped), "rows": deleted}
+
+
+async def _stop_task_session(tenant_id: str, task_id: str) -> bool:
+    """Stop a task's own session from its id alone: no containers row needed (a wipe's runtime step may already
+    have deleted it). Its runtime is the one the session ledger names, else the shared pool; with neither, the
+    stop is unconfirmed. A session already gone counts as stopped (`hermes_provisioning.stop_runtime_session`)."""
+    row = await run_in_thread(container_repo.get_session_sync, tenant_id, task_id=task_id)
+    arn = row.get("arn") or settings.HERMES_SHARED_RUNTIME_ARN
+    return bool(arn) and await hermes_provisioning.stop_runtime_session(tenant_id, arn, task_id=task_id)

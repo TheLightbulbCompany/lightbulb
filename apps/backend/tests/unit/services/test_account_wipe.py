@@ -47,6 +47,8 @@ EXPECTED_ORDER = [
     # The gate-token rows go BEFORE the runtime step, which destroys the
     # containers row that holds the only pointers to them.
     "bedrock_gate_tokens",
+    # Meeting bots, Temporal workflows and Schedules, the tasks partition: before the runtime and the rooms go.
+    "engine",
     # One step for the whole runtime: the AgentCore runtime + boot secret, the S3 profile
     # prefix (the owner's CONTENT on this transport), and the containers row.
     # No bedrock_aips / bedrock_role steps either: the owner's Bedrock footprint is reaped
@@ -223,6 +225,7 @@ def wipe_mocks():
     # Real boto3 underneath — the moto-backed tests at the bottom of this file
     # swap the real implementation back in via side_effect.
     gate_tokens_delete = AsyncMock(return_value=3)
+    engine_wipe = AsyncMock(return_value="engine state removed")
 
     # ExitStack, not a parenthesised `with (patch(...), ...)` chain: that
     # form is one statically nested block PER patch and CPython caps those
@@ -263,6 +266,7 @@ def wipe_mocks():
         ("core.services.workspace_memory.delete_person_memory", person_memory_delete),
         ("core.services.account_wipe.clerk_admin.delete_user", clerk_delete),
         ("core.services.account_wipe.delete_gate_token_rows", gate_tokens_delete),
+        ("core.services.account_wipe.wipe_engine_state", engine_wipe),
         ("core.services.account_wipe.list_owner_secret_names", owner_secrets_list),
         ("core.services.account_wipe.delete_owner_secrets", owner_secrets_delete),
         ("core.services.account_wipe.integrations_repo.list_for_owner", integrations_list),
@@ -322,6 +326,7 @@ def wipe_mocks():
             slack_installs_delete=slack_installs_delete,
             slug_delete=slug_delete,
             gate_tokens_delete=gate_tokens_delete,
+            engine_wipe=engine_wipe,
         )
 
 
@@ -638,6 +643,7 @@ async def test_clerk_delete_still_runs_when_every_other_step_fails(wipe_mocks):
     wipe_mocks.slug_delete.side_effect = RuntimeError("ddb down")
     wipe_mocks.messaging_list_rooms.side_effect = RuntimeError("ddb down")
     wipe_mocks.person_memory_delete.side_effect = RuntimeError("memory down")
+    wipe_mocks.engine_wipe.side_effect = RuntimeError("temporal down")
 
     report = await wipe_account(OWNER_ID, actor_admin_id="admin_1")
 

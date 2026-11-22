@@ -175,6 +175,20 @@ async def with_link(owner_id: str, room_id: str, task: dict, line: str) -> str:
     return linked
 
 
+async def end_meeting(room_id: str, meeting: dict) -> None:
+    """The meeting stops: a booked bot is cancelled or a joined one leaves (`meeting_bots.leave`), and the Meet's
+    LiveKit room closes (best effort). Every bot id still on the row is pulled: a cancelled or failed meeting holding
+    one is one whose earlier leave failed, and an ended meeting keeps its bot id (the idle leave marks it ended before
+    pulling the bot, and that pull can fail), so an ended one is asked of Recall first (one GET). Raises a
+    `RecallError` when Recall refuses."""
+    bot = meeting.get("recallBotId")
+    try:
+        if bot and not (meeting.get("status") == "ended" and await meeting_bots.gone(bot)):
+            await meeting_bots.leave(bot)
+    finally:  # the Meet's room closes whatever Recall answered
+        await livekit_huddles.close_room(room_id, meet=True)
+
+
 async def end_deleted(owner_id: str, room_id: str) -> None:
     """A member deleted the meeting's room: the meeting stops. Its bot leaves the call, or its booking is cancelled
     (`meeting_bots.leave`), and the Meet's LiveKit room closes; Recall's terminal status then meters the call to that
@@ -184,9 +198,7 @@ async def end_deleted(owner_id: str, room_id: str) -> None:
         meeting = (conv.annotations.get("meeting") if conv else None) or {}
         if not conv or not conv.deleted or not meeting:
             return
-        if (bot := meeting.get("recallBotId")) and meeting.get("status") not in ("ended", "bot_failed", "cancelled"):
-            await meeting_bots.leave(bot)
-        await livekit_huddles.close_room(room_id, meet=True)
+        await end_meeting(room_id, meeting)
     except Exception:  # noqa: BLE001 -- a RecallError or a transport error: Recall's own leave reaps the bot
         logger.warning("meeting room %s: deleted, but its bot was not pulled", room_id, exc_info=True)
 

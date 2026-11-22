@@ -1214,4 +1214,22 @@ describe("ObservabilityStack: engine service alarms", () => {
     expect(engineDims(alarm)).toBe(true);
     expect(JSON.stringify(alarm.AlarmActions)).toContain("AlertsWarn");
   });
+
+  test("W89 pages in prod after 3 min with no healthy engine target", () => {
+    const prod = Object.values(buildTemplate("prod").findResources("AWS::CloudWatch::Alarm")).map((r: any) => r.Properties);
+    const alarm = prod.find((a) => a.AlarmName?.endsWith("W89-engine-healthy-hosts"));
+    expect(alarm).toMatchObject({
+      MetricName: "HealthyHostCount",
+      Statistic: "Maximum",
+      Period: 60,
+      Threshold: 1,
+      ComparisonOperator: "LessThanThreshold",
+      EvaluationPeriods: 3,
+      DatapointsToAlarm: 3,
+      TreatMissingData: "breaching",
+    });
+    expect(engineDims(alarm)).toBe(true);
+    expect(JSON.stringify(alarm.AlarmActions)).toContain("AlertsPage");
+    expect(JSON.stringify(alarm.AlarmActions)).not.toContain("AlertsWarn");
+  });
 });

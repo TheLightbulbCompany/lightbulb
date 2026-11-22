@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 from fastapi import HTTPException
 
-from core.engine import api
+from core.engine import engine
 from core.engine.contract import LineIn, Principal
 from core.engine.hooks import ToolCall
 
@@ -24,7 +24,7 @@ async def front_desk(call: ToolCall) -> dict:
 
     owner_id, body, trig = call.tenant_id, SimpleNamespace(**call.args), (call.triggers or [None])[0]
     call_id = ((trig or {}).get("ref") or {}).get("callId")
-    conv = await api.get_conversation(owner_id, call_id) if call_id else None
+    conv = await engine.get_conversation(owner_id, call_id) if call_id else None
     if not conv or conv.kind != "call":
         raise HTTPException(status_code=403, detail="not_a_caller_thread")
     try:
@@ -90,7 +90,7 @@ async def transfer_call(call: ToolCall) -> dict:
     call_id = next(iter(calls)) if len(calls) == 1 else None
     if not call_id or any(r.get("roomId") != call_id for r in refs):
         raise HTTPException(status_code=403, detail="not_a_caller")
-    conv = await api.get_conversation(owner_id, call_id)
+    conv = await engine.get_conversation(owner_id, call_id)
     if not conv or conv.kind != "call":
         raise HTTPException(status_code=403, detail="not_a_caller")
     cfg = await vp.agent_config(owner_id)
@@ -103,7 +103,7 @@ async def transfer_call(call: ToolCall) -> dict:
             lambda c: {"handoffMissed": True, "steps": vp._step(c, "Asked for a person; nobody was available")},
         )
         raise HTTPException(status_code=403, detail={"code": "nobody_available"})
-    line = await api.append_line(
+    line = await engine.append_line(
         LineIn(
             tenant_id=owner_id,
             conversation_id=call_id,

@@ -17,7 +17,7 @@ from botocore.exceptions import ClientError
 from core.billing import voice_billing
 from core.config import settings
 from core.dynamodb import get_item, is_cancelled, messaging_table, owner_pk, run_in_thread, transact, utc_now_iso
-from core.engine import api
+from core.engine import engine
 from core.engine.contract import AnnotateIn, ConversationOut, EngineError
 from core.repositories import billing_repo
 from core.voice import store
@@ -78,7 +78,7 @@ def owner_instructions(cfg: dict) -> str:
 
 async def _call(owner_id: str, call_id: str) -> tuple[ConversationOut, dict]:
     """The owner's call conversation and its record, or 404."""
-    conv = await api.get_conversation(owner_id, call_id)
+    conv = await engine.get_conversation(owner_id, call_id)
     if not conv or conv.kind != "call" or not isinstance(conv.annotations.get("call"), dict):
         raise _problem(404, "call_not_found")
     return conv, conv.annotations["call"]
@@ -163,7 +163,7 @@ async def _patch_call(owner_id: str, call_id: str, change) -> dict:
         merged = _scrub({**call, **change(call)})
         merged["callerName"] = real_name(merged.get("callerName"))
         try:
-            await api.annotate(
+            await engine.annotate(
                 AnnotateIn(
                     tenant_id=owner_id, conversation_id=call_id, set={"call": merged}, expected_revision=conv.revision
                 )
@@ -258,7 +258,7 @@ KNOWLEDGE_SOURCE = "you answered this in Needs you"
 
 def call_ask(call_id: str, call: dict, kind: str, question: str = "") -> dict:
     """`task_asks.open_ask`'s arguments for one call Question (a blocking `question`, subkind = the card's kind),
-    but its qid: the task it opens on names it (`api.start_task`), so a retried end opens it once."""
+    but its qid: the task it opens on names it (`engine.start_task`), so a retried end opens it once."""
     who = call.get("callerName") or call.get("caller") or "a caller"
     title = {"didnt_know": f"Answer {who}: {question}", "handoff": f"{who} wanted a person",
              "line_problem": f"{who}'s call hit a problem on the line",
@@ -307,7 +307,7 @@ TO_ADD_MAX, TO_ADD_CHARS = 20, 200  # the Agent page's "questions to add": calle
 async def resolve_call(owner_id: str, call_id: str, by: str) -> None:
     """A call's Question was answered: the call is handled (`resolvedAt`), so Home's
     "Needs you" stops listing it. ponytail: the first answered Question resolves a call that had several."""
-    conv = await api.get_conversation(owner_id, call_id)
+    conv = await engine.get_conversation(owner_id, call_id)
     if not conv or conv.kind != "call":
         return
     await _patch_call(
@@ -686,7 +686,7 @@ async def after_call(owner_id: str, room_id: str, item: dict) -> None:
     Home row shows) so the owner sees what the caller never heard. Thread and progress lines are not answers."""
     if item.get("progress") or item.get("threadRootMessageId") or not (text := (item.get("text") or "").strip()):
         return
-    conv = await api.get_conversation(owner_id, room_id)
+    conv = await engine.get_conversation(owner_id, room_id)
     if not conv or conv.kind != "call" or (conv.annotations.get("call") or {}).get("status") != "ended":
         return
     await _patch_call(

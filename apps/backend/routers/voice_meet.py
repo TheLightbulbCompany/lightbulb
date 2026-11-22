@@ -18,7 +18,7 @@ from typing import Annotated
 from fastapi import APIRouter
 from pydantic import Field
 
-from core.engine import api
+from core.engine import engine
 from core.engine.contract import ConversationOut, LineIn, Principal
 from core.engine.contract import QuestionRef as SaidQuestion
 from core.voice.meetings import meeting_bots, meeting_invites
@@ -44,7 +44,7 @@ def announcement(name: str, company: str) -> str:
 async def _meeting(room_id: str, body: RoomBody, *, with_members: bool = False) -> tuple[str, ConversationOut, dict]:
     room_id = _room_id(room_id)
     _require_room_token(body.roomToken, room_id, body.ownerId)
-    conv = await api.get_conversation(body.ownerId, room_id, with_members=with_members)
+    conv = await engine.get_conversation(body.ownerId, room_id, with_members=with_members)
     if not conv or not conv.annotations.get("meeting"):
         raise _problem(404, "meeting_not_found")
     return room_id, conv, conv.annotations["meeting"]
@@ -75,7 +75,7 @@ async def start(room_id: str, body: StartIn) -> dict:
     return {
         "assistantName": name,
         "title": meeting.get("title") or "Meeting",
-        "after": (await api.read_lines(body.ownerId, room_id, None))["after"],
+        "after": (await engine.read_lines(body.ownerId, room_id, None))["after"],
         "notTranscribed": meeting.get("notTranscribed") or [],
     }
 
@@ -107,7 +107,7 @@ async def ask(room_id: str, body: AskIn) -> dict:
             lambda m: {"askSpeakers": {**dict(list((m.get("askSpeakers") or {}).items())[-49:]), client_id: pid}},
         )
     # an answer to the question just said is still the chat's line, but wakes nobody: the answer is the input
-    line = await api.append_line(
+    line = await engine.append_line(
         LineIn(
             tenant_id=body.ownerId,
             conversation_id=room_id,
@@ -130,7 +130,7 @@ class EventsIn(RoomBody):
 async def events(room_id: str, body: EventsIn) -> dict:
     """The agent messages the meeting's room got after `after`: the voice says each one in the meeting."""
     room_id, _conv, meeting = await _meeting(room_id, body)
-    lines = await api.read_lines(body.ownerId, room_id, body.after)
+    lines = await engine.read_lines(body.ownerId, room_id, body.after)
     return {**lines, "notTranscribed": meeting.get("notTranscribed") or []}
 
 

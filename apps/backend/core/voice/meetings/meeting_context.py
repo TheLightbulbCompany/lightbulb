@@ -15,7 +15,7 @@ import uuid
 import jwt
 
 from core.dynamodb import run_in_thread
-from core.engine import api
+from core.engine import engine
 from core.engine.hooks import NotAuthorized  # the engine's refusal: raised there when `authorize` answers allow=False
 from core.voice import store
 from core.services import clerk_admin
@@ -110,7 +110,7 @@ async def _authorize(owner_id: str, trigger: dict, request: dict | None) -> dict
         or not await enabled(owner_id)
     ):
         raise NotAuthorized("meeting_followups_not_authorized")
-    room = await api.get_conversation(owner_id, request["roomId"], with_members=True)
+    room = await engine.get_conversation(owner_id, request["roomId"], with_members=True)
     entry = occurrence_entry((room.annotations.get("meeting") if room else None) or {}, request["occurrence"])
     if room is None or entry.get("transcriptId") != snapshot["transcriptId"]:
         raise NotAuthorized("not_original_meeting_occurrence")
@@ -174,7 +174,7 @@ async def context(
     verify_grant(grant, owner_id, run_id, trigger_id)
     if section not in {"transcript", "tasks"}:
         raise ValueError("invalid_meeting_context_section")
-    trigger = await api.get_trigger(owner_id, trigger_id)
+    trigger = await engine.get_trigger(owner_id, trigger_id)
     if not trigger:
         raise NotAuthorized("not_meeting_completion")
     request = await authorize(owner_id, trigger)

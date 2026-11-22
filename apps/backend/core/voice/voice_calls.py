@@ -21,7 +21,7 @@ from core.billing import metronome_client, voice_billing
 from core.billing import metronome_fast_gate
 from core.config import settings
 from core.dynamodb import get_table, messaging_table, run_in_thread
-from core.engine import api
+from core.engine import engine
 from core.engine.contract import VOICE_NOTE_TEXT_MAX
 from core.observability.metrics import put_metric
 from core.repositories import container_repo
@@ -267,7 +267,7 @@ async def send_note_saved(owner_id: str, agent_id: str, name: str | None, text: 
     """One notice in every open Live window's room the agent is in."""
     try:
         windows = {r.get("roomId") for r in await _open_windows(owner_id, int(time.time()))}
-        rooms = await asyncio.gather(*(api.get_conversation(owner_id, r, with_members=True) for r in windows))
+        rooms = await asyncio.gather(*(engine.get_conversation(owner_id, r, with_members=True) for r in windows))
     except Exception:  # noqa: BLE001
         logger.warning("voice note notice: rooms unavailable owner=%s", owner_id, exc_info=True)
         return
@@ -322,11 +322,11 @@ async def edit_voice_profile(
     if not run or run.get("agentId") != agent_id:
         raise _problem(404, code="voice_run_not_found")
     speaker = run.get("speakerUserId")
-    room = await api.get_conversation(owner_id, run["roomId"], with_members=True) if speaker else None
+    room = await engine.get_conversation(owner_id, run["roomId"], with_members=True) if speaker else None
     member = next((m for m in room.members if m.get("kind") == "human" and m["id"] == speaker), None) if room else None
     if not member or (member.get("homeOwnerId") or owner_id) != owner_id:
         raise _problem(403, code="not_a_member")  # a guest of a shared room cannot rename our agents
-    roster = await api.get_roster(owner_id)
+    roster = await engine.get_roster(owner_id)
     row = next((r for r in roster if r["id"] == agent_id), None)
     if row is None:
         raise _problem(404, code="voice_run_not_found")

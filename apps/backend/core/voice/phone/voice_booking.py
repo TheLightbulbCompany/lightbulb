@@ -26,7 +26,7 @@ import httpx
 
 from core.config import settings
 from core.dynamodb import get_item, is_cancelled, messaging_table, owner_pk, run_in_thread, transact
-from core.engine import api
+from core.engine import engine
 from core.voice import worker_api
 from core.services.credentials import access_token
 
@@ -101,7 +101,7 @@ async def _line_problem(ws: str, cfg: dict, call_id: str) -> None:
     vp, pk, table, now_s = _vp(), owner_pk(ws), messaging_table(), int(time.time())
     pointer = await get_item(table, pk, _PROBLEM_SK)
     if pointer and pointer.get("taskId"):
-        if (await api.get_task(ws, pointer["taskId"]) or {}).get("status") in _OPEN:
+        if (await engine.get_task(ws, pointer["taskId"]) or {}).get("status") in _OPEN:
             return
     elif pointer and int(pointer.get("claimUntil", 0)) > now_s:
         return  # another failure is raising it now

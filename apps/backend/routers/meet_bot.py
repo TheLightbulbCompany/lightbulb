@@ -7,7 +7,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from core.config import settings
-from core.engine import api
+from core.engine import engine
 from core.voice import livekit_huddles, rooms
 
 router = APIRouter()
@@ -23,7 +23,7 @@ async def session(body: SessionBody):
     if not found:
         raise HTTPException(status_code=401, detail="invalid ticket")
     room_id, nonce = found
-    conv = await api.find_conversation(room_id)
+    conv = await engine.find_conversation(room_id)
     meeting = (conv.annotations.get("meeting") if conv else None) or {}
     if meeting.get("ticketNonce") != nonce or meeting.get("status") not in ("bot_created", "in_call"):
         raise HTTPException(status_code=401, detail="invalid ticket")

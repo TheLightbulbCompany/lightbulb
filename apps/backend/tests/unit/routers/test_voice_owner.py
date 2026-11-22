@@ -9,6 +9,7 @@ from fastapi import HTTPException
 from core.engine.contract import ConversationOut
 from core.repositories import messaging_repo
 from core.services import messaging
+from core.engine import api as engine_api  # the engine side, in this process on either transport
 from routers import voice_owner
 
 ROOM = "7f1d2c3b-0000-4000-8000-000000000002"
@@ -195,7 +196,7 @@ async def test_start_names_the_assistant_its_agent_and_the_first_cursor(m):
     with (
         patch.object(voice_owner, "assistant_name", AsyncMock(return_value="Nova")),
         patch.object(
-            voice_owner.api.messaging_repo, "list_messages_before", AsyncMock(return_value=[{"messageSeq": 41}])
+            engine_api.messaging_repo, "list_messages_before", AsyncMock(return_value=[{"messageSeq": 41}])
         ) as seq,
         patch.object(voice_owner.store, "get_voice_run", AsyncMock(side_effect=[None, {"spoken": 37}])) as gv,
     ):
@@ -209,7 +210,7 @@ async def test_start_names_the_assistant_its_agent_and_the_first_cursor(m):
 async def test_events_are_the_dms_agent_lines_for_the_seated_member_only(m):
     lines = {"messages": [{"id": "a1", "text": "Checking GitHub."}], "after": 6}
     with (
-        patch.object(voice_owner.api, "_agent_lines", AsyncMock(return_value=lines)) as al,
+        patch.object(engine_api, "_agent_lines", AsyncMock(return_value=lines)) as al,
         patch.object(voice_owner.store, "put_voice_run", AsyncMock()) as put,
     ):
         body = voice_owner.EventsIn(ownerId="org_1", roomToken="t", speakerUserId="user_maya", after=5, spoken=5)

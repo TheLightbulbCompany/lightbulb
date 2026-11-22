@@ -99,22 +99,27 @@ ENGINE = [
         f"core/repositories/{m}.py"
         for m in "messaging_repo tasks_repo questions_repo effects_repo automations_repo".split()
     ),
-    *(f"routers/{m}.py" for m in "runtime_internal internal_automations questions tasks messaging".split()),
+    *(
+        f"routers/{m}.py"
+        for m in "runtime_internal internal_automations questions tasks messaging messaging_internal engine_api".split()
+    ),
+    "engine_main.py",
 ]
 #: Lightbulb Phone and Lightbulb Meetings.
 PRODUCT = [
     "core/voice",
     *(
         f"routers/{m}.py"
-        for m in "voice voice_phone voice_meet voice_owner huddles meetings meet_bot meet_audio".split()
+        for m in "voice voice_phone voice_meet voice_owner huddles meetings meet_bot meet_audio engine_callbacks".split()
     ),
 ]
 
 #: Engine modules that import product code, as `file: function: module`: none since engine-service Task 3 (every
 #: engine call into a product goes through `core.engine.hooks`). Never add one.
 KNOWN_ENGINE_TO_PRODUCT: list[str] = []
-#: The engine modules products may import: the contract, the operations and the hooks (to register theirs).
-PRODUCT_MAY_IMPORT = {"core.engine.api", "core.engine.contract", "core.engine.hooks"}
+#: The engine modules products may import: the contract, the operations for this process's transport
+#: (`core.engine.engine`), the hooks (to register theirs) and the wire their callback routes answer on.
+PRODUCT_MAY_IMPORT = {"core.engine", "core.engine.contract", "core.engine.hooks", "core.engine.transport"}
 
 
 def _files(paths: list[str]) -> list[Path]:

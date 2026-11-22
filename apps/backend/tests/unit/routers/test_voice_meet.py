@@ -63,7 +63,7 @@ def m():
         ),
         patch.object(messaging_repo, "get_room", AsyncMock(return_value={"ownerId": "org_1", "meeting": meeting})),
         patch.object(records.livekit_huddles, "set_meet_phase", AsyncMock()) as phase,
-        patch.object(voice_meet.api, "read_lines", AsyncMock(return_value={"messages": [], "after": 41})),
+        patch.object(voice_meet.engine, "read_lines", AsyncMock(return_value={"messages": [], "after": 41})),
     ):
         patched.update(phase=phase, meeting=meeting, say=say)
         yield patched
@@ -518,6 +518,6 @@ async def test_ask_records_who_spoke_before_the_message_exists_and_events_carry_
     ((seen, client_id),) = order
     assert seen == {client_id: "12"}  # already in the meeting's record when the message is created
     m["meeting"]["notTranscribed"] = [{"id": "12", "name": "Sam"}]
-    with patch.object(voice_meet.api, "read_lines", AsyncMock(return_value={"messages": [], "after": 3})):
+    with patch.object(voice_meet.engine, "read_lines", AsyncMock(return_value={"messages": [], "after": 3})):
         out = await voice_meet.events(ROOM, voice_meet.EventsIn(ownerId="org_1", roomToken="t", after=3))
     assert out == {"messages": [], "after": 3, "notTranscribed": [{"id": "12", "name": "Sam"}]}

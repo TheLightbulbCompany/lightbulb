@@ -10,7 +10,7 @@ from __future__ import annotations
 import hashlib
 
 from core.dynamodb import run_in_thread
-from core.engine import api
+from core.engine import engine
 from core.engine.contract import LineIn, Principal
 from core.services import webhook_dedup
 from core.voice.meetings import meeting_bots, meeting_invites
@@ -22,7 +22,7 @@ class NotCurrentMeeting(ValueError):
 
 async def _current(owner_id: str, trigger_ids: list[str]) -> tuple[list[dict | None], list[dict], str]:
     """The triggers, their refs and their room, when every trigger came from one meeting's room."""
-    triggers = [await api.get_trigger(owner_id, tid) for tid in trigger_ids]
+    triggers = [await engine.get_trigger(owner_id, tid) for tid in trigger_ids]
     refs = [(t or {}).get("ref") or {} for t in triggers]
     rooms = {r.get("roomId") for r in refs}
     room_id = next(iter(rooms)) if len(rooms) == 1 else None
@@ -33,7 +33,7 @@ async def _current(owner_id: str, trigger_ids: list[str]) -> tuple[list[dict | N
 
 async def _live(owner_id: str, room_id: str, refs: list[dict], *, with_members: bool = False):
     """The room and its meeting while that meeting's bot is in the call the refs came from (under the lease)."""
-    conv = await api.get_conversation(owner_id, room_id, with_members=with_members)
+    conv = await engine.get_conversation(owner_id, room_id, with_members=with_members)
     meeting = (conv.annotations.get("meeting") if conv else None) or {}
     bot_id, occurrence = meeting.get("recallBotId"), meeting.get("inCallAt")
     if (
@@ -83,7 +83,7 @@ async def send(owner_id: str, trigger_ids: list[str], text: str) -> dict:
             status = (await webhook_dedup._read_event(key)).get("chat_status", "unknown")
         out = {"status": status, "replayed": fresh is webhook_dedup.WebhookDedupResult.ALREADY_SEEN}
         if status == "sent":
-            line = await api.append_line(
+            line = await engine.append_line(
                 LineIn(
                     tenant_id=owner_id,
                     conversation_id=room_id,
@@ -105,7 +105,7 @@ async def stop_transcribing(owner_id: str, trigger_ids: list[str], participant_i
     _, refs, room_id = await _current(owner_id, trigger_ids)
     async with meeting_invites.meeting_lease(room_id):
         _, meeting = await _live(owner_id, room_id, refs)
-        rows = [row or {} for row in await api.get_lines(owner_id, room_id, [r.get("messageId") for r in refs])]
+        rows = [row or {} for row in await engine.get_lines(owner_id, room_id, [r.get("messageId") for r in refs])]
         speakers = {(meeting.get("askSpeakers") or {}).get(row.get("clientMessageId")) for row in rows}
         if len(speakers) != 1 or not (pid := next(iter(speakers))) or participant_id not in ("", pid):
             raise NotCurrentMeeting("not_the_speaker")

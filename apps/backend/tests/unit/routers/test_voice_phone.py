@@ -14,6 +14,7 @@ from core.repositories import messaging_repo, tasks_repo
 from core.voice import store
 from core.services import admission, task_conversation
 from core.voice.phone import calls as phone_calls
+from core.engine import api as engine_api  # the engine side, in this process on either transport
 from routers import voice_phone
 
 SECRET = "s3cret"
@@ -64,7 +65,7 @@ def client():
             patch.object(messaging_repo.settings, "MESSAGING_TABLE", "test-messaging"),
             patch.object(messaging_repo.settings, "HUDDLE_WORKER_SECRET", SECRET),
             patch.object(
-                voice_phone.api,
+                voice_phone.engine,
                 "start_task",
                 AsyncMock(return_value=StartOut(trigger_id="t", task_id="k", created=True)),
             ) as sw,
@@ -1050,7 +1051,7 @@ FRONT = {"kind": "agent", "id": "agent_front", "displayName": "Lightbulb", "ment
 def router_seat():
     with (
         patch.object(task_conversation, "_front_agent", AsyncMock(return_value=FRONT)),
-        patch.object(voice_phone.api, "warm") as wake,
+        patch.object(voice_phone.engine, "warm") as wake,
         patch.object(admission, "enqueue_trigger", AsyncMock(return_value=True)) as enq,
     ):
         yield wake, enq
@@ -1258,7 +1259,7 @@ async def test_call_events_are_lightbulbs_lines_only(client, router_seat):
     call = await _start(client)
     base = f"/api/v1/internal/voice/calls/{call['callId']}"
     client.post(f"{base}/turn", json={"n": 0, "text": "Open Sunday?"}, headers=W)
-    with patch.object(voice_phone.api, "_agent_lines", AsyncMock(return_value={"messages": [], "after": 1})) as lines:
+    with patch.object(engine_api, "_agent_lines", AsyncMock(return_value={"messages": [], "after": 1})) as lines:
         assert client.post(f"{base}/events", json={"after": 0}, headers=W).json() == {"messages": [], "after": 1}
     lines.assert_awaited_once_with("org_1", call["callId"], 0)
     real = client.post(f"{base}/events", json={"after": 0}, headers=W).json()

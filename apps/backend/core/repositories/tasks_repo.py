@@ -642,21 +642,26 @@ async def put_slots(ws: str, leases: dict[str, int], waiters: list[str], *, expe
 # --- Terminal wipe -----------------------------------------------------------------------------------
 
 
-async def delete_partition(ws: str) -> int:
-    """Delete every row under `WS#{ws}` (META included) and the agent-id pointers that name `ws`; the count."""
-    table = _table()
+async def list_partition(ws: str) -> list[dict]:
+    """Every row under `WS#{ws}`, read strongly consistent (a row written just before the read is in it)."""
     kwargs: dict[str, Any] = {
         "KeyConditionExpression": "pk = :pk",
         "ExpressionAttributeValues": {":pk": ts.ws_pk(ws)},
-        "ProjectionExpression": "pk, sk",
+        "ConsistentRead": True,
     }
-    keys: list[dict] = []
+    rows: list[dict] = []
     while True:
-        page = await run_in_thread(table.query, **kwargs)
-        keys.extend(page.get("Items", []))
+        page = await run_in_thread(_table().query, **kwargs)
+        rows.extend(plain(page.get("Items", [])))
         if "LastEvaluatedKey" not in page:
-            break
+            return rows
         kwargs["ExclusiveStartKey"] = page["LastEvaluatedKey"]
+
+
+async def delete_partition(ws: str) -> int:
+    """Delete every row under `WS#{ws}` (META included) and the agent-id pointers that name `ws`; the count."""
+    table = _table()
+    keys = [{"pk": r["pk"], "sk": r["sk"]} for r in await list_partition(ws)]
     for k in [k for k in keys if k["sk"].startswith(ts.agent_sk(""))]:
         pointer = {"pk": ts.agent_owner_pk(k["sk"].removeprefix(ts.agent_sk(""))), "sk": ts.AGENT_OWNER_SK}
         resp = await run_in_thread(table.get_item, Key=pointer, ConsistentRead=True)

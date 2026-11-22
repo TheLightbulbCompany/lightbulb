@@ -6,6 +6,7 @@ Recall. Two owners share every store, so each test also proves the other owner's
 from __future__ import annotations
 
 import re
+import uuid
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -219,7 +220,7 @@ async def test_a_temporal_failure_still_reports_the_stuck_bot_ids(world):
         {"DELETE": 405, "POST": 404},  # dispatched, already gone from the call
     ],
 )
-async def test_a_bot_already_gone_is_done(monkeypatch, answers):
+async def test_a_bot_already_gone_is_done(monkeypatch, caplog, answers):
     """A re-run of a wipe whose rooms survived meets bots Recall no longer has; that is success, not a stuck bot."""
     import httpx
 
@@ -234,7 +235,98 @@ async def test_a_bot_already_gone_is_done(monkeypatch, answers):
     monkeypatch.setattr(meeting_bots, "_transport", httpx.MockTransport(handler))
     await meeting_bots.leave("bot-gone")
     assert seen == list(answers)
+    assert "bot-gone: Recall has no such bot (404)" in caplog.text  # a wrong Recall base URL would look like this
 
     monkeypatch.setattr(meeting_bots, "_transport", httpx.MockTransport(lambda r: httpx.Response(500)))
     with pytest.raises(meeting_bots.RecallError):  # anything else still fails
         await meeting_bots.leave("bot-x")
+
+
+def _attempts(table, ws: str) -> dict[str, tuple[str, str]]:
+    """Three Attempt rows (the fields `begin_attempt` writes that the wipe reads): a live one in its own task
+    session, a live one in the workspace session, and an ended one in a task session. Label -> (task id, run id)."""
+    from core.services import runtime_transport
+
+    runs = {}
+    for label, own, status in (("own", True, "running"), ("ws", False, "running"), ("done", True, "ended")):
+        task_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{ws}/{label}"))
+        run_id = ts.run_id(ws, task_id, 1)
+        session = runtime_transport.session_id_for(ws, task_id if own else None)
+        table.put_item(
+            Item={"pk": ts.ws_pk(ws), "sk": ts.attempt_sk(task_id, 1), "type": "attempt", "taskId": task_id, "n": 1,
+                  "runId": run_id, "sessionId": session, "status": status},
+        )  # fmt: skip
+        runs[label] = (task_id, run_id)
+    return runs
+
+
+@pytest.fixture
+def runtime(monkeypatch):
+    from core.engine import api as engine_api
+
+    from core.config import settings
+
+    monkeypatch.setattr(settings, "HERMES_SHARED_RUNTIME_ARN", "arn:aws:bedrock-agentcore:us-east-1:0:runtime/pool")
+    container = AsyncMock(return_value={"owner_id": A, "status": "running"})
+    stop = AsyncMock(return_value=True)
+    monkeypatch.setattr(engine_api.container_repo, "get_by_owner_id", container)
+    monkeypatch.setattr(engine_api.runtime_runs, "stop_task_session", stop)
+    return SimpleNamespace(container=container, stop=stop)
+
+
+@pytest.mark.asyncio
+async def test_open_task_sessions_are_stopped_while_their_rows_name_them(world, runtime):
+    runs = _attempts(world.table, A)
+    seen_rows = []
+    runtime.stop.side_effect = lambda *a: seen_rows.append(len(_rows(world.table))) or True
+
+    detail = await account_wipe.wipe_engine_state(A)
+
+    runtime.stop.assert_awaited_once_with(A, *runs["own"])  # not the workspace-session or ended one
+    assert seen_rows and seen_rows[0] > 0  # stopped before the partition went
+    assert "stopped 1 task session(s)" in detail
+    assert not {r for r in _rows(world.table) if r[0] == ts.ws_pk(A)}
+
+
+@pytest.mark.asyncio
+async def test_an_unconfirmed_task_stop_keeps_the_rows_for_a_rerun(world, runtime):
+    runs = _attempts(world.table, A)
+    runtime.stop.return_value = False
+
+    with pytest.raises(RuntimeError, match=runs["own"][0]):
+        await account_wipe.wipe_engine_state(A)
+    assert {r for r in _rows(world.table) if r[0] == ts.ws_pk(A)}  # kept: they name the session
+
+    runtime.stop.return_value = True
+    await account_wipe.wipe_engine_state(A)
+    assert not {r for r in _rows(world.table) if r[0] == ts.ws_pk(A)}
+
+
+@pytest.mark.asyncio
+async def test_no_runtime_left_means_no_task_session_to_stop(world, runtime):
+    _attempts(world.table, A)
+    runtime.container.return_value = None  # the runtime step already ran
+
+    await account_wipe.wipe_engine_state(A)
+
+    runtime.stop.assert_not_awaited()
+    assert not {r for r in _rows(world.table) if r[0] == ts.ws_pk(A)}
+
+
+@pytest.mark.asyncio
+async def test_the_partition_is_read_strongly_consistent(world, monkeypatch):
+    from core.repositories import tasks_repo
+
+    table, reads = world.table, []
+
+    class _Spy:
+        def __getattr__(self, name):
+            return getattr(table, name)
+
+        def query(self, **kwargs):
+            reads.append(kwargs.get("ConsistentRead"))
+            return table.query(**kwargs)
+
+    monkeypatch.setattr(tasks_repo, "_table", lambda: _Spy())
+    await tasks_repo.list_partition(A)
+    assert reads == [True]

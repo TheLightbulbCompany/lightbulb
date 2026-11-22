@@ -44,7 +44,7 @@ from core.engine.contract import (
     start_task_id,
 )
 from core.engine.hooks import EngineEvent
-from core.repositories import automations_repo, effects_repo, messaging_repo, questions_repo, tasks_repo
+from core.repositories import automations_repo, container_repo, effects_repo, messaging_repo, questions_repo, tasks_repo
 from core.services import (
     admission,
     automation_schedule,
@@ -52,6 +52,8 @@ from core.services import (
     container_rpc,
     messaging,
     questions,
+    runtime_runs,
+    runtime_transport,
     task_conversation,
     tasks_access,
 )
@@ -928,8 +930,9 @@ _TENANT_WORKFLOW_PREFIXES = ("task", "learn", "gwatch", "fire", "hook")
 
 async def delete_tenant(tenant_id: str) -> dict[str, int]:
     """Stop and delete the tenant's engine state, for a terminal wipe: every automation's Temporal Schedule is
-    deleted, every running workflow it names terminated, then its tasks partition (META included) and agent-id
-    pointers. Idempotent: what is already gone is skipped. Returns what it did, counted."""
+    deleted, every running workflow it names terminated, every open attempt's own task session stopped, then its
+    tasks partition (META included) and agent-id pointers. Idempotent: what is already gone is skipped; a task
+    session that does not confirm its stop raises and keeps the partition. Returns what it did, counted."""
     if not tenant_id or any(c in tenant_id for c in "'\"\\"):
         raise ValueError("bad tenant id")
     client = temporal_client.get_client()
@@ -950,5 +953,25 @@ async def delete_tenant(tenant_id: str) -> dict[str, int]:
     terminated = await terminate(ts.router_workflow_id(tenant_id))  # by name: no query, no visibility lag
     async for wf in client.list_workflows(f"ExecutionStatus = 'Running' AND ({names})"):
         terminated += await terminate(wf.id)
+    # Terminating a TaskWorkflow skips its attempt cleanup, and a run in its own task session outlives the
+    # workspace session the runtime teardown stops: stop each one here, while its Attempt row still names it.
+    open_runs = [
+        att
+        for att in await tasks_repo.list_partition(tenant_id)
+        if att.get("type") == "attempt"
+        and att.get("status") != "ended"
+        # a workspace-session run is stopped with that session by the runtime teardown
+        and att.get("sessionId") == runtime_transport.session_id_for(tenant_id, att.get("taskId"))
+    ]
+    stopped, unstopped = 0, []
+    container = await container_repo.get_by_owner_id(tenant_id) if open_runs else None
+    if container and runtime_transport.runtime_arn(container):  # no runtime left: nothing of the tenant runs
+        for att in open_runs:
+            if await runtime_runs.stop_task_session(tenant_id, att["taskId"], att.get("runId")):
+                stopped += 1
+            else:
+                unstopped.append(att["taskId"])
+    if unstopped:  # keep the rows that name them, so a re-run stops them
+        raise RuntimeError(f"task session(s) not confirmed stopped: {', '.join(unstopped)}; tasks rows kept")
     rows = await tasks_repo.delete_partition(tenant_id)
-    return {"workflows": terminated, "schedules": len(schedules), "rows": rows}
+    return {"workflows": terminated, "schedules": len(schedules), "sessions": stopped, "rows": rows}

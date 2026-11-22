@@ -190,6 +190,7 @@ async def leave(bot_id: str) -> None:
     except RecallError as exc:
         if exc.code != "404":
             raise
+        logger.warning("meeting bot %s: Recall has no such bot (404), counted as gone", bot_id)
 
 
 async def say(bot_id: str, text: str) -> None:

@@ -170,8 +170,9 @@ async def wipe_engine_state(owner_id: str) -> str:
             raise RuntimeError(f"{exc}; {stuck_note}") from exc
         raise
     detail = (
-        f"closed {meetings} meeting room(s); terminated {engine['workflows']} workflow(s), deleted {engine['schedules']} "
-        f"schedule(s), {engine['rows']} tasks row(s) and {connections} ws-connection row(s)"
+        f"closed {meetings} meeting room(s); terminated {engine['workflows']} workflow(s), stopped {engine['sessions']} "
+        f"task session(s), deleted {engine['schedules']} schedule(s), {engine['rows']} tasks row(s) and "
+        f"{connections} ws-connection row(s)"
     )
     if stuck_note:
         raise RuntimeError(f"{detail}; {stuck_note}")

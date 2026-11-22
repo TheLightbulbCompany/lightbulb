@@ -600,29 +600,6 @@ async def test_computer_keys_read_and_forget_the_registry(table):
     assert table.scan()["Items"] == []
 
 
-async def test_a_revoked_key_with_no_registry_row_is_still_forgotten(table):
-    import time
-
-    from core.services import workspace_memory
-
-    key = "r" * 52
-    table.put_item(Item={"pk": "NETREVOKED#user_a", "sk": key, "ttl": int(time.time()) + 3600})
-    from unittest.mock import AsyncMock
-
-    from core.services import evaluator, memory_api, session_store
-
-    forgot = AsyncMock()
-    with (
-        patch.object(workspace_memory.settings, "AGENTCORE_MEMORY_ID", ""),
-        patch.object(session_store, "delete_sessions", AsyncMock(return_value=0)),
-        patch.object(evaluator, "delete_drafts", AsyncMock(return_value=0)),
-        patch.object(memory_api, "forward_on_behalf_of", AsyncMock()),
-        patch.object(memory_api, "forget_author", forgot),
-    ):
-        await workspace_memory.delete_member_memory(OWNER, "user_a", resweep_after_s=0)
-    forgot.assert_awaited_once_with(OWNER, key)
-
-
 # --- the CLI's real shapes and idempotency (final review #2-#5, #18, #19) -----------------------
 
 

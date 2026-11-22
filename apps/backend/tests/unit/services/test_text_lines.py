@@ -622,16 +622,6 @@ async def test_new_active_subscription_provisions_even_when_an_old_id_was_stored
     m.request.assert_awaited_once()
 
 
-async def test_unlink_member_drops_every_phone_the_member_holds(m, monkeypatch):
-    drop = AsyncMock()
-    monkeypatch.setattr(text_lines.agent_email_repo, "drop_member_phones", drop)
-    await text_lines.unlink_member("org_1", "user_a")  # no line: nothing to drop
-    drop.assert_not_awaited()
-    m.line.return_value = LINE_ROW
-    await text_lines.unlink_member("org_1", "user_a")
-    drop.assert_awaited_once_with(LINE_ROW, "user_a")
-
-
 async def test_provisioned_line_starts_the_build(m):
     assert await text_lines.ensure_line("org_1") == "provisioned"
     m.build.assert_awaited_once_with("org_1")

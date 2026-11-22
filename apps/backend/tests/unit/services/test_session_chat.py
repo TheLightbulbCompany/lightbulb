@@ -262,21 +262,3 @@ async def test_a_late_end_handler_applies_what_the_session_row_says_now(env):
     await session_chat.follow_session(OWNER, SID)
     writes = [c.args[1] for c in env["patch_room_meta"].await_args_list]
     assert writes[0]["archivedAt"] and writes[1] == {"archivedAt": None, "archivedBy": None}
-
-
-@pytest.mark.asyncio
-async def test_a_removed_owners_chats_are_silenced_after_their_stream_is_off(monkeypatch):
-    """The door's check reads the stream: silencing first would leave a gap a late seat slips through."""
-    order: list[str] = []
-    entry = {"meta": META}
-    monkeypatch.setattr(messaging.messaging_repo, "list_rooms_for_member", AsyncMock(return_value=[entry]))
-    monkeypatch.setattr(messaging.messaging_repo, "get_member", AsyncMock(return_value={"id": ALICE.user_id}))
-    monkeypatch.setattr(messaging.messaging_repo, "get_room", AsyncMock(return_value=META))
-    monkeypatch.setattr(messaging, "_remove_member_with_notices", AsyncMock())
-    monkeypatch.setattr(
-        messaging.messaging_repo, "deactivate_user_stream", AsyncMock(side_effect=lambda *a: order.append("stream off"))
-    )
-    monkeypatch.setattr(session_chat, "silence", AsyncMock(side_effect=lambda *a, **k: order.append("silence")))
-    await messaging.revoke_human_membership(OWNER, ALICE.user_id)
-    assert order == ["stream off", "silence"]
-    session_chat.silence.assert_awaited_once_with(OWNER, SID, keep=None)

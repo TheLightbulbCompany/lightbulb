@@ -39,8 +39,6 @@ def hermes(monkeypatch):
     monkeypatch.setattr("core.services.user_provision._ensure_trial_row", trial)
     join_room = AsyncMock()
     monkeypatch.setattr("core.services.messaging.join_default_room", join_room)
-    members = AsyncMock(return_value=[{"user_id": "user_creator"}, {"user_id": "user_early"}])
-    monkeypatch.setattr("core.services.clerk_admin.list_organization_members", members)
     return SimpleNamespace(
         prepare=prepare,
         provision=provision,
@@ -96,15 +94,14 @@ async def test_the_brief_drains_after_step_0_and_the_trial_arms_after_the_runtim
     hermes.reconcile.side_effect = lambda _o: order.append("reconcile")
 
     assert await provision_runner.run("org_a") == provision_runner.EXIT_OK
-    assert order == ["seed", "drain", "seat", "seat", "runtime", "arm_trial", "reconcile"]
+    assert order == ["seed", "drain", "seat", "runtime", "arm_trial", "reconcile"]
 
 
-async def test_every_teammate_is_seated_once_the_company_is_active(monkeypatch, hermes, repo):
-    """The status poll used to seat teammates the membership webhook missed (one who joined before
-    #general existed). The executor does it after step 0; a failure never fails the provision."""
-    hermes.join_room.side_effect = [RuntimeError("ddb"), True]
-    assert await provision_runner.run("org_a") == provision_runner.EXIT_OK
-    assert [c.args for c in hermes.join_room.await_args_list] == [("org_a", "user_creator"), ("org_a", "user_early")]
+async def test_the_person_is_seated_once_the_company_is_active(monkeypatch, hermes, repo):
+    """The executor seats the person in #general after step 0; a failure never fails the provision."""
+    hermes.join_room.side_effect = RuntimeError("ddb")
+    assert await provision_runner.run("user_p") == provision_runner.EXIT_OK
+    assert [c.args for c in hermes.join_room.await_args_list] == [("user_p", "user_p")]
     repo.mark_provision_error.assert_not_awaited()
 
 
@@ -116,19 +113,6 @@ async def test_the_trial_row_exists_before_the_owner_key_is_minted(monkeypatch, 
     assert await provision_runner.run("user_p") == provision_runner.EXIT_OK
     hermes.trial.assert_awaited_once_with("user_p")
     assert order == ["trial", "prepare"]
-
-
-async def test_a_user_tenant_seats_the_person_alone(monkeypatch, hermes, repo):
-    assert await provision_runner.run("user_p") == provision_runner.EXIT_OK
-    assert [c.args for c in hermes.join_room.await_args_list] == [("user_p", "user_p")]
-
-
-async def test_a_roster_read_failure_never_fails_the_provision(monkeypatch, hermes, repo):
-    monkeypatch.setattr(
-        "core.services.clerk_admin.list_organization_members", AsyncMock(side_effect=RuntimeError("clerk"))
-    )
-    assert await provision_runner.run("org_a") == provision_runner.EXIT_OK
-    hermes.provision.assert_awaited_once_with("org_a")
 
 
 async def test_drain_and_trial_arm_failures_never_fail_the_provision(monkeypatch, hermes, repo):

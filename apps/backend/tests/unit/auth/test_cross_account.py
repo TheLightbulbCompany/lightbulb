@@ -461,13 +461,6 @@ async def seed_config(a, b, mp, calls) -> dict:
     return {}
 
 
-async def seed_orgs(a, b, mp, calls) -> dict:
-    """An org can be joined by link; a person (user mode) has nothing joinable, so A's id is refused as any is."""
-    if a.org_id:
-        await ok(a, "POST", f"/api/v1/orgs/{a.org_id}/join-link")
-    return {}
-
-
 SEEDS = {
     "messaging": seed_messaging,
     "huddles": seed_huddles,
@@ -493,7 +486,6 @@ SEEDS = {
     "devices": seed_devices,
     "debug": seed_debug,
     "config": seed_config,
-    "orgs": seed_orgs,
 }
 
 VOICE_PLAN = {"expectedOwnerId": "{b_tenant}", "planVersion": "voice-agents-v1", "acceptMonthlyUsd": 250}
@@ -723,14 +715,6 @@ CASES = [
     # config: tenant = caller
     Case("config", "GET", "/api/v1/config"),
     Case("config", "PATCH", "/api/v1/config", {"patch": {"x": 1}}),
-    # orgs: unchanged for orgs; a user id in /orgs/{id}/... is not an org anyone joins or manages
-    Case("orgs", "GET", "/api/v1/orgs/{a_tenant}/join-link", a_id=True),
-    Case("orgs", "POST", "/api/v1/orgs/{a_tenant}/join-link", a_id=True),
-    Case("orgs", "DELETE", "/api/v1/orgs/{a_tenant}/join-link", a_id=True),
-    Case("orgs", "POST", "/api/v1/orgs/{a_tenant}/join", {"token": "x" * 43}, a_id=True),
-    Case("orgs", "GET", "/api/v1/orgs/{a_tenant}/invitations", a_id=True),
-    Case("orgs", "POST", "/api/v1/orgs/{a_tenant}/invitations", {"email": "x@example.com"}, a_id=True),
-    Case("orgs", "DELETE", "/api/v1/orgs/{a_tenant}/invitations/inv_1", a_id=True),
     # users: the caller's own row; self-delete wipes only the caller
     Case("users", "POST", "/api/v1/users/sync"),
     Case("users", "GET", "/api/v1/users/me"),
@@ -919,17 +903,10 @@ async def test_org_claim_still_wins_interim(tenants):
 
 # The doors that still refuse a person on their own tenant, and what they answer: the ChatGPT sign-in needs the
 # paid workspace plan (402, exactly as for an unpaid org); the bodyless number door would hand any sign-up the
-# environment's one shared line (402: a person's number comes with the voice plan, at Go live); and the member,
-# invite and join-link doors are an org's own (a person's tenant has no other people; those doors are being deleted).
+# environment's one shared line (402: a person's number comes with the voice plan, at Go live).
 REFUSED = [
     ("POST", "/api/v1/oauth/chatgpt/start", None, 402),
     ("POST", "/api/v1/voice/number", {}, 402),  # no body: the shared line; a person's number comes with the voice plan
-    ("GET", "/api/v1/orgs/{b_tenant}/join-link", None, 403),
-    ("POST", "/api/v1/orgs/{b_tenant}/join-link", None, 403),
-    ("DELETE", "/api/v1/orgs/{b_tenant}/join-link", None, 403),
-    ("GET", "/api/v1/orgs/{b_tenant}/invitations", None, 403),
-    ("POST", "/api/v1/orgs/{b_tenant}/invitations", {"email": "x@example.com"}, 403),
-    ("DELETE", "/api/v1/orgs/{b_tenant}/invitations/inv_1", None, 403),
 ]
 
 
@@ -1252,18 +1229,15 @@ async def test_person_provisions_posts_and_dispatches_only_on_their_own_tenant(d
 
 
 async def test_person_workspace_checkout_bills_no_seats_and_never_reads_an_org_roster(ddb, calls, jwks, monkeypatch):
-    """A person's tenant is one human: the Team checkout carries no seat item and the seat count never asks Clerk for
-    an org roster (a person's id is no org, and a strict roster read would fail every subscription webhook)."""
-    from core.services import billing_service, clerk_admin
+    """A person's tenant is one human: the Team checkout carries no seat item and never asks Clerk for an org roster."""
+    from core.services import clerk_admin
 
     async def no_roster(*args, **kwargs):
         raise AssertionError("a person's seats read an org roster")
 
     monkeypatch.setattr(clerk_admin, "list_organization_members", no_roster)
     await seed_billing(Tenant("user_a", None), Tenant("user_b", None), monkeypatch, calls)
-    monkeypatch.setattr(settings, "STRIPE_SEAT_PRICE_ID", "price_seat")
     person = Tenant("user_solo", None)
-    assert await billing_service.seats_for_workspace(person.user_id) == 0
     calls.clear()
     assert (await call(person, "POST", "/api/v1/billing/checkout", {"plan": "workspace"})).status_code == 200
     (session,) = _stripe_posts(calls, "/v1/checkout/sessions")

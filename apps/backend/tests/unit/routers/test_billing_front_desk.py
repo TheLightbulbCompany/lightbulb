@@ -124,7 +124,6 @@ async def test_post_on_trial_passes_the_real_plan_check(monkeypatch):
     monkeypatch.setattr(billing_service.billing_repo, "try_claim_checkout_slot", AsyncMock(return_value="claim"))
     monkeypatch.setattr(billing_service.billing_repo, "release_checkout_slot", AsyncMock())
     monkeypatch.setattr(billing_service.billing_repo, "set_pending_checkout", AsyncMock())
-    monkeypatch.setattr(billing_service, "seats_for_workspace", AsyncMock(return_value=0))
     monkeypatch.setattr(
         billing_service.stripe.Subscription,
         "list",

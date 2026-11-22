@@ -38,10 +38,6 @@ class BillingAccountResponse(BaseModel):
     # the router still supplies the server-owned configured value when present.
     base_price_usd: int = 20
     ultra_price_usd: int
-    # The one plan (T06): workspace_price_usd covers ``included_members`` people,
-    # then seat_price_usd a month for each member past them.
-    seat_price_usd: int
-    included_members: int
     # The Front desk add-on (a texting number): whether this workspace has it, and its monthly price.
     front_desk: bool = False
     front_desk_price_usd: int | None = None

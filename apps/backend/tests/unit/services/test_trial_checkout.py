@@ -35,7 +35,6 @@ def checkout(monkeypatch):
     monkeypatch.setattr(billing_service.billing_repo, "try_claim_checkout_slot", AsyncMock(return_value="claim"))
     monkeypatch.setattr(billing_service.billing_repo, "release_checkout_slot", AsyncMock())
     monkeypatch.setattr(billing_service.billing_repo, "set_pending_checkout", AsyncMock())
-    monkeypatch.setattr(billing_service, "seats_for_workspace", AsyncMock(return_value=0))
     monkeypatch.setattr(billing_service.time, "time", lambda: NOW + 10)
     monkeypatch.setattr(
         billing_service.stripe.Subscription,
@@ -106,7 +105,6 @@ async def test_marking_a_live_subscription_founding_stamps_the_lock_once(monkeyp
 @pytest.mark.asyncio
 async def test_checkout_with_front_desk_adds_the_item_and_no_trial(monkeypatch, checkout):
     monkeypatch.setattr(billing_service.settings, "STRIPE_FRONT_DESK_PRICE_ID", "price_fd")
-    monkeypatch.setattr(billing_service.settings, "STRIPE_SEAT_PRICE_ID", "price_seat")
     row = {
         "owner_id": "org_1",
         "stripe_customer_id": "cus_1",
@@ -114,7 +112,6 @@ async def test_checkout_with_front_desk_adds_the_item_and_no_trial(monkeypatch, 
         "trial_end": NOW + 20 * DAY,
     }
     monkeypatch.setattr(billing_service.billing_repo, "get_by_owner_id", AsyncMock(return_value=row))
-    monkeypatch.setattr(billing_service, "seats_for_workspace", AsyncMock(return_value=2))
 
     await billing_service.create_workspace_checkout(
         owner_id="org_1", clerk_user_id="user_1", plan="workspace", front_desk=True
@@ -123,7 +120,6 @@ async def test_checkout_with_front_desk_adds_the_item_and_no_trial(monkeypatch, 
     kwargs = checkout.call_args.kwargs
     assert kwargs["line_items"] == [
         {"price": "price_workspace", "quantity": 1},
-        {"price": "price_seat", "quantity": 2},
         {"price": "price_fd", "quantity": 1},
     ]
     assert "trial_end" not in kwargs["subscription_data"]
@@ -178,3 +174,13 @@ async def test_front_desk_checkout_refuses_without_a_price(monkeypatch, checkout
             owner_id="org_1", clerk_user_id="user_1", plan="workspace", front_desk=True
         )
     checkout.assert_not_called()
+
+
+def test_billing_has_no_seat_item():
+    """One flat plan: no seat price, no seat count, no seat fields on the account."""
+    from core.config import settings
+    from schemas.billing import BillingAccountResponse
+
+    assert not hasattr(settings, "STRIPE_SEAT_PRICE_ID") and not hasattr(settings, "SEAT_PRICE_USD")
+    assert not hasattr(billing_service, "seats_for_workspace") and not hasattr(billing_service, "sync_seat_quantity")
+    assert not {"seat_price_usd", "included_members"} & set(BillingAccountResponse.model_fields)

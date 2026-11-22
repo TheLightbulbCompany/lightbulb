@@ -92,9 +92,7 @@ MENTIONS = {
     "routers/container.py",
     "routers/debug.py",
     "routers/memory.py",
-    "routers/orgs.py",
     "routers/teams/agents.py",
-    "routers/webhooks.py",
 }
 
 

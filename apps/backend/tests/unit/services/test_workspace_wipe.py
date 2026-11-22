@@ -139,8 +139,6 @@ def ws_mocks():
     openrouter_get = AsyncMock(return_value=None)
     openrouter_retire = AsyncMock(return_value=True)
     openrouter_delete = AsyncMock(return_value=None)
-    join_link_get = AsyncMock(return_value={"org_id": ORG_ID, "token_hash": "h"})
-    join_link_delete = AsyncMock(return_value=None)
     fast_gate_instance = MagicMock()
     fast_gate_instance.delete_row = AsyncMock(return_value=None)
 
@@ -186,8 +184,6 @@ def ws_mocks():
         ("core.services.workspace_wipe.openrouter_key_repo.get", openrouter_get),
         ("core.services.workspace_wipe.openrouter_key_repo.mark_retiring", openrouter_retire),
         ("core.services.account_wipe._delete_openrouter_key", openrouter_delete),
-        ("core.services.workspace_wipe.workspace_join_repo.get_link", join_link_get),
-        ("core.services.workspace_wipe.workspace_join_repo.delete_link", join_link_delete),
         ("core.services.account_wipe.MetronomeFastGate", MagicMock(return_value=fast_gate_instance)),
     ]
     with ExitStack() as _stack:
@@ -225,7 +221,6 @@ def ws_mocks():
             openrouter_get=openrouter_get,
             openrouter_retire=openrouter_retire,
             openrouter_delete=openrouter_delete,
-            join_link_delete=join_link_delete,
             fast_gate_delete=fast_gate_instance.delete_row,
             engine_wipe=engine_wipe,
         )
@@ -600,7 +595,6 @@ async def test_execute_requires_a_fingerprint(ws_mocks):
 @pytest.mark.asyncio
 async def test_org_scoped_leftovers_are_deleted(ws_mocks):
     await _preview_then_wipe()
-    ws_mocks.join_link_delete.assert_awaited_once_with(ORG_ID)
     # The org's own pending brief is attempted even though members exist.
     ws_mocks.paperclip_instance.delete_pending_brief.assert_any_await(ORG_ID)
 
@@ -842,13 +836,12 @@ async def test_self_serve_account_in_another_org_is_still_deleted(ws_mocks):
 
 @pytest.mark.asyncio
 async def test_self_serve_other_clerk_members_means_leave_not_wipe(ws_mocks):
-    """Another Clerk member remains: nothing is deleted (join link included); the caller leaves instead."""
+    """Another Clerk member remains: nothing is deleted; the caller leaves instead."""
     from core.services.workspace_wipe import OtherMembersRemainError, wipe_own_workspace
 
     ws_mocks.clerk_org_members.return_value = [{"user_id": MEMBER_A}, {"user_id": MEMBER_B}]
     with pytest.raises(OtherMembersRemainError):
         await wipe_own_workspace(ORG_ID, user_id=MEMBER_A)
-    ws_mocks.join_link_delete.assert_not_awaited()
     ws_mocks.delete_runtime.assert_not_awaited()
     ws_mocks.stripe_delete.assert_not_awaited()
 
@@ -862,23 +855,7 @@ async def test_self_serve_leftover_row_is_a_plain_permanent_refusal(ws_mocks):
     ws_mocks.clerk_org_members.return_value = [{"user_id": MEMBER_A}]  # B only has a leftover row
     with pytest.raises(SelfServeBlockedError, match="won't fix"):
         await wipe_own_workspace(ORG_ID, user_id=MEMBER_A)
-    ws_mocks.join_link_delete.assert_not_awaited()
     ws_mocks.delete_runtime.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_self_serve_deletes_join_link_before_the_wipe_snapshot(ws_mocks):
-    """Nobody can join mid-wipe: the link goes before the snapshot the wipe executes from."""
-    from core.services.workspace_wipe import wipe_own_workspace
-
-    _sole_member(ws_mocks)
-    order: list[str] = []
-    ws_mocks.join_link_delete.side_effect = lambda *_: order.append("link")
-    ws_mocks.container_get.side_effect = lambda *_a, **_k: order.append("snapshot") or _container_row()
-    await wipe_own_workspace(ORG_ID, user_id=MEMBER_A)
-
-    # sole-member check, then the link, then the preview + execute snapshots
-    assert order[:3] == ["snapshot", "link", "snapshot"]
 
 
 @pytest.mark.asyncio

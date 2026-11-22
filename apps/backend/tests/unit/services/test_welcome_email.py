@@ -23,16 +23,6 @@ def test_owner_version_is_lightbulb_speaking_and_promises_nothing_false():
 
 def test_the_owner_is_pointed_at_assistant_setup():
     assert welcome_email.setup_url().endswith("/voice/setup")
-    assert welcome_email.home_url().endswith("/voice")
-
-
-def test_teammate_version_names_the_inviter_when_known():
-    subject, text = welcome_email.teammate_welcome(first_name="Sam", inviter="Ada", workspace="Acme", url=URL)
-    assert subject == "You're in Acme on Lightbulb"
-    assert "Ada added you to Acme." in text
-    _, anonymous = welcome_email.teammate_welcome(first_name=None, inviter=None, workspace="Acme", url=URL)
-    assert anonymous.startswith("Hi,\n\nYou've been added to Acme.")
-    assert "#general" not in text and "specialist" not in text and "\u2014" not in text
 
 
 @pytest.mark.asyncio
@@ -50,32 +40,3 @@ async def test_owner_welcome_is_lightbulbs_first_contact():
     assert kwargs["subject"] == "Your assistant for Acme is ready to set up"
     assert kwargs["body_text"].count(welcome_email.setup_url()) == 1
     assert kwargs["tenant_name"] == "tenant-org_1"
-
-
-@pytest.mark.asyncio
-async def test_teammate_welcome_names_who_let_them_in():
-    with (
-        patch.object(welcome_email.clerk_admin, "get_organization", new=AsyncMock(return_value={"name": "Acme"})),
-        patch.object(welcome_email.clerk_admin, "get_user", new=AsyncMock(return_value={"first_name": "Ada"})) as user,
-        patch(
-            "core.services.join_analytics._read_join_via",
-            new=AsyncMock(return_value={"via": "invite", "invited_by": "user_ada"}),
-        ),
-        patch("core.services.agent_mail_owner_send.send_to_member", new=AsyncMock(return_value="sent")) as send,
-    ):
-        await welcome_email.send_teammate_welcome("org_1", user_id="user_2", email="sam@x.com", first_name="Sam")
-    user.assert_awaited_once_with("user_ada")
-    assert "Ada added you to Acme." in send.call_args.kwargs["body_text"]
-
-
-@pytest.mark.asyncio
-async def test_teammate_welcome_goes_to_the_member():
-    with (
-        patch("core.services.join_analytics._read_join_via", new=AsyncMock(return_value={})),
-        patch.object(welcome_email.clerk_admin, "get_organization", new=AsyncMock(return_value=None)),
-        patch("core.services.agent_mail_owner_send.send_to_member", new=AsyncMock(return_value="sent")) as send,
-    ):
-        await welcome_email.send_teammate_welcome("org_1", user_id="user_2", email="sam@x.com", first_name="Sam")
-    kwargs = send.call_args.kwargs
-    assert kwargs["email"] == "sam@x.com"
-    assert kwargs["subject"] == "You're in your business on Lightbulb"

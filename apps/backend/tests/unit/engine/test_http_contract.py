@@ -355,6 +355,19 @@ async def test_bad_token_401(world, monkeypatch):
     assert r.status_code == 401
 
 
+async def test_a_call_through_the_public_gateway_is_not_found(world, monkeypatch):
+    """API Gateway sets X-Lightbulb-Client-Ip on every public request: refused even with the right bearer."""
+    monkeypatch.setattr(settings, "ENGINE_SERVICE_TOKEN", TOKEN)
+    http = transport._clients[BASE]
+    r = await http.get(
+        f"/engine/v1/conversations/{DM}",
+        params={"tenantId": WS},
+        headers={"Authorization": f"Bearer {TOKEN}", "X-Lightbulb-Client-Ip": "203.0.113.9"},
+    )
+    assert r.status_code == 404
+    assert (await _raw_get(monkeypatch, f"Bearer {TOKEN}")).status_code == 200
+
+
 async def _raw_get(monkeypatch, bearer: str):
     monkeypatch.setattr(settings, "ENGINE_SERVICE_TOKEN", TOKEN)
     http = transport._clients[BASE]

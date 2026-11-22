@@ -53,6 +53,8 @@ export interface ObservabilityStackProps extends cdk.StackProps {
   // TargetGroup); an alarm scoped to LoadBalancer alone never gets datapoints.
   // Concrete type (not the interface) so `targetGroupFullName` is available.
   targetGroup: elbv2.ApplicationTargetGroup;
+  // The engine service's target group (network-stack, :8082 listener), for W87/W88.
+  engineTargetGroup: elbv2.ApplicationTargetGroup;
   // Container stack references
   cluster: ecs.ICluster;
   // Database table NAMES (for DynamoDB alarms).
@@ -1573,6 +1575,40 @@ def handler(event, context):
       comparisonOperator: cloudwatch.ComparisonOperator.LESS_THAN_THRESHOLD,
       evaluationPeriods: 2,
       datapointsToAlarm: 2,
+      severity: "warn",
+    });
+
+    // W87/W88: the engine service (service-stack, behind the :8082 listener). Its callers' own
+    // timeouts and retries hide single failures, so these warn on a sustained pattern.
+    const engineDims = { LoadBalancer: albFullName, TargetGroup: props.engineTargetGroup.targetGroupFullName };
+    this.createAlarm({
+      id: "W87",
+      name: "engine-5xx",
+      description: "Engine service returned more than 5 5xx responses in 5 min, 2 periods running",
+      metric: new cloudwatch.Metric({
+        namespace: "AWS/ApplicationELB",
+        metricName: "HTTPCode_Target_5XX_Count",
+        statistic: "Sum",
+        period: cdk.Duration.minutes(5),
+        dimensionsMap: engineDims,
+      }),
+      threshold: 5,
+      evaluationPeriods: 2,
+      severity: "warn",
+    });
+    this.createAlarm({
+      id: "W88",
+      name: "engine-unhealthy-hosts",
+      description: "Engine service unhealthy host count > 0 for 5 min",
+      metric: new cloudwatch.Metric({
+        namespace: "AWS/ApplicationELB",
+        metricName: "UnHealthyHostCount",
+        statistic: "Maximum",
+        period: cdk.Duration.minutes(1),
+        dimensionsMap: engineDims,
+      }),
+      threshold: 0,
+      evaluationPeriods: 5,
       severity: "warn",
     });
 

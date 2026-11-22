@@ -56,6 +56,8 @@ function build(environment: "dev" | "prod"): {
     environment,
     vpc: network.vpc,
     targetGroup: network.targetGroup,
+    engineTargetGroup: network.engineTargetGroup,
+    albDnsName: network.alb.loadBalancerDnsName,
     albSecurityGroup: network.albSecurityGroup,
     secretNames: {
       clerkIssuer: `isol8/${environment}/clerk_issuer`,

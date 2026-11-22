@@ -32,6 +32,8 @@ export class NetworkStack extends cdk.Stack {
   public readonly alb: elbv2.ApplicationLoadBalancer;
   public readonly albSecurityGroup: ec2.SecurityGroup;
   public readonly targetGroup: elbv2.ApplicationTargetGroup;
+  /** The engine service's target group, behind the :8082 listener (service-stack admits only its SG). */
+  public readonly engineTargetGroup: elbv2.ApplicationTargetGroup;
   public readonly albHttpListenerArn: string;
   public readonly albHttpsListenerArn?: string;
   /** Same objects as `alb`/`targetGroup`; kept so the stage wiring reads either name. */
@@ -167,6 +169,7 @@ export class NetworkStack extends cdk.Stack {
     });
     this.alb = named.alb;
     this.targetGroup = named.targetGroup;
+    this.engineTargetGroup = named.engineTargetGroup;
     this.albHttpListenerArn = named.httpListenerArn;
     this.albHttpsListenerArn = named.httpsListenerArn;
     this.albV2 = named.alb;
@@ -320,6 +323,7 @@ export class NetworkStack extends cdk.Stack {
   ): {
     alb: elbv2.ApplicationLoadBalancer;
     targetGroup: elbv2.ApplicationTargetGroup;
+    engineTargetGroup: elbv2.ApplicationTargetGroup;
     httpListenerArn: string;
     httpsListenerArn?: string;
   } {
@@ -414,6 +418,33 @@ export class NetworkStack extends cdk.Stack {
       action: elbv2.ListenerAction.forward([targetGroup]),
     });
 
-    return { alb, targetGroup, httpListenerArn: httpListener.listenerArn, httpsListenerArn };
+    // Engine listener (:8082): the engine service (`uvicorn engine_main:app`, service-stack) for the
+    // backend-image processes in the VPC. API Gateway integrates with the :80 listener only, so nothing
+    // public reaches it. `open: false` keeps CDK from adding a 0.0.0.0/0 rule; service-stack adds the
+    // one ingress rule, from the service SG.
+    const engineTargetGroup = new elbv2.ApplicationTargetGroup(this, "EngineTargetGroup", {
+      vpc: this.vpc,
+      port: 8000,
+      protocol: elbv2.ApplicationProtocol.HTTP,
+      targetType: elbv2.TargetType.IP,
+      targetGroupName: `lightbulb-${props.environment}-engine`,
+      deregistrationDelay: cdk.Duration.seconds(25),
+      healthCheck: {
+        path: "/health",
+        interval: cdk.Duration.seconds(30),
+        healthyThresholdCount: 2,
+        unhealthyThresholdCount: 3,
+        timeout: cdk.Duration.seconds(10),
+        healthyHttpCodes: "200",
+      },
+    });
+    alb.addListener("EngineListener", {
+      port: 8082,
+      protocol: elbv2.ApplicationProtocol.HTTP,
+      open: false,
+      defaultTargetGroups: [engineTargetGroup],
+    });
+
+    return { alb, targetGroup, engineTargetGroup, httpListenerArn: httpListener.listenerArn, httpsListenerArn };
   }
 }

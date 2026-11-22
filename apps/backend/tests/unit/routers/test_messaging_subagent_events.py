@@ -1,5 +1,7 @@
 from unittest.mock import AsyncMock, patch
 
+ENGINE_APP = True  # these routes are served by `engine_main.app` alone
+
 OWNER, TOKEN = "user_a", "hook-token-for-a"
 KEY = "agent:22222222-2222-4222-8222-222222222222:lightbulb:channel:11111111-1111-4111-8111-111111111111"
 BODY = {"sessionKey": KEY, "events": [{"type": "subagent.start", "seq": 1, "payload": {"subagent_id": "sa-1"}}]}

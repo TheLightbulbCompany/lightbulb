@@ -12,6 +12,8 @@ from core.repositories import messaging_repo
 from core.services import hook_grants
 from core.services.messaging import RunEventResponse
 
+ENGINE_APP = True  # these routes are served by `engine_main.app` alone
+
 OWNER = "org_feed"
 FEED = messaging_repo.feed_room_id(OWNER)
 OTHER = "org_other"

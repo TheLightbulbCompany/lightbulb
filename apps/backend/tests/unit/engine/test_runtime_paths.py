@@ -135,3 +135,11 @@ def test_the_engine_callbacks_stay_on_the_backend(apps):
         "/api/v1/internal/engine/tools/x",
     ):
         assert not _engine_rule(path) and _serves(backend, path) and not _serves(engine, path)
+
+
+def test_the_runtime_paths_are_served_by_the_engine_only(apps):
+    """The runtime's callback routers are mounted by `engine_main.app` alone: the backend no longer answers them."""
+    engine, backend = apps
+    served = sorted(p for p in _route_paths(engine) if p.startswith("/api/v1/internal/"))
+    assert served and all(_engine_rule(_VAR.sub("org_test", p)) for p in served)
+    assert not [p for p in served if _serves(backend, _VAR.sub("org_test", p))]

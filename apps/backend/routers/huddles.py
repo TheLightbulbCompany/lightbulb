@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from core.auth import AuthContext, get_current_user, resolve_owner_id
 from core.config import settings
-from core.engine import engine
+from core.engine import client as engine
 from core.observability.metrics import put_metric
 from core.repositories import container_repo
 from core.services import clerk_admin

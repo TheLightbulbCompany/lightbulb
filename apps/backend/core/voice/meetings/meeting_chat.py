@@ -10,7 +10,7 @@ from __future__ import annotations
 import hashlib
 
 from core.dynamodb import run_in_thread
-from core.engine import engine
+from core.engine import client as engine
 from core.engine.contract import LineIn, Principal
 from core.services import webhook_dedup
 from core.voice.meetings import meeting_bots, meeting_invites

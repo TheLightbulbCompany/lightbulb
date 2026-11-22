@@ -8,7 +8,7 @@ import logging
 
 from core.billing import voice_billing
 from core.config import settings
-from core.engine import engine
+from core.engine import client as engine
 from core.engine.contract import ConversationOut
 from core.repositories import billing_repo
 from core.voice.voice_calls import _problem

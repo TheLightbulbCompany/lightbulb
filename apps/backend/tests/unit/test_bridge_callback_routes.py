@@ -7,7 +7,7 @@ from pathlib import Path
 
 from starlette.routing import Match, Mount
 
-from main import app
+from engine_main import app
 
 BRIDGE = Path(__file__).resolve().parents[3] / "infra" / "hermes" / "bridge"
 _CALL = re.compile(r'_post_backend\(\s*f(["\'])([^"\']+)\1')  # either quote style
@@ -27,4 +27,4 @@ def test_every_bridge_callback_path_is_routed():
         # Routers are included lazily (``_IncludedRouter``); only the root Mount matches every path.
         if not any(r.matches(scope)[0] is Match.FULL for r in app.routes if not isinstance(r, Mount)):
             missing.append(path)
-    assert not missing, f"the bridge posts to paths the backend does not route: {missing}"
+    assert not missing, f"the bridge posts to paths the engine service does not route: {missing}"

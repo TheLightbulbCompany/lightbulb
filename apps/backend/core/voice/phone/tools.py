@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 from fastapi import HTTPException
 
-from core.engine import engine
+from core.engine import client as engine
 from core.engine.contract import LineIn, Principal
 from core.engine.hooks import ToolCall
 

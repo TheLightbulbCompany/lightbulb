@@ -1,5 +1,7 @@
 """Hook-token gate for the out-of-turn agent post (mirrors test_messaging_run_events.py)."""
 
+ENGINE_APP = True  # these routes are served by `engine_main.app` alone
+
 OWNER = "org_a"
 AGENT = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 URL = f"/api/v1/internal/messaging/agent-posts/{OWNER}"

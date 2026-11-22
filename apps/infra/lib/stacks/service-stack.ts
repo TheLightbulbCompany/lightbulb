@@ -1868,10 +1868,9 @@ export class ServiceStack extends cdk.Stack {
       EMAIL_FROM_WELCOME: `Lightbulb <hello@${platformMailDomain}>`,
       EMAIL_SUPPORT_ADDRESS: `support@${platformMailDomain}`,
       EMAIL_FROM_TICKETS: `Lightbulb Support <tickets@${platformMailDomain}>`,
-      // The engine's transport (core/config.py). `http`: the products call the engine service, and the engine's
-      // processes call the products back, over HTTP. Both URLs are the internal ALB: the engine service on :8082,
-      // and the backend's /api/v1/internal/engine/* callbacks on :80, which the public API Gateway refuses (api-stack.ts).
-      ENGINE_TRANSPORT: "http",
+      // The engine's wire (core/config.py): the products call the engine service, and the engine's processes call
+      // the products back, over HTTP. Both URLs are the internal ALB: the engine service on :8082, and the backend's
+      // /api/v1/internal/engine/* callbacks on :80, which the public API Gateway refuses (api-stack.ts).
       ENGINE_URL: `http://${props.albDnsName}:8082`,
       PRODUCT_CALLBACK_URL: `http://${props.albDnsName}`,
     };

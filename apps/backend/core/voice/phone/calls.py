@@ -17,7 +17,7 @@ from botocore.exceptions import ClientError
 from core.billing import voice_billing
 from core.config import settings
 from core.dynamodb import get_item, is_cancelled, messaging_table, owner_pk, run_in_thread, transact, utc_now_iso
-from core.engine import engine
+from core.engine import client as engine
 from core.engine.contract import AnnotateIn, ConversationOut, EngineError
 from core.repositories import billing_repo
 from core.voice import store

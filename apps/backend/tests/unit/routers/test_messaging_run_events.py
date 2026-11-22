@@ -4,6 +4,8 @@ from unittest.mock import AsyncMock, patch
 
 from core.services.messaging import RunEventResponse
 
+ENGINE_APP = True  # these routes are served by `engine_main.app` alone
+
 OWNER, TOKEN = "user_a", "hook-token-for-a"
 RUN = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
 H = {"Authorization": f"Bearer {TOKEN}"}

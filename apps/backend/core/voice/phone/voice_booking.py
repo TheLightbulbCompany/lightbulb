@@ -26,7 +26,7 @@ import httpx
 
 from core.config import settings
 from core.dynamodb import get_item, is_cancelled, messaging_table, owner_pk, run_in_thread, transact
-from core.engine import engine
+from core.engine import client as engine
 from core.voice import worker_api
 from core.services.credentials import access_token
 

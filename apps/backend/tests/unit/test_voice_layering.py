@@ -117,9 +117,9 @@ PRODUCT = [
 #: Engine modules that import product code, as `file: function: module`: none since engine-service Task 3 (every
 #: engine call into a product goes through `core.engine.hooks`). Never add one.
 KNOWN_ENGINE_TO_PRODUCT: list[str] = []
-#: The engine modules products may import: the contract, the operations for this process's transport
-#: (`core.engine.engine`), the hooks (to register theirs) and the wire their callback routes answer on.
-PRODUCT_MAY_IMPORT = {"core.engine", "core.engine.contract", "core.engine.hooks", "core.engine.transport"}
+#: The engine modules products may import: the contract, the operations over HTTP (`core.engine.client`), the hooks
+#: (to register theirs) and the wire their callback routes answer on.
+PRODUCT_MAY_IMPORT = {"core.engine.client", "core.engine.contract", "core.engine.hooks", "core.engine.transport"}
 
 
 def _files(paths: list[str]) -> list[Path]:

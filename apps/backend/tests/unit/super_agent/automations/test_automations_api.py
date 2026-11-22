@@ -465,12 +465,17 @@ async def test_runs_show_an_idle_skip_in_plain_words(api):
 
 @pytest.fixture
 def internal(api):
+    """The Router's proposals reach the engine service's app, which alone mounts them."""
+    from engine_main import app as engine_app
+
     post = AsyncMock(return_value="msg_1")
     with (
         patch("routers.internal_automations._require_hook_token", AsyncMock(return_value={})),
         patch("core.services.task_conversation.post_as_lightbulb", post),
     ):
-        yield SimpleNamespace(api=api, post=post)
+        yield SimpleNamespace(
+            api=SimpleNamespace(**{**vars(api), "client": TestClient(engine_app)}), clerk=api, post=post
+        )
 
 
 async def _chat_trigger(mid="00000000-0000-4000-8000-000000000001", *, root=None):
@@ -562,7 +567,7 @@ async def test_a_dated_cron_is_a_one_off_from_propose_and_patch(internal):
     row = await repo.get_schedule(WS, r.json()["automationId"])
     assert row["remainingRuns"] == 1
     patch = {"schedule": {"cron": ["30 8 7 11 *"], "tz": "UTC", "remainingRuns": None}, "version": row["version"]}
-    r = _as(internal.api).patch(f"{BASE}/{row['scheduleId']}", json=patch)
+    r = _as(internal.clerk).patch(f"{BASE}/{row['scheduleId']}", json=patch)
     assert r.status_code == 200 and r.json()["schedule"]["remainingRuns"] == 1
 
 

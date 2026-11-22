@@ -1,6 +1,5 @@
 import logging
 import os
-from typing import Literal
 from urllib.parse import urlparse
 
 from pydantic import field_validator, model_validator
@@ -301,11 +300,9 @@ class Settings(BaseSettings):
     TEMPORAL_WATCHDOG_TASK_QUEUE: str = "lightbulb-watchdog"
     WATCHDOG_OWNER_ID: str = ""
     WATCHDOG_ROOM_ID: str = ""
-    # The engine's transport (engine-service plan Task 8). `inprocess`: products call `core.engine.api` and the engine
-    # calls the products' hooks in the same process. `http`: products call the engine service at ENGINE_URL
-    # (`core.engine.client`), and the engine's processes call the products back at PRODUCT_CALLBACK_URL
-    # (`core.engine.http_hooks`). Both directions send `Authorization: Bearer ENGINE_SERVICE_TOKEN`; empty refuses all.
-    ENGINE_TRANSPORT: Literal["inprocess", "http"] = "inprocess"
+    # The engine's wire: products call the engine service at ENGINE_URL (`core.engine.client`), and the engine's
+    # processes call the products back at PRODUCT_CALLBACK_URL (`core.engine.http_hooks`). Both directions send
+    # `Authorization: Bearer ENGINE_SERVICE_TOKEN`; empty refuses all.
     ENGINE_URL: str = ""
     PRODUCT_CALLBACK_URL: str = ""
     ENGINE_SERVICE_TOKEN: str = ""

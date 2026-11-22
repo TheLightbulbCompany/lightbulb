@@ -4,6 +4,8 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+ENGINE_APP = True  # these routes are served by `engine_main.app` alone
+
 OWNER, TOKEN = "org_a", "hook-token-for-a"
 ROOM = "11111111-1111-4111-8111-111111111111"
 AGENT = "22222222-2222-4222-8222-222222222222"

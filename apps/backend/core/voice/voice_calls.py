@@ -21,7 +21,7 @@ from core.billing import metronome_client, voice_billing
 from core.billing import metronome_fast_gate
 from core.config import settings
 from core.dynamodb import get_table, messaging_table, run_in_thread
-from core.engine import engine
+from core.engine import client as engine
 from core.engine.contract import VOICE_NOTE_TEXT_MAX
 from core.observability.metrics import put_metric
 from core.repositories import container_repo

@@ -148,8 +148,9 @@ async def _ensure_owner_workspace(*, owner_id: str, owner_user_id: str) -> None:
     except Exception:  # noqa: BLE001 — partial retries reconcile again
         room_id = None
         logger.exception("ensure_user_ready: default room creation failed for owner=%s", owner_id)
-    if room_id:
-        # The owner's welcome, from the CEO, now that #general exists. Once-only via
+    if room_id and is_org_owner_id(owner_id):
+        # The owner's welcome, from the CEO, now that #general exists (an org's: it is sent from the
+        # team mailbox, which a person's tenant does not have yet). Once-only via
         # send_to_owner's first-contact claim, so a re-run here sends nothing.
         from core.services.welcome_email import send_owner_welcome
 

@@ -12,8 +12,23 @@ from fastapi import HTTPException
 from httpx import ASGITransport, AsyncClient
 
 from core.auth import AuthContext
-from core.repositories import billing_repo, messaging_repo
-from core.services import memory_tags, provision_dispatch, user_provision, workspace_memory, workspace_provisioning
+from core.config import settings
+from core.repositories import (
+    agent_email_repo,
+    billing_repo,
+    company_slug_repo,
+    container_repo,
+    messaging_repo,
+    user_repo,
+)
+from core.services import (
+    agent_email,
+    memory_tags,
+    provision_dispatch,
+    user_provision,
+    workspace_memory,
+    workspace_provisioning,
+)
 from core.services.messaging import default_room_id
 from core.services.provision_gate import evaluate_provision_gate
 from main import app
@@ -89,3 +104,23 @@ def test_private_memory_tenant_is_its_person():
     assert mine["private"] != mine["facts"] and not mine["private"].startswith(mine["facts"])
     others = (workspace_memory.namespaces_for(PERSON, "user_y"), workspace_memory.namespaces_for("user_y", PERSON))
     assert all(mine["private"] != o["private"] for o in others)
+
+
+async def test_user_owner_provision_mints_no_slug_or_mailbox(ddb, calls, monkeypatch):  # noqa: F811
+    """Step 0, seating, and the mailbox funnel, unmocked above the network: Clerk, SES and HTTP are the only
+    fakes (`calls` closes the network; moto answers AWS). A person's tenant gets no company slug and no
+    agent-mail address: mail for a person is a later task. An org's welcome is pinned in
+    test_workspace_provisioning.py."""
+    monkeypatch.setattr(settings, "CLERK_SECRET_KEY", "sk_test_not_real")  # Clerk answers 503: no org, no user
+    assert settings.AGENT_EMAIL_DOMAIN  # mail is on: the guard, not a missing domain, keeps the mailbox away
+    await user_repo.put(PERSON, f"{PERSON}@example.com")  # as the user.created webhook writes it
+    await container_repo.mark_provisioning(PERSON)  # the dispatch's row
+    await container_repo.ensure_owner_tokens(PERSON, hook_token="h", gateway_token="g")  # the runner's prepare leg
+    assert await provision_runner._seed_owner_workspace(PERSON) == provision_runner.EXIT_OK
+    await provision_runner._seat_workspace_rooms(PERSON)
+    assert not [c for c in calls if c[0] == "aws" and c[1].startswith(("sesv2.", "ses."))]
+    assert await company_slug_repo.get_by_owner(PERSON) is None
+    assert await agent_email_repo.query_by_owner(PERSON) == []
+    # An agent's send later reaches the same funnel.
+    assert await agent_email.ensure_team_address(PERSON, f"{PERSON}@example.com") == (None, "disabled")
+    assert await company_slug_repo.get_by_owner(PERSON) is None

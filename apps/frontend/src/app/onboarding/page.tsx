@@ -31,7 +31,11 @@ const SLUG_PROBLEM: Record<NonNullable<SlugCheck["reason"]>, string> = {
 function BusinessForm() {
   const api = useApi();
   const router = useRouter();
-  const { data: config, save } = useAgentConfig();
+  const { data: config, error: configError, save } = useAgentConfig();
+  // A business is already saved: this form is for naming one, never for renaming it (that would hold a second slug
+  // and part the assistant's business name from the account's). Back to /voice before any write.
+  const named = !!config?.business?.trim();
+  useEffect(() => { if (named) router.replace("/voice"); }, [named, router]);
   const [name, setName] = useState("");
   const [typedSlug, setTypedSlug] = useState<string | null>(null);
   const [check, setCheck] = useState<SlugCheck | null>(null);
@@ -53,7 +57,7 @@ function BusinessForm() {
   }, [slug, api]);
 
   const current = check?.slug === slug ? check : null;
-  const ready = !!name.trim() && !!current?.available && !!config && !busy;
+  const ready = !!name.trim() && !!current?.available && !!config && !named && !busy;
 
   async function submit(event: FormEvent) {
     event.preventDefault();
@@ -72,7 +76,8 @@ function BusinessForm() {
         })
         .catch(() => undefined);
       await api.post("/company/slug/hold", { slug });
-      // An account that already has its address (a reload after this step) keeps it.
+      // An account that already has its address (a reload after this step) keeps it; any other refusal stops here,
+      // before the assistant's document is written.
       await api.post("/company/slug/claim", { slug, name: business }).catch((e) => {
         if (!(e instanceof ApiError && e.status === 409 && (e.body as { detail?: string })?.detail === "slug_already_claimed")) throw e;
       });
@@ -130,6 +135,7 @@ function BusinessForm() {
         </p>
       )}
       <SourceQuestion value={source} onChange={setSource} />
+      {configError && <p role="alert" className="text-sm text-destructive">We couldn&apos;t load your setup. Reload the page to try again.</p>}
       {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
       <Button type="submit" disabled={!ready} className="self-end">
         {busy ? "Setting up…" : "Continue"}

@@ -66,12 +66,19 @@ it("shows inactive enrollment without a purchase action", async () => {
   expect(state.post).not.toHaveBeenCalled();
 });
 
-it("does not expose billing mutations for a plan that is not the signed-in person's", async () => {
-  state.plan = { ...state.plan, ownerId: "org-1" };
-  render(tree());
-  expect(await screen.findByText("Loading your plan…")).toBeInTheDocument();
-  expect(screen.queryByRole("button", { name: "Continue to payment" })).not.toBeInTheDocument();
-  expect(screen.queryByText("Only an admin of this business can change the plan.")).not.toBeInTheDocument();
+it("a session whose tenant is still an organization can pay, manage and cancel its organization's plan", async () => {
+  state.plan = { ...state.plan, ownerId: "org-1" }; // the server resolved the caller's tenant to their org
+  const view = render(tree());
+  fireEvent.click(await screen.findByRole("checkbox", { name: /I agree/ }));
+  fireEvent.click(screen.getByRole("button", { name: "Continue to payment" }));
+  await waitFor(() => expect(state.post).toHaveBeenCalledWith("/billing/voice-plan/checkout", expect.objectContaining({ expectedOwnerId: "org-1" })));
+  state.plan = { ...state.plan, status: "active" };
+  view.rerender(tree());
+  fireEvent.click(await screen.findByRole("button", { name: "Manage billing" }));
+  await waitFor(() => expect(state.post).toHaveBeenCalledWith("/billing/portal", {}));
+  fireEvent.click(screen.getByRole("button", { name: "Cancel renewal" }));
+  fireEvent.click(screen.getByRole("button", { name: "Confirm cancellation" }));
+  await waitFor(() => expect(state.del).toHaveBeenCalledWith("/billing/voice-plan?expectedOwnerId=org-1"));
 });
 
 it("confirms cancellation inline and waits for provider-confirmed end date", async () => {

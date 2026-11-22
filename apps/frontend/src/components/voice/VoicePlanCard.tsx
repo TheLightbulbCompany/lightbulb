@@ -35,7 +35,7 @@ export function VoicePlanCard() {
     () => api.get("/billing/voice-plan") as Promise<VoicePlan>,
     { refreshInterval: 15_000 },
   );
-  const consentKey = `${scope}:${plan?.planVersion ?? ""}`;
+  const consentKey = `${scope}:${plan?.ownerId ?? ""}:${plan?.planVersion ?? ""}`;
   const [acceptedFor, setAcceptedFor] = useState<string | null>(null);
   const accepted = acceptedFor === consentKey;
   const [busy, setBusy] = useState(false);
@@ -47,7 +47,9 @@ export function VoicePlanCard() {
     setProblem("");
   }, [consentKey]);
 
-  const current = !!plan && plan.ownerId === scope;
+  // The plan is the caller's own tenant as the server resolves it from the token (a person, or an organization a
+  // session still has), so its `ownerId` is what checkout and cancel bind to, never a client-side guess.
+  const current = !!plan;
   const enabled = current && !busy && !error;
 
   async function update(kind: "checkout" | "cancel" | "portal") {

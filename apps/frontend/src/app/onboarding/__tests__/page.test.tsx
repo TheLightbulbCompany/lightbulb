@@ -7,12 +7,13 @@ const clerk = vi.hoisted(() => ({
   loaded: true, replace: vi.fn(), update: vi.fn(), firstName: "Ada" as string | null,
   apiGet: vi.fn(), apiPost: vi.fn(), save: vi.fn(),
   config: { business: "", onboardingStep: undefined } as Record<string, unknown> | undefined,
+  configError: undefined as Error | undefined,
 }));
 vi.mock("@/lib/api", async () => {
   const { ApiError } = await vi.importActual<typeof import("@lightbulb/shared")>("@lightbulb/shared");
   return { ApiError, useApi: () => ({ get: clerk.apiGet, post: clerk.apiPost }) };
 });
-vi.mock("@/components/voice/data", () => ({ useAgentConfig: () => ({ data: clerk.config, save: clerk.save }) }));
+vi.mock("@/components/voice/data", () => ({ useAgentConfig: () => ({ data: clerk.config, error: clerk.configError, save: clerk.save }) }));
 vi.mock("next/navigation", () => ({ useRouter: () => ({ replace: clerk.replace, push: clerk.replace }), useSearchParams: () => new URLSearchParams() }));
 const analytics = vi.hoisted(() => ({ capture: vi.fn(), clearWorkspaceDoor: vi.fn() }));
 vi.mock("@/lib/analytics", () => ({
@@ -26,7 +27,7 @@ vi.mock("@clerk/nextjs", () => ({
   useUser: () => ({ isLoaded: clerk.loaded, user: { unsafeMetadata: {}, update: clerk.update, firstName: clerk.firstName } }),
 }));
 beforeEach(() => {
-  Object.assign(clerk, { loaded: true, firstName: "Ada", config: { business: "", onboardingStep: undefined } });
+  Object.assign(clerk, { loaded: true, firstName: "Ada", config: { business: "", onboardingStep: undefined }, configError: undefined });
   vi.clearAllMocks();
   clerk.save.mockResolvedValue(undefined);
 });
@@ -89,6 +90,39 @@ describe("business onboarding", () => {
     fireEvent.change(screen.getByLabelText("Business name"), { target: { value: "Acme" } });
     await waitFor(() => expect(screen.getByText("agents@acme.thelightbulb.company")).toBeInTheDocument());
     expect(screen.getByRole("button", { name: "Continue" })).toBeDisabled();
+  });
+  it("sends an account that already has a business back to /voice before any write", async () => {
+    clerk.config = { business: "Acme", live: true };
+    clerk.apiGet.mockImplementation(async () => ({ slug: "other", available: true, reason: null, domain: "thelightbulb.company" }));
+    render(<OnboardingPage />);
+    await waitFor(() => expect(clerk.replace).toHaveBeenCalledWith("/voice"));
+    fireEvent.change(screen.getByLabelText("Business name"), { target: { value: "Other" } });
+    await waitFor(() => expect(screen.getByText("agents@other.thelightbulb.company")).toBeInTheDocument());
+    expect(screen.getByRole("button", { name: "Continue" })).toBeDisabled();
+    fireEvent.submit(screen.getByRole("button", { name: "Continue" }).closest("form")!);
+    expect(clerk.apiPost).not.toHaveBeenCalled();
+    expect(clerk.save).not.toHaveBeenCalled();
+  });
+  it("writes nothing to the assistant when the claim fails, and says so", async () => {
+    const { ApiError } = await vi.importActual<typeof import("@lightbulb/shared")>("@lightbulb/shared");
+    clerk.apiGet.mockImplementation(async () => ({ slug: "acme", available: true, reason: null, domain: "thelightbulb.company" }));
+    clerk.apiPost.mockImplementation(async (path: string) => {
+      if (path === "/company/slug/claim") throw new ApiError(500, { detail: "boom" }, "boom");
+      return {};
+    });
+    render(<OnboardingPage />);
+    fireEvent.change(screen.getByLabelText("Business name"), { target: { value: "Acme" } });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("We couldn't set up your business. Please try again.");
+    expect(clerk.save).not.toHaveBeenCalled();
+    expect(clerk.replace).not.toHaveBeenCalled();
+  });
+  it("says so when the assistant's setup cannot be read, instead of a silent disabled button", () => {
+    clerk.config = undefined;
+    clerk.configError = new Error("offline");
+    render(<OnboardingPage />);
+    expect(screen.getByRole("alert")).toHaveTextContent("We couldn't load your setup. Reload the page to try again.");
   });
   it("lets the owner edit the slug, and blocks creation while it is taken", async () => {
     clerk.apiGet.mockImplementation(async (path: string) => {

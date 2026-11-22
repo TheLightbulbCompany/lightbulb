@@ -3,8 +3,9 @@ the cancel on Clerk `user.deleted`. Stripe is always faked; DynamoDB is moto."""
 
 import asyncio
 import json
+from contextlib import contextmanager
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 from urllib.parse import parse_qs, urlparse
 
 import boto3
@@ -16,9 +17,11 @@ from moto import mock_aws
 
 from core import dynamodb
 from core.config import settings
+from core.repositories import user_repo
 from core.services import os_billing, stripe_webhook_handlers, webhook_dedup
 from main import app
 from tests.unit.auth.conftest import Tenant, jwks  # noqa: F401
+from tests.unit.services.test_account_wipe import wipe_mocks  # noqa: F401
 
 A, B = Tenant("user_a", None), Tenant("user_b", None)
 DAY, HOUR = 86400, 3600
@@ -461,25 +464,37 @@ async def test_an_event_for_a_person_with_no_spark_account_writes_nothing(ddb, c
 # --- account deletion ----------------------------------------------------------------------------------------
 
 
-async def test_user_deleted_cancels_a_live_spark_subscription(ddb, clock, fake, monkeypatch):
+_USER_GET, _USER_DELETE = user_repo.get, user_repo.delete
+
+
+@contextmanager
+def real_users_row():
+    """Under ``wipe_mocks`` (the tenant wipe's other steps stubbed): the users row, which holds the Spark
+    subscription, stays real DynamoDB."""
+    with patch.object(user_repo, "get", _USER_GET), patch.object(user_repo, "delete", _USER_DELETE):
+        yield
+
+
+async def test_user_deleted_cancels_a_live_spark_subscription(wipe_mocks, ddb, clock, fake, monkeypatch):  # noqa: F811
     monkeypatch.setattr("routers.webhooks._verify_svix_signature", lambda body, headers: None)
-    monkeypatch.setattr("routers.webhooks._handle_user_deleted_paperclip", AsyncMock())
-    monkeypatch.setattr("core.services.workspace_memory.delete_person_memory", AsyncMock())
     monkeypatch.setattr(webhook_dedup, "begin_event_processing", AsyncMock(return_value="claim"))
     monkeypatch.setattr(webhook_dedup, "complete_event_processing", AsyncMock())
+    wipe_mocks.messaging_list_rooms.return_value = []  # Spark-only people: no rooms
     await account(A), await account(B)
     subscribe(ddb, "user_a", status="active")
     subscribe(ddb, "user_b", status="canceled", sub="sub_b")
     fake.subs["sub_1"] = "active"
-    for who in ("user_a", "user_b"):
-        r = await req(
-            "POST",
-            "/webhooks/clerk",
-            json={"type": "user.deleted", "data": {"id": who, "deleted": True}},
-            headers={"svix-id": f"msg_{who}", "svix-timestamp": "1", "svix-signature": "x"},
-        )
-        assert r.status_code == 200, r.text
-    assert [c for c in fake.calls if c[0] == "cancel"] == [("cancel", {"id": "sub_1"})]
+    with real_users_row():
+        for who in ("user_a", "user_b"):
+            r = await req(
+                "POST",
+                "/webhooks/clerk",
+                json={"type": "user.deleted", "data": {"id": who, "deleted": True}},
+                headers={"svix-id": f"msg_{who}", "svix-timestamp": "1", "svix-signature": "x"},
+            )
+            assert r.status_code == 200, r.text
+    assert [c for c in fake.calls if c[0] == "cancel"] == [("cancel", {"id": "sub_1"})]  # once, only the live one
+    assert "Item" not in ddb.users.get_item(Key={"user_id": "user_a"})
 
 
 # --- review fixes: duplicates, the billed guard, referrals, gone subscriptions -----------------------------
@@ -609,13 +624,11 @@ async def test_a_referral_stands_when_stripe_fails(ddb, clock, fake, monkeypatch
     assert "os_billing.trial_extend_failed" in metrics
 
 
-async def test_user_deleted_wipes_memory_before_the_spark_cancel(ddb, clock, fake, monkeypatch):
+async def test_user_deleted_wipes_memory_before_the_spark_cancel(wipe_mocks, ddb, clock, fake, monkeypatch):  # noqa: F811
     order = []
     monkeypatch.setattr("routers.webhooks._verify_svix_signature", lambda body, headers: None)
-    monkeypatch.setattr("routers.webhooks._handle_user_deleted_paperclip", AsyncMock())
-    monkeypatch.setattr(
-        "core.services.workspace_memory.delete_person_memory", AsyncMock(side_effect=lambda u: order.append("memory"))
-    )
+    wipe_mocks.person_memory_delete.side_effect = lambda u: order.append("memory")
+    wipe_mocks.messaging_list_rooms.return_value = []
     monkeypatch.setattr(os_billing, "cancel_for_deleted_user", AsyncMock(side_effect=lambda u: order.append("spark")))
     monkeypatch.setattr(webhook_dedup, "begin_event_processing", AsyncMock(return_value="claim"))
     monkeypatch.setattr(webhook_dedup, "complete_event_processing", AsyncMock())

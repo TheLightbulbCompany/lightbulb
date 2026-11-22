@@ -147,13 +147,24 @@ async def test_ensure_team_address_reasons(monkeypatch, team):
 
 @pytest.mark.asyncio
 async def test_ensure_team_address_mints_nothing_for_a_person(monkeypatch, team):
-    """A person's tenant has no team address yet: no slug is allocated and no row is written."""
+    """A person who has not claimed a slug has no team address: no slug is allocated and no row is written."""
     slug, put = AsyncMock(return_value="solo"), AsyncMock()
     monkeypatch.setattr(ae, "allocate_company_slug", slug)
     monkeypatch.setattr(ae.agent_email_repo, "put", put)
+    monkeypatch.setattr(ae.company_slug_repo, "get_by_owner", AsyncMock(return_value=None))
     assert await ae.ensure_team_address("user_o", "o@x.y") == (None, "disabled")
     slug.assert_not_awaited()
     put.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_ensure_team_address_answers_a_persons_claimed_slug(monkeypatch, team):
+    """A person's claimed slug is their address; nothing new is allocated for it."""
+    slug = AsyncMock()
+    monkeypatch.setattr(ae, "allocate_company_slug", slug)
+    monkeypatch.setattr(ae.agent_email_repo, "get_by_address", AsyncMock(return_value={"owner_id": "user_o"}))
+    assert await ae.ensure_team_address("user_o", "o@x.y") == (TEAM, "ok")
+    slug.assert_not_awaited()
 
 
 @pytest.mark.asyncio

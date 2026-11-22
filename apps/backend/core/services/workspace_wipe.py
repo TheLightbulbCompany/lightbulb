@@ -82,13 +82,11 @@ import logging
 from dataclasses import dataclass, field
 from typing import Awaitable, Callable
 
-import boto3
 
 from core.auth import is_org_owner_id
 from core.billing.bedrock_gate_tokens import delete_gate_token_rows, owner_gate_token_hashes
 from core.billing.metronome_fast_gate import MetronomeFastGate
 from core.config import settings
-from core.dynamodb import get_table, run_in_thread
 from core.repositories import (
     agent_email_repo,
     billing_repo,
@@ -116,15 +114,14 @@ from core.services.account_wipe import (
     _runtime_detail,
     _skip,
     _step,
+    retire_openrouter_key,
     wipe_engine_state,
 )
 from core.services.billing_service import delete_stripe_customer
-from core.services.credentials import integration_secret_store
 from core.services.hermes_provisioning import delete_workspace_runtime
 from core.voice.voice_calls import wipe_owner_voice
 from core.services.oauth_service import revoke_user_oauth
 from core.services.owner_secret_sweep import (
-    _list_names_with_prefix,
     delete_owner_secrets,
     list_owner_secret_names,
 )
@@ -679,39 +676,6 @@ def _openrouter_preview(snap: WorkspaceSnapshot) -> tuple[bool, str]:
     return True, f"managed OpenRouter key (state={snap.openrouter_row.get('state')}): retire, then row + secret"
 
 
-async def _delete_openrouter_key(owner_id: str) -> None:
-    """Drop the key row and every secret under the owner's OpenRouter prefix
-    (earlier hashes included). Only called once the key is ``disabled``."""
-    prefix = f"lightbulb/{settings.ENVIRONMENT or 'dev'}/openrouter/owners/{owner_id}/"
-
-    def _delete() -> None:
-        sm = boto3.client("secretsmanager", region_name=settings.AWS_REGION)
-        for name in _list_names_with_prefix(sm, prefix):  # legacy, until migrate_secrets_to_envelopes runs
-            sm.delete_secret(SecretId=name, ForceDeleteWithoutRecovery=True)
-        for provider in integration_secret_store.envelope_providers(owner_id):
-            if provider.startswith("openrouter/"):
-                integration_secret_store.delete_envelope(owner_id, provider)
-        get_table("openrouter-keys").delete_item(Key={"owner_id": owner_id})
-
-    await run_in_thread(_delete)
-
-
-async def _openrouter_run(snap: WorkspaceSnapshot) -> str:
-    row = await openrouter_key_repo.get(snap.org_id)
-    if row is None:
-        return "no managed OpenRouter key"
-    if row.get("state") != "disabled":
-        # The same retirement entitlement_teardown uses. The settlement worker
-        # drains pending generations with the key's secret, then disables it
-        # upstream — deleting row + secret now would strand a LIVE upstream key.
-        # Retiring is terminal for the wipe: the gate refuses a non-active key and no runtime
-        # ever holds it, so nothing can spend it. The worker's own cleanup finishes it.
-        await openrouter_key_repo.mark_retiring(snap.org_id)
-        return f"OpenRouter key {row.get('state')} -> retiring; the settlement worker disables and cleans it up"
-    await _delete_openrouter_key(snap.org_id)
-    return "disabled OpenRouter key row + secrets deleted"
-
-
 async def _join_link_run(snap: WorkspaceSnapshot) -> str:
     await workspace_join_repo.delete_link(snap.org_id)
     return "workspace join link deleted"
@@ -848,7 +812,13 @@ WORKSPACE_STEP_REGISTRY: tuple[WorkspaceStepDef, ...] = (
     WorkspaceStepDef(
         "owner_secrets", "delete_owner_secrets", LAYER_SECRETS, _owner_secrets_preview, _owner_secrets_run
     ),
-    WorkspaceStepDef("openrouter_key", "retire_and_delete", LAYER_SECRETS, _openrouter_preview, _openrouter_run),
+    WorkspaceStepDef(
+        "openrouter_key",
+        "retire_and_delete",
+        LAYER_SECRETS,
+        _openrouter_preview,
+        lambda snap: retire_openrouter_key(snap.org_id),
+    ),
     WorkspaceStepDef("integrations", "delete_all_for_owner", LAYER_SECRETS, _integrations_preview, _integrations_run),
     WorkspaceStepDef(
         "oauth_tokens",

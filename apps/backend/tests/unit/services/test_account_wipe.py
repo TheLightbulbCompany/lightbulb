@@ -74,6 +74,7 @@ EXPECTED_ORDER = [
     # mail, and their company slug stayed reserved forever. All BEFORE
     # clerk_user, which stays last so nothing regrows.
     "owner_secrets",
+    "openrouter_key",
     "integrations",
     "oauth_tokens",
     "agent_email_addresses",
@@ -226,6 +227,9 @@ def wipe_mocks():
     # swap the real implementation back in via side_effect.
     gate_tokens_delete = AsyncMock(return_value=3)
     engine_wipe = AsyncMock(return_value="engine state removed")
+    openrouter_get = AsyncMock(return_value=None)
+    openrouter_retire = AsyncMock(return_value=True)
+    held_number = AsyncMock(return_value="")
 
     # ExitStack, not a parenthesised `with (patch(...), ...)` chain: that
     # form is one statically nested block PER patch and CPython caps those
@@ -278,6 +282,9 @@ def wipe_mocks():
         ("core.services.account_wipe.slack_installs_repo.delete_all_for_owner", slack_installs_delete),
         ("core.services.account_wipe.company_slug_repo.get_by_owner", slug_get),
         ("core.services.account_wipe.company_slug_repo.delete_for_owner", slug_delete),
+        ("core.services.account_wipe.openrouter_key_repo.get", openrouter_get),
+        ("core.services.account_wipe.openrouter_key_repo.mark_retiring", openrouter_retire),
+        ("core.services.account_wipe.voice_onboarding.held_number", held_number),
     ]
     with ExitStack() as _stack:
         for _target, _new in _patches:
@@ -327,6 +334,9 @@ def wipe_mocks():
             slug_delete=slug_delete,
             gate_tokens_delete=gate_tokens_delete,
             engine_wipe=engine_wipe,
+            openrouter_get=openrouter_get,
+            openrouter_retire=openrouter_retire,
+            held_number=held_number,
         )
 
 
@@ -561,8 +571,9 @@ async def test_skips_billing_dependent_steps_when_no_billing_row(wipe_mocks):
 
 @pytest.mark.asyncio
 async def test_skips_paperclip_user_steps_when_no_identity_row(wipe_mocks):
-    """No identity row -> paperclip_row deletes no identity row; the membership archive (keyed by Clerk
-    workspaces, not the row) and the rest of the wipe still run.
+    """No identity row -> paperclip_row still deletes by key (the person's own workspace row has the same
+    key and is idempotent to delete); the membership archive (keyed by Clerk workspaces, not the row) and
+    the rest of the wipe still run.
 
     paperclip_row itself does NOT skip: its pending-brief delete is attempted
     unconditionally (the snapshot predates every step), so the step
@@ -575,7 +586,7 @@ async def test_skips_paperclip_user_steps_when_no_identity_row(wipe_mocks):
     assert by_system["paperclip_membership"].status == "ok"
     assert by_system["paperclip_row"].status == "ok"
     assert by_system["paperclip_row"].detail == "no paperclip-companies or pending_brief row"
-    wipe_mocks.paperclip_row_delete.assert_not_awaited()
+    wipe_mocks.paperclip_row_delete.assert_awaited_once_with(OWNER_ID)
     wipe_mocks.pending_brief_delete.assert_awaited_once_with(OWNER_ID)
     assert by_system["runtime"].status == "ok"
     assert by_system["clerk_user"].status == "ok"
@@ -644,6 +655,7 @@ async def test_clerk_delete_still_runs_when_every_other_step_fails(wipe_mocks):
     wipe_mocks.messaging_list_rooms.side_effect = RuntimeError("ddb down")
     wipe_mocks.person_memory_delete.side_effect = RuntimeError("memory down")
     wipe_mocks.engine_wipe.side_effect = RuntimeError("temporal down")
+    wipe_mocks.openrouter_get.side_effect = RuntimeError("ddb down")
 
     report = await wipe_account(OWNER_ID, actor_admin_id="admin_1")
 
@@ -870,6 +882,7 @@ async def test_preview_wipe_calls_no_delete_method(wipe_mocks):
 
 @pytest.mark.asyncio
 async def test_preview_wipe_would_delete_everything_present(wipe_mocks):
+    wipe_mocks.openrouter_get.return_value = {"owner_id": OWNER_ID, "state": "active"}
     with patch("core.services.account_wipe.settings.OWNER_STATE_BUCKET", "lightbulb-dev-openclaw-replicas"):
         report = await preview_wipe(OWNER_ID)
 

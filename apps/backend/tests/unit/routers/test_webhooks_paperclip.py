@@ -20,6 +20,7 @@ import pytest
 from moto import mock_aws
 
 from core.services import webhook_dedup as _webhook_dedup
+from tests.unit.services.test_account_wipe import OWNER_ID, wipe_mocks  # noqa: F401
 
 _REAL_BEGIN_EVENT_PROCESSING = _webhook_dedup.begin_event_processing
 _REAL_COMPLETE_EVENT_PROCESSING = _webhook_dedup.complete_event_processing
@@ -397,36 +398,90 @@ async def test_membership_deleted_fence_failure_redelivers(lifecycle_io, remove_
 
 
 # ----------------------------------------------------------------------
-# user.deleted -> delete the identity row
+# user.deleted -> the person's own tenant is wiped
 # ----------------------------------------------------------------------
 
 
+async def _user_deleted(async_client, user_id: str = OWNER_ID):
+    payload = {"type": "user.deleted", "data": {"id": user_id, "deleted": True}}
+    return await async_client.post("/api/v1/webhooks/clerk", json=payload, headers=_svix_headers())
+
+
 @pytest.mark.asyncio
-async def test_user_deleted_deletes_identity_row(async_client, monkeypatch):
-    """``user.deleted`` deletes the user's stored
-    identity row (their memberships leave with each org's ``organizationMembership.deleted``).
-    """
+async def test_user_deleted_tears_down_tenant(async_client, monkeypatch, wipe_mocks):  # noqa: F811
+    """The person's own tenant goes for good (runtime with profiles and memory, engine state, managed key,
+    credentials, rooms, billing, users row), with no Clerk read or delete, no org touched and no phone
+    line released."""
     _bypass_svix(monkeypatch)
+    wipe_mocks.openrouter_get.return_value = {"owner_id": OWNER_ID, "state": "active"}
 
-    repo_delete = AsyncMock(return_value=None)
+    resp = await _user_deleted(async_client)
 
-    payload = {"type": "user.deleted", "data": {"id": "user_x", "deleted": True}}
-    person_wipe = AsyncMock()
+    assert resp.status_code == 200, resp.text
+    wipe_mocks.engine_wipe.assert_awaited_once_with(OWNER_ID)
+    wipe_mocks.delete_workspace_runtime.assert_awaited_once_with(OWNER_ID, delete_profiles=True, report={})
+    wipe_mocks.openrouter_retire.assert_awaited_once_with(OWNER_ID)
+    wipe_mocks.stripe_delete.assert_awaited_once_with(OWNER_ID)
+    wipe_mocks.messaging_delete_owner.assert_awaited_once_with(OWNER_ID)
+    wipe_mocks.person_memory_delete.assert_awaited_once_with(OWNER_ID)
+    wipe_mocks.paperclip_row_delete.assert_awaited_once_with(OWNER_ID)  # identity + the person's workspace row
+    wipe_mocks.owner_secrets_delete.assert_awaited_once_with(OWNER_ID)
+    wipe_mocks.user_delete.assert_awaited_once_with(OWNER_ID)
+    # Clerk already deleted the person: nothing reads or deletes there, and orgs they belonged to are kept.
+    wipe_mocks.clerk_list_user_orgs.assert_not_awaited()
+    wipe_mocks.paperclip_archive_member.assert_not_awaited()
+    wipe_mocks.clerk_delete.assert_not_awaited()
+    wipe_mocks.phone_release.assert_not_awaited()
 
-    with (
-        patch("core.services.workspace_memory.delete_person_memory", new=person_wipe),
-        patch("core.repositories.workspace_repo.WorkspaceRepo.delete", new=repo_delete),
-        patch("core.services.os_billing.cancel_for_deleted_user", new=AsyncMock()),
-    ):
-        resp = await async_client.post(
-            "/api/v1/webhooks/clerk",
-            json=payload,
-            headers=_svix_headers(),
-        )
 
-    assert resp.status_code == 200
-    repo_delete.assert_awaited_once_with("user_x")
-    person_wipe.assert_awaited_once_with("user_x")  # their sessions, drafts, episodes and keys
+@pytest.mark.asyncio
+async def test_user_deleted_without_a_tenant_is_a_clean_no_op(async_client, monkeypatch, wipe_mocks):  # noqa: F811
+    """Most people deleted are Spark-only: no runtime, billing, rooms or users row to remove."""
+    _bypass_svix(monkeypatch)
+    wipe_mocks.container_get.return_value = None
+    wipe_mocks.billing_get.return_value = None
+    wipe_mocks.user_get.return_value = None
+    wipe_mocks.messaging_list_rooms.return_value = []
+    wipe_mocks.identities.pop(OWNER_ID)
+
+    resp = await _user_deleted(async_client)
+
+    assert resp.status_code == 200, resp.text
+    wipe_mocks.delete_workspace_runtime.assert_not_awaited()
+    wipe_mocks.stripe_delete.assert_not_awaited()
+    wipe_mocks.user_delete.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_user_deleted_fails_the_event_and_the_redelivery_finishes(async_client, monkeypatch, wipe_mocks):  # noqa: F811
+    """A failed step answers 5xx (the lifecycle claim stays open), so Svix redelivers; every step is
+    idempotent, so the redelivery completes the wipe."""
+    _bypass_svix(monkeypatch)
+    wipe_mocks.person_memory_delete.side_effect = [RuntimeError("down"), None]
+
+    first = await _user_deleted(async_client)
+    second = await _user_deleted(async_client)
+
+    assert first.status_code == 503 and "person_memory" in first.text
+    assert second.status_code == 200, second.text
+    assert wipe_mocks.person_memory_delete.await_count == 2
+    from core.services import webhook_dedup
+
+    webhook_dedup.complete_event_processing.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_user_deleted_keeps_a_held_phone_line_for_an_admin_wipe(async_client, monkeypatch, wipe_mocks):  # noqa: F811
+    """A line is never released silently: the tenant's messaging rows stay so an admin wipe can release it."""
+    _bypass_svix(monkeypatch)
+    wipe_mocks.held_number.return_value = "+15550000000"
+
+    resp = await _user_deleted(async_client)
+
+    assert resp.status_code == 200, resp.text
+    wipe_mocks.phone_release.assert_not_awaited()
+    wipe_mocks.messaging_delete_owner.assert_not_awaited()
+    wipe_mocks.messaging_delete_room.assert_not_awaited()
 
 
 # ----------------------------------------------------------------------
@@ -786,20 +841,6 @@ def no_evaluator_wipe(monkeypatch):
         mocks[name] = AsyncMock(return_value=value)
         monkeypatch.setattr(mod, name, mocks[name])
     return mocks
-
-
-@pytest.mark.asyncio
-async def test_user_deleted_fails_the_event_when_the_person_wipe_fails(async_client, monkeypatch):
-    """Memory records never expire: a failed wipe must be redelivered, not acknowledged."""
-    _bypass_svix(monkeypatch)
-    payload = {"type": "user.deleted", "data": {"id": "user_x", "deleted": True}}
-    with (
-        patch("core.services.workspace_memory.delete_person_memory", new=AsyncMock(side_effect=RuntimeError("down"))),
-        patch("core.repositories.workspace_repo.WorkspaceRepo.delete", new=AsyncMock()),
-        patch("core.services.os_billing.cancel_for_deleted_user", new=AsyncMock()),
-        pytest.raises(RuntimeError, match="down"),  # the app error reaches the client: no 200 to ack
-    ):
-        await async_client.post("/api/v1/webhooks/clerk", json=payload, headers=_svix_headers())
 
 
 @pytest.mark.asyncio

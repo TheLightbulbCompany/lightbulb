@@ -184,7 +184,7 @@ def ws_mocks():
         ("core.services.workspace_wipe.clerk_admin.list_organization_members", clerk_org_members),
         ("core.services.workspace_wipe.openrouter_key_repo.get", openrouter_get),
         ("core.services.workspace_wipe.openrouter_key_repo.mark_retiring", openrouter_retire),
-        ("core.services.workspace_wipe._delete_openrouter_key", openrouter_delete),
+        ("core.services.account_wipe._delete_openrouter_key", openrouter_delete),
         ("core.services.workspace_wipe.workspace_join_repo.get_link", join_link_get),
         ("core.services.workspace_wipe.workspace_join_repo.delete_link", join_link_delete),
         ("core.services.workspace_wipe.MetronomeFastGate", MagicMock(return_value=fast_gate_instance)),
@@ -721,6 +721,7 @@ async def test_user_wipe_names_workspace_when_container_missing():
         stack.enter_context(_patch.object(_mod.agent_email_repo, "query_by_owner", new=_AsyncMock(return_value=[])))
         stack.enter_context(_patch.object(_mod.slack_installs_repo, "list_for_owner", new=_AsyncMock(return_value=[])))
         stack.enter_context(_patch.object(_mod.company_slug_repo, "get_by_owner", new=_AsyncMock(return_value=None)))
+        stack.enter_context(_patch.object(_mod.openrouter_key_repo, "get", new=_AsyncMock(return_value=None)))
         preview = await _mod.preview_wipe(MEMBER_A)
 
     runtime = next(s for s in preview.steps if s.system == "runtime")

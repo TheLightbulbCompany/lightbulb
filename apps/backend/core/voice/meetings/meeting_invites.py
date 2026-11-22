@@ -20,6 +20,7 @@ from zoneinfo import ZoneInfo
 from botocore.exceptions import ClientError
 from dateutil.rrule import DAILY, rruleset, rrulestr
 
+from core.auth import is_org_owner_id
 from core.config import settings
 from core.dynamodb import is_cancelled
 from core.engine import engine
@@ -579,11 +580,17 @@ async def handle_team_mail(
     if not authenticated_sender(payload.verdicts or {}, payload.headers or {}, sender):
         return None
     # The shared-address router can resolve a verified secondary email to a Clerk user.
-    # Recheck current workspace membership here; no value from the mail payload grants authority.
-    members = await clerk_admin.list_organization_members(owner_id, strict=True)
-    if verified_sender_user_id is not None:
+    # Recheck who may create here; no value from the mail payload grants authority.
+    if not is_org_owner_id(owner_id):  # a person's tenant: only that person
+        own = verified_sender_user_id == owner_id or (
+            sender and sender == (await clerk_admin.get_primary_email(owner_id)).lower()
+        )
+        creator = owner_id if own else None
+    elif verified_sender_user_id is not None:
+        members = await clerk_admin.list_organization_members(owner_id, strict=True)
         creator = next((m["user_id"] for m in members if m.get("user_id") == verified_sender_user_id), None)
     else:
+        members = await clerk_admin.list_organization_members(owner_id, strict=True)
         by_email = {str(m["email"]).lower(): m["user_id"] for m in members if m.get("email")}
         creator = by_email.get(sender) if sender else None
     if creator is None:

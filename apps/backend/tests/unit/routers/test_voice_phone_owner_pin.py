@@ -202,3 +202,14 @@ async def test_the_right_pin_flips_the_call_and_the_next_line_is_the_members_own
     with patch.object(engine_api, "_agent_lines", AsyncMock(return_value={"messages": [], "after": 7})) as lines:
         r = client.post(f"/api/v1/internal/voice/calls/{call['callId']}/events", json={"after": 5}, headers=W)
     assert r.json() == {"messages": [], "after": 7} and lines.await_args.args == ("org_1", DM, 5)
+
+
+async def test_my_bookings_cross_account(client, router_seat, dm):
+    """Owner phone mode takes the PIN of the tenant whose line was called. Person B's PIN, saved in B's own
+    tenant for the same mobile, never opens owner mode (or my-bookings) on tenant A's line."""
+    await _set(auth=AuthContext(user_id="user_b", human_session=True))
+    call = await _start(client)
+    assert call["ownerPin"] is False
+    assert _pin(client, call, "4821") == {"ok": False}
+    assert (await messaging_repo.get_room(call["callId"]))["call"]["ownerMode"] is False
+    dm.assert_not_awaited()

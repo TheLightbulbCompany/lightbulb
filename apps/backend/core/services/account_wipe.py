@@ -23,7 +23,9 @@ Two entry points:
   killed account can never regrow on the next ``/container/status`` poll).
 
 Refuses org owner ids (``OrgWipeUnsupportedError``) — the target is always a
-Clerk USER. Wiping a whole workspace (its rows and every member) is
+Clerk USER. Two callers: the admin wipe, and the Clerk ``user.deleted`` webhook
+(``clerk_user_deleted=True``: no Clerk read or delete, no workspace touched, a
+held phone line kept for an admin wipe). Wiping a whole workspace (its rows and every member) is
 ``core.services.workspace_wipe`` — the workspace-keyed
 orchestrator that snapshots by ORG id; see its module docstring and the design
 spec's "Out of scope: Org accounts" follow-up note. When a user-keyed wipe
@@ -84,12 +86,15 @@ import logging
 from dataclasses import dataclass, field
 from typing import Awaitable, Callable, Literal
 
+import boto3
 import httpx
 
 from core.auth import is_org_owner_id
 from core.billing.bedrock_gate_tokens import delete_gate_token_rows, owner_gate_token_hashes
 from core.billing.metronome_client import for_settings as metronome_for_settings
 from core.config import settings
+from core.dynamodb import get_table, run_in_thread
+from core.services.credentials import integration_secret_store
 from core.services.hermes_provisioning import delete_workspace_runtime
 from core.voice.voice_calls import wipe_owner_voice
 from core.repositories import (
@@ -99,6 +104,7 @@ from core.repositories import (
     container_repo,
     integrations_repo,
     messaging_repo,
+    openrouter_key_repo,
     slack_installs_repo,
     usage_repo,
     user_repo,
@@ -111,6 +117,7 @@ from core.voice.phone import voice_onboarding
 from core.services.billing_service import delete_stripe_customer
 from core.services.oauth_service import revoke_user_oauth
 from core.services.owner_secret_sweep import (
+    _list_names_with_prefix,
     delete_owner_secrets,
     list_owner_secret_names,
 )
@@ -177,6 +184,40 @@ async def wipe_engine_state(owner_id: str) -> str:
     if stuck_note:
         raise RuntimeError(f"{detail}; {stuck_note}")
     return detail
+
+
+async def _delete_openrouter_key(owner_id: str) -> None:
+    """Drop the key row and every secret under the owner's OpenRouter prefix
+    (earlier hashes included). Only called once the key is ``disabled``."""
+    prefix = f"lightbulb/{settings.ENVIRONMENT or 'dev'}/openrouter/owners/{owner_id}/"
+
+    def _delete() -> None:
+        sm = boto3.client("secretsmanager", region_name=settings.AWS_REGION)
+        for name in _list_names_with_prefix(sm, prefix):  # legacy, until migrate_secrets_to_envelopes runs
+            sm.delete_secret(SecretId=name, ForceDeleteWithoutRecovery=True)
+        for provider in integration_secret_store.envelope_providers(owner_id):
+            if provider.startswith("openrouter/"):
+                integration_secret_store.delete_envelope(owner_id, provider)
+        get_table("openrouter-keys").delete_item(Key={"owner_id": owner_id})
+
+    await run_in_thread(_delete)
+
+
+async def retire_openrouter_key(owner_id: str) -> str:
+    """Retire the owner's managed OpenRouter key, or delete it once the settlement worker has disabled it."""
+    row = await openrouter_key_repo.get(owner_id)
+    if row is None:
+        return "no managed OpenRouter key"
+    if row.get("state") != "disabled":
+        # The same retirement entitlement_teardown uses. The settlement worker
+        # drains pending generations with the key's secret, then disables it
+        # upstream; deleting row + secret now would strand a LIVE upstream key.
+        # Retiring is terminal for the wipe: the gate refuses a non-active key and no runtime
+        # ever holds it, so nothing can spend it. The worker's own cleanup finishes it.
+        await openrouter_key_repo.mark_retiring(owner_id)
+        return f"OpenRouter key {row.get('state')} -> retiring; the settlement worker disables and cleans it up"
+    await _delete_openrouter_key(owner_id)
+    return "disabled OpenRouter key row + secrets deleted"
 
 
 def text_release_note(released: int, failed: list[str]) -> str:
@@ -315,14 +356,14 @@ class _Identifiers:
     has a pending brief and no company row at all."""
 
 
-async def _read_identifiers(owner_id: str) -> _Identifiers:
+async def _read_identifiers(owner_id: str, *, read_clerk: bool = True) -> _Identifiers:
     user_row = await user_repo.get(owner_id)
     container = await container_repo.get_by_owner_id(owner_id)
     workspace_repo = WorkspaceRepo()
     paperclip = await workspace_repo.get_identity(owner_id)
     pending_brief = await workspace_repo.get_pending_brief(owner_id)
     billing = await billing_repo.get_by_owner_id(owner_id)
-    workspaces = await _workspaces_of(owner_id)
+    workspaces = await _workspaces_of(owner_id) if read_clerk else []
     return _Identifiers(
         user_row=user_row,
         container=container,
@@ -686,6 +727,16 @@ async def preview_wipe(owner_id: str) -> WipeReport:
         detail_if_absent="no owner secrets",
     )
 
+    key_row = await openrouter_key_repo.get(owner_id)
+    _preview_step(
+        steps,
+        system="openrouter_key",
+        action="retire_and_delete",
+        exists=key_row is not None,
+        detail_if_exists=f"managed OpenRouter key (state={(key_row or {}).get('state')}): retire, then row + secret",
+        detail_if_absent="no managed OpenRouter key",
+    )
+
     integration_rows = await integrations_repo.list_for_owner(owner_id)
     _preview_step(
         steps,
@@ -738,8 +789,13 @@ async def preview_wipe(owner_id: str) -> WipeReport:
 # ---------------------------------------------------------------------------
 
 
-async def wipe_account(owner_id: str, *, actor_admin_id: str) -> WipeReport:
+async def wipe_account(owner_id: str, *, actor_admin_id: str, clerk_user_deleted: bool = False) -> WipeReport:
     """Execute the ordered teardown (design spec steps 1-12).
+
+    ``clerk_user_deleted``: Clerk already deleted the person (the ``user.deleted`` webhook). Then the wipe
+    reads nothing from Clerk and deletes no Clerk user, removes the person from no workspace (each org's
+    ``organizationMembership.deleted`` does that), and releases no phone line: a tenant holding one keeps
+    its messaging rows so an admin wipe can release the line.
 
     ``actor_admin_id`` is not used for a delete decision here — it exists so
     callers (and any future audit hook inside this function) have the actor
@@ -749,7 +805,7 @@ async def wipe_account(owner_id: str, *, actor_admin_id: str) -> WipeReport:
     """
     _refuse_org_owners(owner_id)
 
-    ids = await _read_identifiers(owner_id)
+    ids = await _read_identifiers(owner_id, read_clerk=not clerk_user_deleted)
     # Before any step runs: a raise here stops the wipe with nothing deleted.
     memberships = await _workspace_memberships(ids.workspaces, owner_id)
     steps: list[WipeStep] = []
@@ -827,8 +883,8 @@ async def wipe_account(owner_id: str, *, actor_admin_id: str) -> WipeReport:
             except Exception:  # noqa: BLE001
                 logger.warning("voice wipe failed owner=%s", owner_id, exc_info=True)
             # M6-R42: this is one of exactly THREE terminal callers that pass
-            # ``delete_profiles=True`` -- this wipe, ``workspace_wipe`` (org-keyed),
-            # and ``routers/debug.py``'s ``DELETE /debug/user-data`` (the e2e
+            # ``delete_profiles=True`` -- this wipe (an admin's, or Clerk ``user.deleted``'s),
+            # ``workspace_wipe`` (org-keyed), and ``routers/debug.py``'s ``DELETE /debug/user-data`` (the e2e
             # empty-slate reset; debug is 403 in prod).
             # Every other caller (entitlement_teardown on a lapsed card, debug's routine
             # reprovision) leaves it False and keeps the owner's memory/skills/SOUL.md/
@@ -917,16 +973,27 @@ async def wipe_account(owner_id: str, *, actor_admin_id: str) -> WipeReport:
             if meta is not None and meta.get("ownerId") != owner_id:
                 raise RuntimeError("messaging owner catalog referenced a room owned elsewhere")
             deleted += await messaging_repo.delete_room_partition(room_id)
-        deleted += bool(await voice_onboarding.release_number(owner_id))  # the PHONE# line row, before the page goes
+        # The PHONE# line row, before the page goes. A Clerk deletion releases no line: it keeps a held line's
+        # rows instead (below).
+        if not clerk_user_deleted:
+            deleted += bool(await voice_onboarding.release_number(owner_id))
         deleted += await messaging_repo.delete_owner_partition(owner_id)
         return f"deleted {len(room_ids)} room partition(s) and {deleted} messaging row(s)"
 
-    await _step(
-        steps,
-        system="messaging",
-        action="delete_owner_rooms_and_streams",
-        fn=_s9a2,
-    )
+    if clerk_user_deleted and await voice_onboarding.held_number(owner_id):
+        _skip(
+            steps,
+            "messaging",
+            "delete_owner_rooms_and_streams",
+            "kept: the tenant holds a phone line; release it with an admin wipe",
+        )
+    else:
+        await _step(
+            steps,
+            system="messaging",
+            action="delete_owner_rooms_and_streams",
+            fn=_s9a2,
+        )
 
     async def _s9a4() -> str:
         # The person's own memory data, in no workspace's keeping: uploaded sessions, drafts and
@@ -961,8 +1028,8 @@ async def wipe_account(owner_id: str, *, actor_admin_id: str) -> WipeReport:
     async def _s9b() -> str:
         repo = WorkspaceRepo()
         deleted: list[str] = []
+        await repo.delete(owner_id)  # the identity row and the person's own workspace row; idempotent
         if ids.paperclip is not None:
-            await repo.delete(owner_id)
             deleted.append("paperclip identity row deleted")
         if await repo.delete_pending_brief(owner_id):
             deleted.append("pending_brief row deleted")
@@ -970,7 +1037,11 @@ async def wipe_account(owner_id: str, *, actor_admin_id: str) -> WipeReport:
 
     await _step(steps, system="paperclip_row", action="paperclip_repo.delete", fn=_s9b)
 
-    if ids.billing is not None:
+    unpaid = [s.system for s in steps if s.system in ("metronome", "stripe") and s.status == "failed"]
+    if unpaid:
+        # A subscription may still be live: the billing row is the re-run's only handle on it.
+        steps.append(WipeStep("billing_row", "billing_repo.delete", "failed", error=f"held back: {unpaid[0]} failed"))
+    elif ids.billing is not None:
 
         async def _s9c() -> str:
             await billing_repo.delete(owner_id)
@@ -1005,6 +1076,7 @@ async def wipe_account(owner_id: str, *, actor_admin_id: str) -> WipeReport:
         return f"deleted {len(names)} owner secret(s) (BYOK keys, integration creds, OAuth apps)"
 
     await _step(steps, system="owner_secrets", action="delete_owner_secrets", fn=_s9f)
+    await _step(steps, system="openrouter_key", action="retire_and_delete", fn=lambda: retire_openrouter_key(owner_id))
 
     async def _s9g() -> str:
         providers = await integrations_repo.delete_all_for_owner(owner_id)
@@ -1053,7 +1125,10 @@ async def wipe_account(owner_id: str, *, actor_admin_id: str) -> WipeReport:
         await clerk_admin.delete_user(owner_id)
         return owner_id
 
-    await _step(steps, system="clerk_user", action="delete_user", fn=_s10)
+    if clerk_user_deleted:
+        _skip(steps, "clerk_user", "delete_user", "already deleted in Clerk")
+    else:
+        await _step(steps, system="clerk_user", action="delete_user", fn=_s10)
 
     logger.info(
         "account_wipe.wipe_account: finished for owner=%s actor=%s ok=%d skipped=%d failed=%d refused=%d",

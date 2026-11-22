@@ -1096,12 +1096,16 @@ INVITE = "\r\n".join(
 )
 
 
+TEAM_ORG = "org_acme"
+
+
 def _team(monkeypatch, members):
+    """An org's team address: its members' invites are meetings."""
     from core.repositories import messaging_repo
     from core.voice.meetings import meeting_invites
 
-    monkeypatch.setattr(ses_inbound, "is_team_address", AsyncMock(return_value=(OWNER_ID, "acme")))
-    team_row = {"owner_id": OWNER_ID, "address": TEAM_ADDRESS, "send_to_anyone": True}
+    monkeypatch.setattr(ses_inbound, "is_team_address", AsyncMock(return_value=(TEAM_ORG, "acme")))
+    team_row = {"owner_id": TEAM_ORG, "address": TEAM_ADDRESS, "send_to_anyone": True}
     monkeypatch.setattr(ses_inbound, "try_consume_stranger_wake", AsyncMock(return_value=True))
     monkeypatch.setattr(ses_inbound, "get_by_address", AsyncMock(return_value=team_row))
     monkeypatch.setattr(ses_inbound, "_ceo", AsyncMock(return_value=CEO_ID))
@@ -1110,7 +1114,7 @@ def _team(monkeypatch, members):
         "list_organization_members",
         AsyncMock(return_value=[{"user_id": f"user_{i}", **m} for i, m in enumerate(members)]),
     )
-    monkeypatch.setattr(messaging_repo, "get_room", AsyncMock(side_effect=[None, *[{"ownerId": OWNER_ID}] * 3]))
+    monkeypatch.setattr(messaging_repo, "get_room", AsyncMock(side_effect=[None, *[{"ownerId": TEAM_ORG}] * 3]))
     monkeypatch.setattr(meeting_invites.container_repo, "try_claim_owner_lifecycle", AsyncMock(return_value="tok"))
     monkeypatch.setattr(meeting_invites.container_repo, "release_owner_lifecycle_claim", AsyncMock())
     put = AsyncMock()
@@ -1280,13 +1284,13 @@ def test_the_first_inbound_creates_the_team_row(client, monkeypatch):
     _enable(monkeypatch)
     _dedup_recorded(monkeypatch)
     _, deliver = _team(monkeypatch, [])
-    row = {"owner_id": OWNER_ID, "address": TEAM_ADDRESS, "send_to_anyone": True}
+    row = {"owner_id": TEAM_ORG, "address": TEAM_ADDRESS, "send_to_anyone": True}
     monkeypatch.setattr(ses_inbound, "get_by_address", AsyncMock(side_effect=[None, row]))
     ensure = AsyncMock(return_value=(TEAM_ADDRESS, "ok"))
     monkeypatch.setattr(ses_inbound, "ensure_team_address", ensure)
 
     assert _post(client, _body(to=[TEAM_ADDRESS])).json()["status"] == "delivered"
-    ensure.assert_awaited_once_with(OWNER_ID, "owner@example.com")
+    ensure.assert_awaited_once_with(TEAM_ORG, "owner@example.com")
 
 
 def test_a_sent_id_from_another_workspace_does_not_pick_the_agent(client, monkeypatch):

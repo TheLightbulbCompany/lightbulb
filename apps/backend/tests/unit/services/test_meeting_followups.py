@@ -150,3 +150,14 @@ async def test_personal_completion_task_status_updates_original_meeting_history(
     assert linked[0]["taskId"] == task["taskId"] and linked[0]["status"] == expected
     assert not world["meta"]["meeting"].get("followUps")
     provider.assert_not_awaited()
+
+
+@pytest.mark.parametrize(("principal", "admitted"), [("user_a", True), ("user_b", False)])
+async def test_meeting_followups_owner_is_inviter(world, principal, admitted):  # noqa: F811
+    """In a person's tenant the one person who may be the inviter is the tenant's person: their completed
+    meeting admits follow-up work, and nobody else's does, even seated as the room's owner."""
+    world["meta"]["ownerId"] = "user_a"
+    world["member"]["id"] = principal
+    world["request"]["principalUserId"] = principal
+    world["trigger"]["actorUserId"] = principal
+    assert await mod.enqueue("user_a", "notes-request", world["request"]) is admitted

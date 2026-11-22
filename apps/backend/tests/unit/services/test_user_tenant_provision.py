@@ -124,3 +124,83 @@ async def test_user_owner_provision_mints_no_slug_or_mailbox(ddb, calls, monkeyp
     # An agent's send later reaches the same funnel.
     assert await agent_email.ensure_team_address(PERSON, f"{PERSON}@example.com") == (None, "disabled")
     assert await company_slug_repo.get_by_owner(PERSON) is None
+
+
+async def test_user_created_writes_the_row_and_provisions_nothing(ddb, calls, sfn, jwks, monkeypatch):  # noqa: F811
+    """Every Clerk sign-up fires user.created, Spark-only people included: it writes the users row and
+    nothing else (no trial row, so no trial clock; no container row; no dispatch). The person's own first
+    open still provisions them: GET /container/status creates the unarmed trial row, POST /container/provision
+    dispatches."""
+    monkeypatch.setattr("routers.webhooks._verify_svix_signature", lambda body, headers: None)
+    payload = {
+        "type": "user.created",
+        "data": {
+            "id": PERSON,
+            "email_addresses": [{"id": "ea_1", "email_address": f"{PERSON}@example.com"}],
+            "primary_email_address_id": "ea_1",
+        },
+    }
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        r = await c.post("/api/v1/webhooks/clerk", json=payload)
+        assert r.status_code == 200, r.text[:300]
+        assert (await user_repo.get(PERSON))["email"] == f"{PERSON}@example.com"
+        assert await billing_repo.get_by_owner_id(PERSON) is None
+        assert await container_repo.get_by_owner_id(PERSON) is None
+        assert sfn == []
+
+        r = await c.get("/api/v1/container/status", headers=Tenant(PERSON, None).headers)
+        assert r.status_code == 200, r.text[:300]
+        row = await billing_repo.get_by_owner_id(PERSON)
+        assert row["subscription_status"] == "trial_local" and row.get("trial_end") is None  # unarmed
+        r = await c.post("/api/v1/container/provision", headers=Tenant(PERSON, None).headers)
+        assert r.status_code in (200, 202), r.text[:300]
+    assert [s["name"].startswith(f"provision-{PERSON}-") for s in sfn] == [True]
+
+
+async def _claim(c, user_id: str, slug: str, name: str = "Alice Studio"):
+    headers = Tenant(user_id, None).headers
+    await company_slug_repo.hold(slug=slug, user_id=user_id)
+    return await c.post("/api/v1/company/slug/claim", json={"slug": slug, "name": name}, headers=headers)
+
+
+async def test_slug_claim_sets_name(ddb, calls, jwks, no_clerk_orgs, monkeypatch):  # noqa: F811
+    """A person's own claim is the one door that gives their tenant a slug, a name and a team address; the
+    provision keeps the name. One slug per tenant, and nobody claims another person's hold.
+
+    Rule before: claiming a slug required an org. Rule after: a person claims for their own tenant."""
+    monkeypatch.setattr(settings, "AGENT_EMAIL_DOMAIN", "dev.thelightbulb.company")
+    await user_repo.put(PERSON, f"{PERSON}@example.com")
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        r = await _claim(c, PERSON, "alice-studio")
+        assert r.status_code == 200, r.text[:300]
+        assert (await _claim(c, PERSON, "alice-other")).json()["detail"] == "slug_already_claimed"
+        await company_slug_repo.hold(slug="bob-studio", user_id="user_b")
+        stolen = await c.post(  # C, with no slug of their own, names B's held slug
+            "/api/v1/company/slug/claim",
+            json={"slug": "bob-studio", "name": "Mine"},
+            headers=Tenant("user_c", None).headers,
+        )
+        assert stolen.json()["detail"] == "slug_hold_lost"
+    address = "agents@alice-studio.dev.thelightbulb.company"
+    assert (await company_slug_repo.get_by_owner(PERSON))["slug"] == "alice-studio"
+    row = await agent_email_repo.get_by_address(address)
+    assert row["owner_id"] == PERSON and row["verified_senders"] == [f"{PERSON}@example.com"]
+    assert await agent_email.ensure_team_address(PERSON, None) == (address, "ok")
+    assert await provision_runner._seed_owner_workspace(PERSON) == provision_runner.EXIT_OK
+    from core.services.workspace_name import workspace_name
+
+    assert await workspace_name(PERSON) == "Alice Studio"
+    assert (await company_slug_repo.get_by_slug("bob-studio"))["owner_id"] != "user_c"
+
+
+async def test_source_adopted_after_provision(ddb, calls, jwks):  # noqa: F811
+    """Where a person came from, answered after their tenant exists, is kept on the tenant (no expiry)."""
+    from core.services import webhook_dedup
+
+    headers = Tenant(PERSON, None).headers
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        assert (await c.get("/api/v1/container/status", headers=headers)).status_code == 200
+        r = await c.post("/api/v1/company/source", json={"answer": "friend"}, headers=headers)
+        assert r.status_code == 200, r.text[:300]
+    item = await webhook_dedup._read_event(f"ws-source:{PERSON}")
+    assert item["record"]["self_reported_source"] == "friend" and "ttl" not in item

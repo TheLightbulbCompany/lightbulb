@@ -1868,10 +1868,10 @@ export class ServiceStack extends cdk.Stack {
       EMAIL_FROM_WELCOME: `Lightbulb <hello@${platformMailDomain}>`,
       EMAIL_SUPPORT_ADDRESS: `support@${platformMailDomain}`,
       EMAIL_FROM_TICKETS: `Lightbulb Support <tickets@${platformMailDomain}>`,
-      // The engine's transport (core/config.py). `inprocess`: nothing calls the engine service yet.
-      // Both URLs are the internal ALB: the engine service on :8082, and the backend's
-      // /api/v1/internal/engine/* callbacks on :80, which the public API Gateway refuses (api-stack.ts).
-      ENGINE_TRANSPORT: "inprocess",
+      // The engine's transport (core/config.py). `http`: the products call the engine service, and the engine's
+      // processes call the products back, over HTTP. Both URLs are the internal ALB: the engine service on :8082,
+      // and the backend's /api/v1/internal/engine/* callbacks on :80, which the public API Gateway refuses (api-stack.ts).
+      ENGINE_TRANSPORT: "http",
       ENGINE_URL: `http://${props.albDnsName}:8082`,
       PRODUCT_CALLBACK_URL: `http://${props.albDnsName}`,
     };
@@ -2569,10 +2569,10 @@ export class ServiceStack extends cdk.Stack {
       enableExecuteCommand: true,
     });
 
-    // Engine service (engine-service plan Task 9): the same image as `uvicorn engine_main:app`, the
-    // engine's operations (/engine/v1) and its runtime callbacks, behind the internal ALB's :8082
-    // listener. Same role, env and secrets as the backend. Nothing calls it while ENGINE_TRANSPORT is
-    // `inprocess`. Keep-alive matches the backend's (Dockerfile) so it outlasts the ALB's 300 s idle timeout.
+    // Engine service: the same image as `uvicorn engine_main:app`, the engine's operations (/engine/v1)
+    // behind the internal ALB's :8082 listener, and the agent runtime's engine callbacks, which the :80
+    // listener sends here by path (network-stack, engine-paths.json). Same role, env and secrets as the
+    // backend. It carries every live voice turn: dev 1 Spot task, prod 2. Keep-alive matches the backend's (Dockerfile) so it outlasts the ALB's 300 s idle timeout.
     const engineTaskDef = new ecs.FargateTaskDefinition(this, "EngineTaskDef", {
       family: `lightbulb-${env}-engine`,
       runtimePlatform: backendRuntimePlatform,
@@ -2616,6 +2616,12 @@ export class ServiceStack extends cdk.Stack {
       enableExecuteCommand: true,
     });
     engineService.attachToApplicationTargetGroup(props.engineTargetGroup);
+    // Prod scales 2-4 on CPU, as the backend does: the engine carries every live voice turn. Dev stays one Spot task.
+    if (env === "prod") {
+      engineService
+        .autoScaleTaskCount({ minCapacity: 2, maxCapacity: 4 })
+        .scaleOnCpuUtilization("Cpu", { targetUtilizationPercent: 60 });
+    }
     // The :8082 listener's only ingress: backend-image processes (backend, Temporal workers, Lambdas).
     new ec2.CfnSecurityGroupIngress(this, "AlbEngineFromService", {
       groupId: props.albSecurityGroup.securityGroupId,

@@ -1613,26 +1613,30 @@ def handler(event, context):
     });
 
     // W89: no healthy engine target. W88 counts only unhealthy hosts, so it is silent at zero tasks.
-    // Maximum over each 5-min period, 2 periods running: it fires only when no host was healthy for
-    // 10 min, so a Spot replacement of dev's single task does not warn. A target group with no
-    // targets can stop publishing, so missing data counts as zero.
+    // The engine carries every live voice turn and the runtime's engine callbacks, so in prod (2+ tasks
+    // on demand) no healthy host is an outage: it pages after 3 min (Maximum per minute, 3 running). In
+    // dev it warns after 10 min (Maximum per 5 min, 2 running), so a Spot replacement of the single
+    // task does not warn. A target group with no targets can stop publishing: missing data counts as zero.
+    const prodEngine = this.envName === "prod";
     this.createAlarm({
       id: "W89",
       name: "engine-healthy-hosts",
-      description: "No healthy engine service target for 10 min (2 consecutive 5-min periods)",
+      description: prodEngine
+        ? "PAGE: no healthy engine service target for 3 min: voice and agent callbacks are down"
+        : "No healthy engine service target for 10 min (2 consecutive 5-min periods)",
       metric: new cloudwatch.Metric({
         namespace: "AWS/ApplicationELB",
         metricName: "HealthyHostCount",
         statistic: "Maximum",
-        period: cdk.Duration.minutes(5),
+        period: cdk.Duration.minutes(prodEngine ? 1 : 5),
         dimensionsMap: engineDims,
       }),
       threshold: 1,
       comparisonOperator: cloudwatch.ComparisonOperator.LESS_THAN_THRESHOLD,
-      evaluationPeriods: 2,
-      datapointsToAlarm: 2,
+      evaluationPeriods: prodEngine ? 3 : 2,
+      datapointsToAlarm: prodEngine ? 3 : 2,
       treatMissingData: cloudwatch.TreatMissingData.BREACHING,
-      severity: "warn",
+      severity: prodEngine ? "page" : "warn",
     });
 
     // W30-W32 (API Gateway WebSocket) and W33-W35 (its ws-authorizer Lambda)

@@ -14,8 +14,7 @@ from moto import mock_aws
 
 from core.repositories import messaging_repo as repo
 
-OWNER = "org_1"
-USER_A = "user_A"
+USER_A = OWNER = "user_A"  # the tenant is one person
 USER_B = "user_B"
 FRIDAY = "11111111-1111-4111-8111-111111111111"
 GAUGE = "22222222-2222-4222-8222-222222222222"
@@ -1410,7 +1409,7 @@ async def test_an_owner_who_wrote_before_setup_finished_still_gets_the_welcome_a
     messaging, ceo, _ = _switch_on(monkeypatch)
     dm = await messaging._agent_dm_room_id(OWNER, USER_A, ceo)  # opened before provisioning seeded the welcome
     await messaging.create_human_message(
-        AuthContext(user_id=USER_A, org_id=OWNER),
+        AuthContext(user_id=USER_A, human_session=True),
         dm,
         messaging.CreateMessageRequest(
             client_message_id=uuid.uuid4(), text="hello?", reply_to_message_id=None, thread_root_message_id=None

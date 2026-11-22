@@ -221,6 +221,8 @@ async def handle_photon_inbound(request: Request):
         address = await team_address(owner_id)
         if not address:
             return _final("dropped_no_address")
+        if member_id and member_id != owner_id:  # the line's tenant is one person: no one else speaks as a member
+            return _final("dropped_foreign_member")
 
         text = (content.text or "") if content.type == "text" else f"[Attachment: {content.attachmentId}]"
         if not member_id and await _link_by_code(line, customer, text.strip(), line_user, space.id, obj.id):
@@ -256,7 +258,7 @@ async def handle_photon_inbound(request: Request):
             key = reply_key(address, stored["received_key"])
             try:
                 await messaging.create_human_message(
-                    AuthContext(user_id=member_id, org_id=owner_id),
+                    AuthContext(user_id=owner_id, human_session=True),
                     messaging.default_room_id(owner_id),
                     messaging.CreateMessageRequest(
                         client_message_id=uuid.uuid5(uuid.NAMESPACE_URL, f"lightbulb-text|{obj.id}"),

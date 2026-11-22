@@ -23,8 +23,7 @@ from core.repositories import messaging_repo, questions_repo, tasks_repo
 from core.services import admission, messaging, questions, task_conversation, tasks_access
 from core.temporal import client as temporal_client
 
-WS = "org_1"
-OWNER = "user_owner"
+WS = OWNER = "user_owner"  # the tenant is one person
 FRONT = "a0000000-0000-4000-8000-000000000001"
 CALL = "c0000000-0000-4000-8000-000000000001"
 DM = "d0000000-0000-4000-8000-000000000001"
@@ -869,7 +868,7 @@ async def test_annotate_rejects_fields_the_store_would_drop(tables, field):
 
 # --- conversations: products read and open them, the tenant's only (Task 6) ------------------------------------
 
-OTHER = "org_2"
+OTHER = "user_other"
 
 
 @pytest.fixture

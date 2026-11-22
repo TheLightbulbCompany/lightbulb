@@ -29,7 +29,9 @@ def client(monkeypatch):
 
 
 def _grant(requester, reader=None):
-    return local_session_grants.mint("org_1", ROOM, "friday", "44444444-4444-4444-8444-444444444444", requester, reader)
+    return local_session_grants.mint(
+        "user_ana", ROOM, "friday", "44444444-4444-4444-8444-444444444444", requester, reader
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -40,7 +42,7 @@ def agent_in_room(monkeypatch):
     seated = {("agent", "friday"), ("human", "user_ana")}
     member = AsyncMock(side_effect=lambda room, kind, mid: {"kind": kind, "id": mid} if (kind, mid) in seated else None)
     member.seated = seated
-    monkeypatch.setattr(messaging_repo, "get_room", AsyncMock(return_value={"roomId": ROOM, "ownerId": "org_1"}))
+    monkeypatch.setattr(messaging_repo, "get_room", AsyncMock(return_value={"roomId": ROOM, "ownerId": "user_ana"}))
     monkeypatch.setattr(messaging_repo, "get_member", member)
     monkeypatch.setattr(messaging_repo, "has_foreign_members", AsyncMock(return_value=False))
     return member
@@ -53,7 +55,7 @@ def test_a_turn_reads_with_its_requesters_access(client, monkeypatch, path, read
     response = client.get(path, headers={"Authorization": f"Bearer {_grant('user_ana')}"})
     assert response.status_code == 200 and response.json() == {"ok": reader}
     auth = read.await_args.args[0]
-    assert (auth.user_id, auth.org_id) == ("user_ana", "org_1")  # the room membership rules apply
+    assert (auth.user_id, auth.org_id) == ("user_ana", None)  # the room membership rules apply
 
 
 @pytest.mark.parametrize(("path", "reader"), ROUTES)
@@ -108,7 +110,7 @@ def test_a_turn_in_a_deleted_room_reads_nothing(client, monkeypatch, path, reade
     monkeypatch.setattr(
         messaging_repo,
         "get_room",
-        AsyncMock(return_value={"roomId": ROOM, "ownerId": "org_1", "deletedAt": "2026-10-09"}),
+        AsyncMock(return_value={"roomId": ROOM, "ownerId": "user_ana", "deletedAt": "2026-10-09"}),
     )
     assert client.get(path, headers={"Authorization": f"Bearer {_grant('user_ana')}"}).status_code == 403
     read.assert_not_awaited()

@@ -380,7 +380,7 @@ def test_typing_skipped_without_a_line_user(client, seams):
     seams["mark_read"].assert_not_called()
 
 
-MEMBER_ID = "user_member"
+MEMBER_ID = OWNER_ID  # the line's tenant is one person: only they are linked
 
 
 @pytest.fixture
@@ -401,7 +401,7 @@ def test_member_text_is_posted_to_the_default_room_as_the_member(client, seams, 
     seams["put_message"].assert_awaited_once()
     seams["mail_changed"].assert_awaited_once_with(OWNER_ID)
     member.assert_awaited_once_with(
-        AuthContext(user_id=MEMBER_ID, org_id=OWNER_ID),
+        AuthContext(user_id=OWNER_ID, human_session=True),
         messaging.default_room_id(OWNER_ID),
         messaging.CreateMessageRequest(
             client_message_id=uuid.uuid5(uuid.NAMESPACE_URL, "lightbulb-text|m1"),

@@ -5458,6 +5458,8 @@ async def _agent_dm_room_id(owner_id: str, user_id: str, agent_id: str, *, meta_
     """The human↔agent DM, created through the same ``create_room`` the web client's
     ``selectDm`` calls (agent ``active``) when none exists. The client room id is derived
     from the pair, so two racing posts converge on one room instead of two DMs."""
+    if user_id != owner_id:  # the tenant is one person: no one else has a DM here
+        raise ApiProblem("MEMBER_NOT_FOUND", "That human is not in this workspace.")
     for row in await messaging_repo.list_rooms_for_member(owner_id, "human", user_id):
         meta = row["meta"]
         if (
@@ -5468,7 +5470,7 @@ async def _agent_dm_room_id(owner_id: str, user_id: str, agent_id: str, *, meta_
         ):
             return meta["roomId"]
     detail = await create_room(
-        AuthContext(user_id=user_id, org_id=owner_id),
+        AuthContext(user_id=owner_id, human_session=True),
         CreateRoomRequest(
             client_room_id=uuid.uuid5(uuid.NAMESPACE_URL, f"lightbulb-agent-dm|{owner_id}|{user_id}|{agent_id}"),
             name=None,
@@ -5534,10 +5536,8 @@ async def resolve_agent_post_room(owner_id: str, request: AgentPostRequest) -> s
         return matches[0]
     user_id = request.user_id
     if user_id is not None:
-        # _validate_human_in_owner waves the owner id itself through; an org id is never a human.
-        if not user_id.startswith("user_") or user_id == owner_id:
+        if user_id != owner_id:  # the tenant is one person: only their own DM
             raise ApiProblem("MEMBER_NOT_FOUND", "That human is not in this workspace.")
-        await _validate_human_in_owner(owner_id, user_id)
     elif request.handle is not None:
         user_id = await _user_for_handle(owner_id, request.handle)
     if user_id is not None:

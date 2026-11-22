@@ -91,7 +91,7 @@ async def rooms_for(auth: AuthContext, query: str = "", limit: int = 30, workspa
     """`workspace_only`: a Google Meet's read as its inviter (owner ruling 2026-10-13): workspace-wide
     channels only. Filtered before the limit and the total, so neither says anything about the rest."""
     rooms = (await service.list_rooms(auth)).rooms
-    people = await workspace_people(auth.org_id) if workspace_only else frozenset()
+    people = await workspace_people(resolve_owner_id(auth)) if workspace_only else frozenset()
     needle = query.casefold().strip()
     matches = [
         room
@@ -160,13 +160,15 @@ async def agent_reader(
     person = auth.requester_id or auth.reader_id
     if not person or not auth.room_id:
         raise ApiProblem("ROOM_FORBIDDEN", "No signed-in person asked for this, so no rooms can be read for it.")
+    if person != auth.owner_id:  # the tenant is one person: only they read their rooms
+        raise ApiProblem("ROOM_FORBIDDEN", "Only the account's own person can read its rooms.")
     # The turn's room, re-checked on every read as a local-session read is: the agent still a member
     # (a removed agent's unexpired grant reads nothing), and no other org in the room to hear it.
     await local_sessions.require_caller(auth, auth.room_id)
     # And the person still in it: someone who left or was removed is no longer who this turn acts for.
     if await messaging_repo.get_member(auth.room_id, "human", person) is None:
         raise ApiProblem("ROOM_FORBIDDEN", "The person who asked is no longer in this room.")
-    return AgentRead(AuthContext(user_id=person, org_id=auth.owner_id), workspace_only=not auth.requester_id)
+    return AgentRead(AuthContext(user_id=person, human_session=True), workspace_only=not auth.requester_id)
 
 
 @router.get("/messaging/agent-read/rooms")
@@ -179,7 +181,7 @@ async def agent_read_messages(
     room_id: str, after_seq: int | None = None, limit: int = 25, read: AgentRead = Depends(agent_reader)
 ):
     if read.workspace_only and not workspace_wide(
-        await service.get_room(read.auth, room_id), await workspace_people(read.auth.org_id)
+        await service.get_room(read.auth, room_id), await workspace_people(read.auth.user_id)
     ):
         raise ApiProblem("ROOM_FORBIDDEN", "In a meeting only channels the whole workspace is in can be read.")
     return await messages_for(read.auth, room_id, after_seq, limit)

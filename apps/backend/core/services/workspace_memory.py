@@ -36,6 +36,7 @@ from datetime import datetime, timedelta
 
 import boto3
 from botocore.config import Config
+from botocore.exceptions import ClientError
 
 from core.config import settings
 from core.dynamodb import run_in_thread
@@ -116,12 +117,29 @@ def _client():
     )
 
 
+# AgentCore's ResourceNotFoundException carries only a message. An actor, session, event or record
+# missing inside the memory (ListSessions: "Actor <id> not found") is nothing to list or delete; any
+# other not-found, the memory itself included ("Memory <id> not found"), is an error.
+_ABSENT_ITEM = re.compile(r"(actor|session|event|(memory )?record)( \S+)? not found\.?", re.IGNORECASE)
+
+
+def _not_found(exc: ClientError) -> bool:
+    err = exc.response.get("Error", {})
+    return err.get("Code") == "ResourceNotFoundException" and bool(_ABSENT_ITEM.fullmatch(err.get("Message", "")))
+
+
 def _pages(call, key: str, **kwargs) -> list:
     """Every item across all pages, collected BEFORE the caller deletes anything -- deleting while
-    paging could shift an offset-style token and skip items."""
+    paging could shift an offset-style token and skip items. A listing of something that does not
+    exist is empty."""
     items, token = [], None
     while True:
-        resp = call(**kwargs, **({"nextToken": token} if token else {}))
+        try:
+            resp = call(**kwargs, **({"nextToken": token} if token else {}))
+        except ClientError as exc:
+            if not _not_found(exc):
+                raise
+            return items
         items.extend(resp.get(key, []))
         token = resp.get("nextToken")
         if not token:
@@ -142,7 +160,7 @@ def _delete_records(client, label: str, memory_id: str, namespaces: list[str]) -
         resp = client.batch_delete_memory_records(
             memoryId=memory_id, records=[{"memoryRecordId": r} for r in record_ids[i : i + _BATCH]]
         )
-        failed += len(resp.get("failedRecords") or [])
+        failed += sum(1 for f in resp.get("failedRecords") or [] if f.get("errorCode") != 404)
     if failed:
         raise RuntimeError(f"memory wipe: {failed} of {len(record_ids)} records failed to delete for {label}")
     return len(record_ids)
@@ -181,7 +199,11 @@ def _delete_events(client, actor_id: str, memory_id: str) -> int:
             client.list_events, "events", memoryId=memory_id, sessionId=sid, actorId=actor_id, includePayloads=False
         )
         for event in events:
-            client.delete_event(memoryId=memory_id, sessionId=sid, eventId=event["eventId"], actorId=actor_id)
+            try:
+                client.delete_event(memoryId=memory_id, sessionId=sid, eventId=event["eventId"], actorId=actor_id)
+            except ClientError as exc:
+                if not _not_found(exc):
+                    raise
         count += len(events)
     return count
 

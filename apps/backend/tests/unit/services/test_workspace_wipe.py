@@ -144,7 +144,10 @@ def ws_mocks():
     fast_gate_instance = MagicMock()
     fast_gate_instance.delete_row = AsyncMock(return_value=None)
 
+    engine_wipe = AsyncMock(return_value="engine state removed")
     _patches = [
+        ("core.services.workspace_wipe.wipe_engine_state", engine_wipe),
+        ("core.services.workspace_wipe.connection_service.delete_all_for_user", AsyncMock(return_value=0)),
         ("core.services.workspace_wipe.container_repo.get_by_owner_id", container_get),
         ("core.services.workspace_wipe.billing_repo.get_by_owner_id", billing_get),
         ("core.services.workspace_wipe.billing_repo.delete", billing_delete),
@@ -223,6 +226,7 @@ def ws_mocks():
             openrouter_delete=openrouter_delete,
             join_link_delete=join_link_delete,
             fast_gate_delete=fast_gate_instance.delete_row,
+            engine_wipe=engine_wipe,
         )
 
 

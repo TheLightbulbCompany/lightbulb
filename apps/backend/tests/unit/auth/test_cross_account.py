@@ -388,9 +388,21 @@ async def seed_container(a, b, mp, calls) -> dict:
     return {}
 
 
+class _NoWorkflows:
+    """A Temporal client with nothing running: the self-delete's engine step terminates and deletes nothing."""
+
+    async def list_workflows(self, query):
+        return
+        yield
+
+    def get_workflow_handle(self, wid):
+        return AsyncMock()
+
+
 async def seed_users(a, b, mp, calls) -> dict:
     await workspaces(a, b)
     clerk(mp, a, b)
+    mp.setattr(temporal_client, "_client", _NoWorkflows())
     await user_repo.put(a.user_id, f"{MARKER}@example.com")
     await user_repo.put(b.user_id, f"{b.user_id}@example.com")  # the self-delete's typed confirmation
     return {}

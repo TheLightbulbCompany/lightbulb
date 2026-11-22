@@ -44,6 +44,7 @@ for them (see the inline notes at those call sites):
   spec #1  -> "paperclip_membership" (WorkspaceRepo.remove_member, per workspace)
   spec #2  -> gone (the Better Auth user lived in Paperclip's Aurora)
   (no spec row) -> "bedrock_gate_tokens" (bedrock_gate_tokens.delete_gate_token_rows)
+  (no spec row) -> "engine"           (wipe_engine_state: meeting bots, workflows, Schedules, tasks rows)
   spec #3  -> "runtime"               (hermes_provisioning.delete_workspace_runtime)
   spec #4  -> folded into "runtime" (the S3 profile prefix IS the owner's content
               on this transport; there is no EFS tree left)
@@ -103,7 +104,9 @@ from core.repositories import (
     user_repo,
 )
 from core.repositories.workspace_repo import Identity, WorkspaceRepo
-from core.services import clerk_admin, company_stripe, text_lines
+from core.engine import api as engine_api
+from core.services import clerk_admin, company_stripe, connection_service, text_lines
+from core.voice.meetings import records as meeting_records
 from core.voice.phone import voice_onboarding
 from core.services.billing_service import delete_stripe_customer
 from core.services.oauth_service import revoke_user_oauth
@@ -138,12 +141,46 @@ async def release_text_lines(rows: list[dict]) -> tuple[int, list[str]]:
     return released, failed
 
 
+async def wipe_engine_state(owner_id: str) -> str:
+    """Stop what keeps running for the owner, then delete the engine's rows: every meeting bot still booked or in a
+    call is cancelled (the bot ids live on the room META, so this runs before the messaging step deletes it), the
+    engine's workflows, Schedules and tasks partition go (`engine.api.delete_tenant`), and the owner's ws-connections
+    rows. Idempotent. A bot Recall would not cancel fails the step, naming it, after everything else ran."""
+    stuck: list[str] = []
+    meetings = 0
+    for room_id in await messaging_repo.list_owner_room_ids(owner_id):
+        meta = await messaging_repo.get_room(room_id) or {}
+        meeting = meta.get("meeting") if meta.get("ownerId") == owner_id else None
+        if not meeting:
+            continue
+        try:
+            await meeting_records.end_meeting(room_id, meeting)
+            meetings += 1
+        except Exception:  # noqa: BLE001 -- one refused bot must not keep the rest booked
+            logger.warning("wipe: meeting bot not cancelled room=%s", room_id, exc_info=True)
+            stuck.append(str(meeting.get("recallBotId")))
+    engine = await engine_api.delete_tenant(owner_id)
+    connections = await connection_service.delete_all_for_user(owner_id)
+    detail = (
+        f"closed {meetings} meeting room(s); terminated {engine['workflows']} workflow(s), deleted {engine['schedules']} "
+        f"schedule(s), {engine['rows']} tasks row(s) and {connections} ws-connection row(s)"
+    )
+    if stuck:
+        raise RuntimeError(f"{detail}; Recall did not cancel bot(s) {', '.join(stuck)}: cancel them by hand")
+    return detail
+
+
 def text_release_note(released: int, failed: list[str]) -> str:
     note = f", released {released} text line(s)"
     if failed:
         note += f", FAILED to release: {', '.join(failed)} (rows kept; run the wipe again)"
     return note
 
+
+ENGINE_PREVIEW = (
+    "meeting bots still booked or in a call cancelled; Temporal workflows terminated and Schedules deleted; "
+    "tasks partition and ws-connection rows"
+)
 
 # "refused" = a guard kept the resource on purpose. Neither a success nor a
 # failure, and never a delete.
@@ -512,6 +549,8 @@ async def preview_wipe(owner_id: str) -> WipeReport:
         detail_if_exists=f"{len(gate_token_hashes)} gate-token row(s)",
         detail_if_absent="no bedrock-gate token hash on containers row",
     )
+    steps.append(WipeStep("engine", "wipe_engine_state", "would_delete", ENGINE_PREVIEW))
+
     _preview_step(
         steps,
         system="runtime",
@@ -759,6 +798,9 @@ async def wipe_account(owner_id: str, *, actor_admin_id: str) -> WipeReport:
         return f"deleted {deleted} of {len(hashes)} gate-token row(s)"
 
     await _step(steps, system="bedrock_gate_tokens", action="delete_gate_token_rows", fn=_s2b)
+
+    # --- Step 2c: engine state, before the runtime and the rooms go ------------
+    await _step(steps, system="engine", action="wipe_engine_state", fn=lambda: wipe_engine_state(owner_id))
 
     # --- Step 3 (spec #3 + #4 + #5 folded): the runtime ------------------
     # ``hermes_provisioning.delete_workspace_runtime`` already does, in the right internal

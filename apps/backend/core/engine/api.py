@@ -18,7 +18,7 @@ from typing import Any, TypeVar
 
 from fastapi import HTTPException
 from temporalio.client import WorkflowUpdateFailedError
-from temporalio.service import RPCError
+from temporalio.service import RPCError, RPCStatusCode
 
 from core import tasks_schema as ts
 from core.auth import AuthContext
@@ -44,8 +44,17 @@ from core.engine.contract import (
     start_task_id,
 )
 from core.engine.hooks import EngineEvent
-from core.repositories import effects_repo, messaging_repo, questions_repo, tasks_repo
-from core.services import admission, chat_gate, container_rpc, messaging, questions, task_conversation, tasks_access
+from core.repositories import automations_repo, effects_repo, messaging_repo, questions_repo, tasks_repo
+from core.services import (
+    admission,
+    automation_schedule,
+    chat_gate,
+    container_rpc,
+    messaging,
+    questions,
+    task_conversation,
+    tasks_access,
+)
 from core.services.messaging import human_display_name
 from core.temporal import client as temporal_client
 from core.temporal.task_questions import AnswerRef
@@ -908,3 +917,38 @@ def warm(tenant_id: str, agent_ids: list[str], conversation_id: str | None = Non
                 logger.info("voice profile prewarm failed agent=%s", agent_id, exc_info=True)
 
     _fire(wake())
+
+
+# --- terminal wipe ------------------------------------------------------------------------------------------------
+
+#: Every workflow id that names a tenant starts with one of these (`tasks_schema`, `automation_schedule`,
+#: `automation_hooks.keeper_id`, `routers.hooks`); the Router's is exactly `router:{ws}`.
+_TENANT_WORKFLOW_PREFIXES = ("task", "learn", "gwatch", "fire", "hook")
+
+
+async def delete_tenant(tenant_id: str) -> dict[str, int]:
+    """Stop and delete the tenant's engine state, for a terminal wipe: every running workflow it names is
+    terminated, every automation's Temporal Schedule deleted, then its tasks partition (META included) and agent-id
+    pointers. Idempotent: what is already gone is skipped. Returns what it did, counted."""
+    if not tenant_id or any(c in tenant_id for c in "'\"\\"):
+        raise ValueError("bad tenant id")
+    client = temporal_client.get_client()
+    names = " OR ".join(
+        [f"WorkflowId = '{ts.router_workflow_id(tenant_id)}'"]
+        + [f"WorkflowId STARTS_WITH '{p}:{tenant_id}:'" for p in _TENANT_WORKFLOW_PREFIXES]
+    )
+    running = {ts.router_workflow_id(tenant_id)}  # named outright: visibility can lag a just-started Router
+    running |= {wf.id async for wf in client.list_workflows(f"ExecutionStatus = 'Running' AND ({names})")}
+    terminated = 0
+    for wid in sorted(running):
+        try:
+            await client.get_workflow_handle(wid).terminate("account wiped")
+            terminated += 1
+        except RPCError as exc:
+            if exc.status != RPCStatusCode.NOT_FOUND:
+                raise
+    schedules = await automations_repo.list_schedules(tenant_id)
+    for row in schedules:
+        await automation_schedule.delete(tenant_id, row["scheduleId"])
+    rows = await tasks_repo.delete_partition(tenant_id)
+    return {"workflows": terminated, "schedules": len(schedules), "rows": rows}

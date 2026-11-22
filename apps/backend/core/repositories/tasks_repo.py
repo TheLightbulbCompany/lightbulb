@@ -637,3 +637,36 @@ async def put_slots(ws: str, leases: dict[str, int], waiters: list[str], *, expe
         if not _is_condition_failure(exc):
             raise
     return False
+
+
+# --- Terminal wipe -----------------------------------------------------------------------------------
+
+
+async def delete_partition(ws: str) -> int:
+    """Delete every row under `WS#{ws}` (META included) and the agent-id pointers that name `ws`; the count."""
+    table = _table()
+    kwargs: dict[str, Any] = {
+        "KeyConditionExpression": "pk = :pk",
+        "ExpressionAttributeValues": {":pk": ts.ws_pk(ws)},
+        "ProjectionExpression": "pk, sk",
+    }
+    keys: list[dict] = []
+    while True:
+        page = await run_in_thread(table.query, **kwargs)
+        keys.extend(page.get("Items", []))
+        if "LastEvaluatedKey" not in page:
+            break
+        kwargs["ExclusiveStartKey"] = page["LastEvaluatedKey"]
+    for k in [k for k in keys if k["sk"].startswith(ts.agent_sk(""))]:
+        pointer = {"pk": ts.agent_owner_pk(k["sk"].removeprefix(ts.agent_sk(""))), "sk": ts.AGENT_OWNER_SK}
+        resp = await run_in_thread(table.get_item, Key=pointer, ConsistentRead=True)
+        if (resp.get("Item") or {}).get("ws") == ws:  # an id another workspace now holds keeps its pointer
+            keys.append(pointer)
+
+    def _batch() -> None:
+        with table.batch_writer() as batch:
+            for k in keys:
+                batch.delete_item(Key={"pk": k["pk"], "sk": k["sk"]})
+
+    await run_in_thread(_batch)
+    return len(keys)

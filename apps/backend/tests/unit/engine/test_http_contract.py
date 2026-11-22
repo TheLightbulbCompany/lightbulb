@@ -51,18 +51,21 @@ BASE = "http://engine.test"
 TOKEN = "engine-test-token"
 
 
-class _DropFirst(httpx.AsyncBaseTransport):
-    """The engine handles the first request, and its answer is lost on the way back (a 502 from the gateway)."""
+class _FirstFails(httpx.AsyncBaseTransport):
+    """The first request fails one way: `"refused"` never reaches the engine (connection refused); a status (502,
+    503, 504) is the gateway's answer after the engine handled it."""
 
-    def __init__(self, inner: httpx.AsyncBaseTransport) -> None:
-        self.inner, self.calls = inner, 0
+    def __init__(self, inner: httpx.AsyncBaseTransport, how) -> None:
+        self.inner, self.how, self.calls = inner, how, 0
 
     async def handle_async_request(self, request):
-        response = await self.inner.handle_async_request(request)
         self.calls += 1
+        if self.calls == 1 and self.how == "refused":
+            raise httpx.ConnectError("connection refused", request=request)
+        response = await self.inner.handle_async_request(request)
         if self.calls == 1:
             await response.aread()
-            return httpx.Response(502)
+            return httpx.Response(self.how)
         return response
 
 
@@ -206,15 +209,113 @@ async def test_warm_reaches_the_runtime(world):
 
 
 async def test_retry_replays_same_message(world, wire, monkeypatch):
-    """The first response is lost after the engine wrote the line: the client's one retry, same body, gets the same
-    message back, and the conversation holds one message and one admission."""
-    dropping = _DropFirst(wire._transport)
-    monkeypatch.setattr(wire, "_transport", dropping)
+    """The connection was refused (nothing reached the engine): the client's one retry, same body, writes the line
+    once, and the conversation holds one message and one admission."""
+    failing = _FirstFails(wire._transport, "refused")
+    monkeypatch.setattr(wire, "_transport", failing)
     out = await client.append_line(_member_line("voice-turn:retry", "Book Tuesday"))
-    assert dropping.calls == 2
+    assert failing.calls == 2
     [row] = await messaging_repo.list_messages_before(DM, 10**19, 10)
     assert row["messageId"] == out.message_id
     assert len(_rows(world, "WORK#ADMIT#")) == 1
+
+
+@pytest.mark.parametrize("status", [502, 503, 504])
+async def test_a_write_that_may_have_run_is_never_sent_again(world, wire, monkeypatch, status):
+    """A gateway error after the engine got a write: it may have run, so the client raises instead of replaying (a
+    replayed claim or unversioned action could answer differently)."""
+    failing = _FirstFails(wire._transport, status)
+    monkeypatch.setattr(wire, "_transport", failing)
+    with pytest.raises(httpx.HTTPStatusError) as failed:
+        await client.append_line(_member_line("voice-turn:once", "Book Tuesday"))
+    assert (failing.calls, failed.value.response.status_code) == (1, status)
+    assert len(await messaging_repo.list_messages_before(DM, 10**19, 10)) == 1  # the engine wrote it, once
+
+
+@pytest.mark.parametrize("status,calls", [(502, 2), (503, 2), (504, 1)])
+async def test_a_read_retries_only_a_gateway_that_never_ran_it(world, wire, monkeypatch, status, calls):
+    failing = _FirstFails(wire._transport, status)
+    monkeypatch.setattr(wire, "_transport", failing)
+    if status == 504:
+        with pytest.raises(httpx.HTTPStatusError):
+            await client.get_conversation(WS, DM)
+    else:
+        assert (await client.get_conversation(WS, DM)).conversation_id == DM
+    assert failing.calls == calls
+
+
+async def test_the_retry_gets_only_the_time_left(monkeypatch):
+    """Every attempt together stays within the budget: the second attempt is given what the first left."""
+    import asyncio
+
+    seen: list[float] = []
+
+    class Slow(httpx.AsyncBaseTransport):
+        async def handle_async_request(self, request):
+            seen.append(request.extensions["timeout"]["read"])
+            await asyncio.sleep(0.2)
+            raise httpx.ConnectError("refused", request=request)
+
+    monkeypatch.setitem(transport._clients, BASE, httpx.AsyncClient(transport=Slow(), base_url=BASE))
+    with pytest.raises(httpx.ConnectError):
+        await transport.send(BASE, "GET", "/x", attempt_s=0.25, budget_s=0.3)
+    assert seen[0] == 0.25 and 0 < seen[1] <= 0.1 + 0.02
+
+
+def test_budgets_sit_under_their_callers_timeouts():
+    """A live call's engine calls, all attempts, under the voice worker's 10 s route timeout; a hook call, all
+    attempts, well under the shortest activity that calls one (30 s)."""
+    from core.temporal import workflows
+
+    assert transport.ENGINE_ATTEMPT_S <= transport.ENGINE_BUDGET_S < 10
+    assert transport.HOOK_ATTEMPT_S <= transport.HOOK_BUDGET_S <= 12
+    assert transport.HOOK_BUDGET_S < workflows._SHORT["start_to_close_timeout"].total_seconds()
+
+
+def test_the_client_has_every_operation():
+    """`core.engine.client` matches every public function of `core.engine.api`, signature for signature."""
+    import inspect
+
+    ops = {n for n, f in vars(api).items() if inspect.isfunction(f) and f.__module__ == api.__name__}
+    ops = {n for n in ops if not n.startswith("_") and n != "start_task_id"}
+    for name in sorted(ops):
+        assert hasattr(client, name), name
+        assert inspect.signature(getattr(client, name)) == inspect.signature(getattr(api, name)), name
+
+
+async def test_delete_tenant_over_http(world, wire, monkeypatch):
+    """The terminal wipe answers the same over HTTP, and is never sent a second time, not even after a refused
+    connection (the wipe's own caller runs it again)."""
+    from core.repositories import automations_repo
+    from core.temporal import client as temporal_client
+    from tests.unit.services.test_wipe_engine_state import _FakeTemporal
+
+    monkeypatch.setattr(automations_repo, "list_schedules", AsyncMock(return_value=[]))
+    temporal_client.set_client(_FakeTemporal(running=set(), schedules=set()))
+    try:
+        assert transport.dump(await client.delete_tenant("org_gone")) == transport.dump(
+            await api.delete_tenant("org_gone")
+        )
+        failing = _FirstFails(wire._transport, "refused")
+        monkeypatch.setattr(wire, "_transport", failing)
+        with pytest.raises(httpx.ConnectError):
+            await client.delete_tenant("org_gone")
+        assert failing.calls == 1
+    finally:
+        temporal_client.set_client(None)
+
+
+async def test_a_claim_replayed_after_it_landed_is_still_the_callers(world):
+    """`annotate` with `if_absent`: the same value again is the caller's own claim (True), on both transports;
+    another value is not."""
+    await _room(CALL, "channel", extra={"meeting": {"uid": "u1"}})
+    claim = {"meeting": {"ticketNonce": "n1", "botClaimAt": 5}}
+    for e in (api, client):
+        req = AnnotateIn(tenant_id=WS, conversation_id=CALL, set=claim, if_absent="ticketNonce")
+        assert await e.annotate(req) is True
+        other = req.model_copy(update={"set": {"meeting": {"ticketNonce": "n2", "botClaimAt": 6}}})
+        assert await e.annotate(other) is False
+    assert (await messaging_repo.get_room(CALL))["meeting"]["ticketNonce"] == "n1"
 
 
 async def test_bad_token_401(world, monkeypatch):

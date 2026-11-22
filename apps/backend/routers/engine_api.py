@@ -148,6 +148,11 @@ async def submit_event(req: EventIn):
     return await transport.reply(api.submit_event(req))
 
 
+@router.delete("/tenants/{tenant_id}")
+async def delete_tenant(tenant_id: str):
+    return await transport.reply(api.delete_tenant(tenant_id))
+
+
 # --- warm ----------------------------------------------------------------------------------------------------------
 
 

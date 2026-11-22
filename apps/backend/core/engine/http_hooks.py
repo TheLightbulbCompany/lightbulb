@@ -3,8 +3,8 @@ routes at `settings.PRODUCT_CALLBACK_URL` (`routers/engine_callbacks.py`). The e
 the Temporal worker and the work Lambda do when `settings.ENGINE_TRANSPORT == "http"`.
 
 A failure raises, as in process: inside an activity it fails the activity (retried; product handlers are idempotent
-on the ids they get), never an empty answer. A `context` or `event` call is retried once on a gateway error (both are
-safe to replay); a `tool` call only when nothing was sent, since a tool (a Meet chat line) may act twice."""
+on the ids they get), never an empty answer. A call goes again only when it was never sent (`transport.send`): a tool
+(a Meet chat line) may act twice, and the activity's own retry covers the rest."""
 
 from __future__ import annotations
 
@@ -15,19 +15,19 @@ from core.engine.hooks import ContextAnswer, ContextAsk, EngineEvent, ToolCall, 
 _PREFIX = "/api/v1/internal/engine"
 
 
-async def _send(path: str, body, *, retry_status: bool = True):
+async def _send(path: str, body):
     return await transport.send(
         settings.PRODUCT_CALLBACK_URL,
         "POST",
         _PREFIX + path,
         json=transport.dump(body),
-        timeout=transport.HOOK_TIMEOUT_S,
-        retry_status=retry_status,
+        attempt_s=transport.HOOK_ATTEMPT_S,
+        budget_s=transport.HOOK_BUDGET_S,
     )
 
 
 async def tool(name: ToolName, call: ToolCall) -> dict:
-    return await _send(f"/tools/{name}", call, retry_status=False)
+    return await _send(f"/tools/{name}", call)
 
 
 async def context(ask: ContextAsk) -> ContextAnswer:

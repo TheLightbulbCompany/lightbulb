@@ -11,6 +11,7 @@ conditional write (botocore's `TransactionCanceledException`, which a caller's r
 
 from __future__ import annotations
 
+import asyncio
 import hmac
 from typing import Any
 
@@ -31,13 +32,18 @@ PROBLEM = "X-Engine-Problem"  # an ApiProblem
 CANCELLED = "X-Engine-Cancelled"  # a conditional write lost to a writer since the caller's read
 _MARKS = (ENGINE_ERROR, RELAYED, PROBLEM, CANCELLED)
 
-#: One attempt's limit for a product's call to the engine: under the huddle worker's own 10 s voice-route timeout
-#: (apps/huddle-agent `ROUTE_TIMEOUT_S`), so a slow engine fails the route rather than the worker giving up first.
-ENGINE_TIMEOUT_S = 8.0
-#: One attempt's limit for the engine's call to a product (a tool, a context answer, an event): sized for a product
-#: tool that reaches an outside service, under every Temporal activity's own timeout.
-HOOK_TIMEOUT_S = 30.0
-_RETRY_STATUS = frozenset({502, 503, 504})  # a gateway's or a dead task's answer, never the call's own refusal
+#: A product's call to the engine: 6 s for the first attempt, and every attempt together within 8 s, under the huddle
+#: worker's own 10 s voice-route timeout (apps/huddle-agent `ROUTE_TIMEOUT_S`): a slow engine fails the route before
+#: the worker gives up on it.
+ENGINE_ATTEMPT_S, ENGINE_BUDGET_S = 6.0, 8.0
+#: The engine's call to a product (a tool, a context answer, an event): every attempt together within 12 s, well under
+#: the shortest Temporal activity that calls a hook (`workflows._SHORT`, 30 s start-to-close), so an activity never
+#: times out with a hook call still running.
+HOOK_ATTEMPT_S, HOOK_BUDGET_S = 8.0, 12.0
+#: A gateway's answer that says the call never ran on the other side: retried for a read only (a 504 may have run).
+_READ_RETRY_STATUS = frozenset({502, 503})
+#: The connection was never made: nothing reached the other side, so any call may go again.
+_NOT_SENT = (httpx.ConnectError, httpx.ConnectTimeout)
 
 _clients: dict[str, httpx.AsyncClient] = {}
 
@@ -116,11 +122,14 @@ async def send(
     *,
     params: dict | None = None,
     json: Any = None,
-    timeout: float = ENGINE_TIMEOUT_S,
-    retry_status: bool = True,
+    attempt_s: float = ENGINE_ATTEMPT_S,
+    budget_s: float = ENGINE_BUDGET_S,
+    retry: bool = True,
 ) -> Any:
-    """One call to the other side at `base`, retried once with the same body on a connect error (nothing was sent)
-    and, with `retry_status`, on an unmarked 502/503/504 (the call is idempotent by its key, so a retry replays)."""
+    """One call to the other side at `base`, within `budget_s` for every attempt together (`attempt_s` each at most).
+    With `retry`, it goes once more with the same body, in the time left, only when it provably did not run: the
+    connection was never made, or a GET got an unmarked 502/503. Never on a timeout or a 504 after a write was sent:
+    the other side may have run it, and a replay of a claim or an unversioned action can answer differently."""
     if not base:
         raise RuntimeError("the engine's HTTP transport has no URL for the other side")
     client = _clients.get(base)
@@ -128,14 +137,24 @@ async def send(
         client = _clients[base] = httpx.AsyncClient(base_url=base)
     headers = {"Authorization": f"Bearer {settings.ENGINE_SERVICE_TOKEN}"}
     params = {k: v for k, v in (params or {}).items() if v is not None}
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + budget_s
     for attempt in (1, 2):
+        timeout = min(attempt_s, deadline - loop.time())
+        last = attempt == 2 or not retry
         try:
             r = await client.request(method, path, params=params, json=json, headers=headers, timeout=timeout)
-        except httpx.ConnectError:
-            if attempt == 2:
+        except _NOT_SENT:
+            if last or deadline - loop.time() <= 0:
                 raise
             continue
-        if attempt == 1 and retry_status and r.status_code in _RETRY_STATUS and not any(m in r.headers for m in _MARKS):
+        if (
+            not last
+            and method == "GET"
+            and r.status_code in _READ_RETRY_STATUS
+            and not any(m in r.headers for m in _MARKS)
+            and deadline - loop.time() > 0
+        ):
             continue
         return result(r)
     raise AssertionError("unreachable")

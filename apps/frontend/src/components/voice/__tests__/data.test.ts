@@ -7,7 +7,7 @@ vi.mock("@clerk/nextjs", () => ({ useAuth: () => auth })); // no orgId: a person
 vi.mock("@/lib/api", () => ({ useApi: () => api }));
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn() }) }));
 
-import { callNeedsYou, callSummary, mmss, nameOf, useProvisionOnOpen, useTextChats, useUsage } from "../data";
+import { callNeedsYou, callSummary, mmss, nameOf, useAccountKey, useAgentConfig, useProvisionOnOpen, useTextChats, useUsage } from "../data";
 
 beforeEach(() => { Object.assign(auth, { isLoaded: true, userId: "user_a" }); api.get.mockReset(); api.post.mockReset().mockResolvedValue({}); });
 
@@ -20,6 +20,28 @@ describe("test_scopes_keyed_on_user", () => {
     renderHook(() => useUsage());
     await waitFor(() => expect(chats.result.current.data?.map((c) => c.roomId)).toEqual(["dm"]));
     await waitFor(() => expect(api.get).toHaveBeenCalledWith("/voice/usage"));
+  });
+});
+
+describe("per-account SWR keys", () => {
+  it("two different user ids give two cache keys, and one key shape for every caller", () => {
+    const { result, rerender } = renderHook(() => [useAccountKey("/voice/agent"), useAccountKey("/voice/agent")]);
+    expect(result.current[0]).toEqual(["/voice/agent", "user_a"]);
+    expect(result.current[1]).toEqual(result.current[0]);
+    auth.userId = "user_b";
+    rerender();
+    expect(result.current[0]).toEqual(["/voice/agent", "user_b"]);
+  });
+  it("fetches no account's setup before the user id is known", async () => {
+    auth.userId = null;
+    const { rerender } = renderHook(() => useAgentConfig());
+    auth.isLoaded = false; auth.userId = "user_a";
+    rerender();
+    expect(api.get).not.toHaveBeenCalled();
+    auth.isLoaded = true;
+    api.get.mockResolvedValue({ config: null });
+    rerender();
+    await waitFor(() => expect(api.get).toHaveBeenCalledWith("/voice/agent"));
   });
 });
 

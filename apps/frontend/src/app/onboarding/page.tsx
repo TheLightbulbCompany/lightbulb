@@ -77,7 +77,8 @@ function BusinessForm() {
         .catch(() => undefined);
       await api.post("/company/slug/hold", { slug });
       // An account that already has its address (a reload after this step) keeps it; any other refusal stops here,
-      // before the assistant's document is written.
+      // before the assistant's document is written. The document's `business` is empty here (a saved one never reaches
+      // this form), so nothing stored is overwritten; it must still be written or /voice sends the person back here.
       await api.post("/company/slug/claim", { slug, name: business }).catch((e) => {
         if (!(e instanceof ApiError && e.status === 409 && (e.body as { detail?: string })?.detail === "slug_already_claimed")) throw e;
       });

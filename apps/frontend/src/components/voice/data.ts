@@ -40,10 +40,17 @@ export type TimelineItem = CallItem | MeetingItem;
 /** One row per occurrence: a series' past occurrences share its room. */
 export const rowId = (i: TimelineItem) => i.type === "meeting" && i.occurrence != null ? `${i.roomId}@${i.occurrence}` : i.roomId;
 
+/** The SWR key of a per-account read: the signed-in user id rides in it (a cached answer never crosses to the next
+ *  account on the same tab), and nothing is fetched until it is known. One shape, so every caller shares the cache. */
+export function useAccountKey(path: string): readonly [string, string] | null {
+  const { isLoaded, userId } = useAuth();
+  return isLoaded && userId ? [path, userId] as const : null;
+}
+
 export function useTimeline() {
   const api = useApi();
   // ponytail: a 20 s poll, not a push; subscribe to the room events when calls must land live.
-  return useSWR("/voice/timeline", async () => ((await api.get("/voice/timeline")) as { items: TimelineItem[] }).items,
+  return useSWR(useAccountKey("/voice/timeline"), async () => ((await api.get("/voice/timeline")) as { items: TimelineItem[] }).items,
     { refreshInterval: 20_000 });
 }
 
@@ -63,9 +70,8 @@ export function textChats(rooms: RoomSummary[], me: string): TextChat[] {
 const CHATS_KEY = "/messaging/rooms#voice-chats";
 export function useTextChats() {
   const api = useApi();
-  const { isLoaded, userId } = useAuth();
-  return useSWR(isLoaded && userId ? [CHATS_KEY, userId] : null,
-    async () => textChats(((await api.get("/messaging/rooms")) as { rooms: RoomSummary[] }).rooms, userId!));
+  const key = useAccountKey(CHATS_KEY);
+  return useSWR(key, async () => textChats(((await api.get("/messaging/rooms")) as { rooms: RoomSummary[] }).rooms, key![1]));
 }
 
 /** "New chat": a group chat with only the member in the request; the backend seats Lightbulb in every new Router
@@ -152,7 +158,7 @@ export const nameOf = (c?: Partial<AgentConfig> | null) => c?.name?.trim() || LI
 /** The Agent page document, defaults filled in. `isNew`: the workspace has no document yet (first run). */
 export function useAgentConfig() {
   const api = useApi();
-  const swr = useSWR("/voice/agent", async () => {
+  const swr = useSWR(useAccountKey("/voice/agent"), async () => {
     const { config, agents = [], frontAgentId, frontAgentIssue } = (await api.get("/voice/agent")) as {
       config: Partial<AgentConfig> | null; agents?: { id: string; name: string }[]; frontAgentId?: string | null; frontAgentIssue?: string | null;
     };
@@ -174,7 +180,7 @@ export interface WaitlistEntry { id: string; date: string; name: string; phone: 
 /** Callers waiting for a day (GET /voice/waitlist); `remove` deletes one entry. */
 export function useWaitlist() {
   const api = useApi();
-  const swr = useSWR("/voice/waitlist", async () => ((await api.get("/voice/waitlist")) as { entries?: WaitlistEntry[] } | undefined)?.entries ?? [], { refreshInterval: 30000 }); // focus revalidation is off app-wide: poll so new callers appear
+  const swr = useSWR(useAccountKey("/voice/waitlist"), async () => ((await api.get("/voice/waitlist")) as { entries?: WaitlistEntry[] } | undefined)?.entries ?? [], { refreshInterval: 30000 }); // focus revalidation is off app-wide: poll so new callers appear
   const { mutate } = swr;
   const remove = useCallback(async (e: WaitlistEntry) => {
     await api.del(`/voice/waitlist/${e.date}/${e.id}`);
@@ -186,7 +192,7 @@ export function useWaitlist() {
 /** The workspace's own team address, the one a Meet invite reaches (GET /agent-mail/address `invite_address`). */
 export function useInviteAddress(): string | undefined {
   const api = useApi();
-  const { data } = useSWR("/agent-mail/address", () => api.get("/agent-mail/address") as Promise<{ invite_address?: string }>);
+  const { data } = useSWR(useAccountKey("/agent-mail/address"), () => api.get("/agent-mail/address") as Promise<{ invite_address?: string }>);
   return data?.invite_address;
 }
 
@@ -217,7 +223,7 @@ export { usPhone };
 /** Open Questions for the viewer. A workspace without the super-agent 404s: no Questions, not an error. */
 export function useQuestions() {
   const api = useApi();
-  return useSWR("/needs-you", async () => {
+  return useSWR(useAccountKey("/needs-you"), async () => {
     try { return ((await api.get("/needs-you")) as { items: QuestionView[] }).items; }
     catch (e) { if ((e as { status?: number }).status === 404) return []; throw e; }
   }, { refreshInterval: 30_000 });
@@ -246,8 +252,7 @@ export interface Usage {
 /** The server's measured allowance and billing period; unavailable usage must never become an estimated bill. */
 export function useUsage() {
   const api = useApi();
-  const { isLoaded, userId } = useAuth();
-  return useSWR<Usage>(isLoaded && userId ? ["/voice/usage", userId] : null,
+  return useSWR<Usage>(useAccountKey("/voice/usage"),
     async () => { const u = (await api.get("/voice/usage")) as Usage; return { ...u, used: Math.round(u.used) }; }, // whole minutes: the server's 9.283 shows as 9, as the Home foot does
     { refreshInterval: 30_000 });
 }
@@ -288,7 +293,8 @@ export function useGoLiveAfterPayment() {
   const api = useApi();
   const { data, save } = useAgentConfig();
   const waiting = !!data?.goLiveRequested && !data.live;
-  const { data: plan } = useSWR(waiting ? ["/billing/voice-plan", "go-live"] : null,
+  const planKey = useAccountKey("/billing/voice-plan#go-live");
+  const { data: plan } = useSWR(waiting ? planKey : null,
     () => api.get("/billing/voice-plan") as Promise<{ status: string }>, { refreshInterval: 5_000 });
   const tried = useRef(false);
   useEffect(() => {

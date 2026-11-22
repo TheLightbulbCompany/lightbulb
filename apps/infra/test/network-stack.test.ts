@@ -130,3 +130,37 @@ describe("NetworkStack — WAF web ACL (count-only)", () => {
     expect(scope).toContain("/api/v1/gateway/"); // bv- door: client can set the header
   });
 });
+
+describe("NetworkStack — engine listener", () => {
+  const template = buildNetworkStack("dev");
+
+  test("8082 forwards to the engine target group, which health-checks /health on 8000", () => {
+    const [tgId] = Object.keys(
+      template.findResources("AWS::ElasticLoadBalancingV2::TargetGroup", {
+        Properties: { Name: "lightbulb-dev-engine" },
+      }),
+    );
+    expect(tgId).toBeDefined();
+    template.hasResourceProperties("AWS::ElasticLoadBalancingV2::TargetGroup", {
+      Name: "lightbulb-dev-engine",
+      Port: 8000,
+      TargetType: "ip",
+      HealthCheckPath: "/health",
+    });
+    template.hasResourceProperties("AWS::ElasticLoadBalancingV2::Listener", {
+      Port: 8082,
+      Protocol: "HTTP",
+      DefaultActions: [Match.objectLike({ Type: "forward", TargetGroupArn: { Ref: tgId } })],
+    });
+  });
+
+  test("the network stack opens 8082 to nobody (the service stack admits only its SG)", () => {
+    const ingress = [
+      ...Object.values(template.findResources("AWS::EC2::SecurityGroupIngress")).map((r: any) => r.Properties),
+      ...Object.values(template.findResources("AWS::EC2::SecurityGroup")).flatMap(
+        (r: any) => r.Properties.SecurityGroupIngress ?? [],
+      ),
+    ];
+    expect(ingress.filter((r: any) => r.FromPort <= 8082 && r.ToPort >= 8082)).toEqual([]);
+  });
+});

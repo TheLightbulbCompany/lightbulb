@@ -327,6 +327,19 @@ export class ApiStack extends cdk.Stack {
       target: `integrations/${httpIntegration.ref}`,
     });
 
+    // --- Engine paths: no integration ---
+    // The backend serves the engine's callbacks at /api/v1/internal/engine/* and the engine service
+    // serves /engine/v1/*, both for callers inside the VPC on the internal ALB. A route with no
+    // integration answers 404 at the gateway, and a specific route wins over $default, so a public
+    // request for either prefix never reaches the ALB. The backend also refuses those callbacks when
+    // they carry the X-Lightbulb-Client-Ip header the integration above sets (core/engine/transport.py).
+    for (const [id, prefix] of [
+      ["HttpEngineCallbacksBlocked", "/api/v1/internal/engine"],
+      ["HttpEngineApiBlocked", "/engine/v1"],
+    ]) {
+      new apigatewayv2.CfnRoute(this, id, { apiId: httpApi.ref, routeKey: `ANY ${prefix}/{proxy+}` });
+    }
+
     // --- HTTP API Log Group ---
     const httpApiLogGroup = new logs.LogGroup(this, "HttpApiLogs", {
       logGroupName: `/aws/api-gateway/lightbulb-${env}-http`,

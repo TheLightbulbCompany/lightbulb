@@ -50,8 +50,14 @@ _MIN_RETRY_S = 1.0
 _clients: dict[str, httpx.AsyncClient] = {}
 
 
-def require_token(authorization: str = Header("")) -> None:
-    """The route dependency both sides use."""
+def require_token(
+    authorization: str = Header(""), x_lightbulb_client_ip: str | None = Header(None, include_in_schema=False)
+) -> None:
+    """The route dependency both sides use. A request through the public API Gateway carries
+    `X-Lightbulb-Client-Ip` (its integration always sets it, api-stack.ts) and is refused as not found, token or not:
+    these routes are for callers inside the VPC on the internal ALB."""
+    if x_lightbulb_client_ip is not None:
+        raise HTTPException(status_code=404, detail="Not Found")
     want = settings.ENGINE_SERVICE_TOKEN
     if not want or not hmac.compare_digest(authorization.encode(), f"Bearer {want}".encode()):
         raise HTTPException(status_code=401, detail="invalid_engine_token")

@@ -206,6 +206,8 @@ export class LightbulbStage extends cdk.Stage {
       platformMailDomain,
       vpc: network.vpc,
       targetGroup: network.targetGroupV2,
+      engineTargetGroup: network.engineTargetGroup,
+      albDnsName: network.albV2.loadBalancerDnsName,
       albSecurityGroup: network.albSecurityGroup,
       // Pass secret names as plain strings to avoid cross-stack refs to AuthStack.
       // These names match the secretName used in AuthStack's createSecret helper.
@@ -300,6 +302,7 @@ export class LightbulbStage extends cdk.Stage {
         backendLogGroupName: `/ecs/lightbulb-${env}`,
         alb: network.albV2,
         targetGroup: network.targetGroupV2,
+        engineTargetGroup: network.engineTargetGroup,
         cluster: container.cluster,
         databaseTables: {
           usersTable: tableName(env, "users"),

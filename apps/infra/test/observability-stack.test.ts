@@ -60,6 +60,12 @@ function buildTemplate(envName: "dev" | "prod"): Template {
       targetType: elbv2.TargetType.IP,
     });
 
+    const engineTg = new elbv2.ApplicationTargetGroup(supportStack, "EngineTG", {
+      vpc,
+      port: 8000,
+      targetType: elbv2.TargetType.IP,
+    });
+
     const service = new ecs.FargateService(supportStack, "Service", {
       cluster,
       taskDefinition: taskDef,
@@ -82,6 +88,7 @@ function buildTemplate(envName: "dev" | "prod"): Template {
       backendLogGroupName: `/ecs/isol8-${envName}`,
       alb,
       targetGroup: tg,
+      engineTargetGroup: engineTg,
       cluster,
       databaseTables: {
         usersTable: `${tablePrefix(envName)}users`,
@@ -1157,5 +1164,23 @@ describe("ObservabilityStack — prod-only paths", () => {
         }),
       ]),
     });
+  });
+});
+
+describe("ObservabilityStack — engine service alarms", () => {
+  const dev = buildTemplate("dev");
+  const alarms = Object.values(dev.findResources("AWS::CloudWatch::Alarm")).map((r: any) => r.Properties);
+  const engineDims = (a: any) => JSON.stringify(a.Dimensions ?? []).includes("EngineTG");
+
+  test.each([
+    ["HTTPCode_Target_5XX_Count", "W87-engine-5xx"],
+    ["UnHealthyHostCount", "W88-engine-unhealthy-hosts"],
+  ])("%s on the engine target group warns", (metric, name) => {
+    const alarm = alarms.find((a) => a.AlarmName?.endsWith(name));
+    expect(alarm).toBeDefined();
+    expect(alarm.MetricName).toBe(metric);
+    expect(alarm.Namespace).toBe("AWS/ApplicationELB");
+    expect(engineDims(alarm)).toBe(true);
+    expect(JSON.stringify(alarm.AlarmActions)).toContain("AlertsWarn");
   });
 });

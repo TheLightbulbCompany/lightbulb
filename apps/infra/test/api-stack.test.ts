@@ -1047,3 +1047,26 @@ describe("ApiStack — super-agent tasks table (contracts-v2 §3, dev + prod)", 
     expect(projectorSources(synthApiStack("prod"))).toHaveLength(2);
   });
 });
+
+describe("ApiStack — engine paths are not public", () => {
+  // The backend serves the engine's callbacks under /api/v1/internal/engine/*, and the engine service
+  // serves /engine/v1/*. Both are for in-VPC callers on the ALB. The public HTTP API forwards every other
+  // path to the backend ($default), so each engine prefix has its own route with no integration: API
+  // Gateway answers 404 itself and the request never reaches the ALB.
+  const ENGINE_PREFIXES = ["/api/v1/internal/engine", "/engine/v1"];
+
+  test("each engine prefix has a gateway route that integrates with nothing", () => {
+    const routes = Object.values(API_TEMPLATE.findResources("AWS::ApiGatewayV2::Route")) as any[];
+    for (const prefix of ENGINE_PREFIXES) {
+      const route = routes.find((r) => r.Properties.RouteKey === `ANY ${prefix}/{proxy+}`);
+      expect(route).toBeDefined();
+      expect(route.Properties.Target).toBeUndefined();
+    }
+  });
+
+  test("no integrated route can serve an engine path except through $default", () => {
+    const routes = Object.values(API_TEMPLATE.findResources("AWS::ApiGatewayV2::Route")) as any[];
+    const integrated = routes.filter((r) => r.Properties.Target).map((r) => r.Properties.RouteKey);
+    expect(integrated).toEqual(["$default"]);
+  });
+});

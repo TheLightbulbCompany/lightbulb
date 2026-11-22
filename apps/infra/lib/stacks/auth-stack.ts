@@ -33,6 +33,7 @@ export class AuthStack extends cdk.Stack {
   public readonly kmsKey: kms.Key;
   public readonly paperclipServiceTokenKey: secretsmanager.Secret;
   public readonly wsInternalSecret: secretsmanager.Secret;
+  public readonly engineServiceToken: secretsmanager.Secret;
   public readonly networkProofKey: secretsmanager.Secret;
   public readonly gogKeyringPassword: secretsmanager.Secret;
   public readonly metronomeApiKey: secretsmanager.Secret;
@@ -144,6 +145,15 @@ export class AuthStack extends cdk.Stack {
       "ws_internal_secret",
       { passwordLength: 64, excludePunctuation: true },
       "Shared secret the WebSocket Lambdas attach so the backend /ws/* endpoints can distinguish them from forged public-gateway callers.",
+    );
+
+    // The bearer the engine service and the products send each other (core/engine/transport.py,
+    // ENGINE_SERVICE_TOKEN). Read by every backend-image process in service-stack.
+    this.engineServiceToken = createSecret(
+      "EngineServiceToken",
+      "engine_service_token",
+      { passwordLength: 64, excludePunctuation: true },
+      "Shared bearer between the engine service and the products (ENGINE_SERVICE_TOKEN).",
     );
 
     // Seeds the Ed25519 key that signs `lightbulb login` proofs (backend network_proof: the

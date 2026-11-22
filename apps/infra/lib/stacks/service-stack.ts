@@ -126,6 +126,10 @@ export interface ServiceStackProps extends cdk.StackProps {
   platformMailDomain?: string;
   vpc: ec2.IVpc;
   targetGroup: elbv2.IApplicationTargetGroup;
+  /** The engine service's target group, behind the internal ALB's :8082 listener (network-stack). */
+  engineTargetGroup: elbv2.IApplicationTargetGroup;
+  /** The internal ALB's DNS name: the engine on :8082, the products' callbacks on :80. */
+  albDnsName: string;
   albSecurityGroup: ec2.ISecurityGroup;
     // NOTE: this stack deliberately takes NO database table constructs.
     // Every table is reached by NAME (see the DynamoDbOwnedTables statement and
@@ -1864,6 +1868,12 @@ export class ServiceStack extends cdk.Stack {
       EMAIL_FROM_WELCOME: `Lightbulb <hello@${platformMailDomain}>`,
       EMAIL_SUPPORT_ADDRESS: `support@${platformMailDomain}`,
       EMAIL_FROM_TICKETS: `Lightbulb Support <tickets@${platformMailDomain}>`,
+      // The engine's transport (core/config.py). `inprocess`: nothing calls the engine service yet.
+      // Both URLs are the internal ALB: the engine service on :8082, and the backend's
+      // /api/v1/internal/engine/* callbacks on :80, which the public API Gateway refuses (api-stack.ts).
+      ENGINE_TRANSPORT: "inprocess",
+      ENGINE_URL: `http://${props.albDnsName}:8082`,
+      PRODUCT_CALLBACK_URL: `http://${props.albDnsName}`,
     };
 
     const backendContainerSecrets: Record<string, ecs.Secret> = {
@@ -2011,6 +2021,10 @@ export class ServiceStack extends cdk.Stack {
       // lightbulb/{env}/* read grants like every other secret here.
       TEMPORAL_API_KEY: ecs.Secret.fromSecretsManager(
         secretsmanager.Secret.fromSecretNameV2(this, "ImportTemporalApiKey", `lightbulb/${env}/temporal_api_key`),
+      ),
+      // The bearer between the engine service and the products (auth-stack engineServiceToken).
+      ENGINE_SERVICE_TOKEN: ecs.Secret.fromSecretsManager(
+        secretsmanager.Secret.fromSecretNameV2(this, "ImportEngineServiceToken", `lightbulb/${env}/engine_service_token`),
       ),
     };
 
@@ -2553,6 +2567,55 @@ export class ServiceStack extends cdk.Stack {
       ...taskNetwork,
       securityGroups: [serviceSg],
       enableExecuteCommand: true,
+    });
+
+    // Engine service (engine-service plan Task 9): the same image as `uvicorn engine_main:app`, the
+    // engine's operations (/engine/v1) and its runtime callbacks, behind the internal ALB's :8082
+    // listener. Same role, env and secrets as the backend. Nothing calls it while ENGINE_TRANSPORT is
+    // `inprocess`. Keep-alive matches the backend's (Dockerfile) so it outlasts the ALB's 300 s idle timeout.
+    const engineTaskDef = new ecs.FargateTaskDefinition(this, "EngineTaskDef", {
+      family: `lightbulb-${env}-engine`,
+      runtimePlatform: backendRuntimePlatform,
+      cpu: 512,
+      memoryLimitMiB: 1024,
+      taskRole: this.taskRole,
+      executionRole: taskExecutionRole,
+    });
+    engineTaskDef.addContainer("engine", {
+      image: ecs.ContainerImage.fromDockerImageAsset(backendImage),
+      command: [
+        "/app/.venv/bin/python", "-m", "uvicorn", "engine_main:app", "--host", "0.0.0.0", "--port", "8000",
+        "--timeout-keep-alive", "300", "--timeout-graceful-shutdown", "25",
+      ],
+      portMappings: [{ containerPort: 8000 }],
+      environment: backendContainerEnvironment,
+      secrets: backendContainerSecrets,
+      healthCheck: { command: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"] },
+      logging: ecs.LogDrivers.awsLogs({ streamPrefix: "engine", logGroup }),
+      stopTimeout: cdk.Duration.seconds(30),
+    });
+    const engineService = new ecs.FargateService(this, "EngineService", {
+      serviceName: `lightbulb-${env}-engine`,
+      cluster: props.container.cluster,
+      taskDefinition: engineTaskDef,
+      desiredCount: env === "prod" ? 2 : 1,
+      ...(env === "prod" ? {} : { capacityProviderStrategies: DEV_SPOT }),
+      minHealthyPercent: 100,
+      maxHealthyPercent: 200,
+      circuitBreaker: { rollback: true },
+      ...taskNetwork,
+      securityGroups: [serviceSg],
+      enableExecuteCommand: true,
+    });
+    engineService.attachToApplicationTargetGroup(props.engineTargetGroup);
+    // The :8082 listener's only ingress: backend-image processes (backend, Temporal workers, Lambdas).
+    new ec2.CfnSecurityGroupIngress(this, "AlbEngineFromService", {
+      groupId: props.albSecurityGroup.securityGroupId,
+      sourceSecurityGroupId: serviceSg.securityGroupId,
+      ipProtocol: "tcp",
+      fromPort: 8082,
+      toPort: 8082,
+      description: "Engine listener from the backend-image services",
     });
 
     // Horizontal autoscaling: the machine relay (sub-project D) moved every

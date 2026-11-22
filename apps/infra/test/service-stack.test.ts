@@ -46,6 +46,8 @@ function buildServiceStack(environment: "dev" | "prod", inspectAssets?: (images:
     environment,
     vpc: network.vpc,
     targetGroup: network.targetGroup,
+    engineTargetGroup: network.engineTargetGroup,
+    albDnsName: network.alb.loadBalancerDnsName,
     albSecurityGroup: network.albSecurityGroup,
     secretNames: {
       clerkIssuer: `lightbulb/${environment}/clerk_issuer`,
@@ -1822,7 +1824,7 @@ describe("ServiceStack — search consumer detached before API retirement", () =
 });
 
 describe("ServiceStack — coherent ARM64 backend image consumers", () => {
-  test.each(["dev", "prod"] as const)("%s publishes ARM64 and runs all five consumers on that architecture", (env) => {
+  test.each(["dev", "prod"] as const)("%s publishes ARM64 and runs all six consumers on that architecture", (env) => {
     let assetHash = "";
     const template = buildServiceStack(env, (images) => {
       expect(images).toHaveLength(1);
@@ -1830,18 +1832,106 @@ describe("ServiceStack — coherent ARM64 backend image consumers", () => {
       assetHash = images[0].hash;
     });
     const tasks = Object.values(template.findResources("AWS::ECS::TaskDefinition")) as any[];
-    expect(tasks).toHaveLength(3);
+    expect(tasks).toHaveLength(4);
     for (const task of tasks) expect(task.Properties.RuntimePlatform).toEqual({ CpuArchitecture: "ARM64", OperatingSystemFamily: "LINUX" });
     const sizes = Object.fromEntries(tasks.map((task) => [task.Properties.Family, [task.Properties.Cpu, task.Properties.Memory]]));
     expect(sizes).toEqual({
       [`lightbulb-${env}-backend`]: [env === "prod" ? "1024" : "512", "2048"],
       [`lightbulb-${env}-temporal-worker`]: ["512", "1024"],
       [`lightbulb-${env}-temporal-watchdog`]: ["256", "512"],
+      [`lightbulb-${env}-engine`]: ["512", "1024"],
     });
     const lambdas = Object.values(template.findResources("AWS::Lambda::Function")).filter((fn: any) => fn.Properties.PackageType === "Image") as any[];
     expect(lambdas).toHaveLength(2);
     for (const fn of lambdas) expect(fn.Properties.Architectures).toEqual(["arm64"]);
     const images = [...tasks.flatMap((task) => task.Properties.ContainerDefinitions.map((c: any) => JSON.stringify(c.Image))), ...lambdas.map((fn) => JSON.stringify(fn.Properties.Code.ImageUri))];
     for (const image of images) expect(image).toContain(assetHash);
+  });
+});
+
+describe("ServiceStack — engine service, dark (engine-service plan Task 9)", () => {
+  const PROD = buildServiceStack("prod");
+  const containers = (template: Template) =>
+    Object.values(template.findResources("AWS::ECS::TaskDefinition")).flatMap(
+      (td: any) => td.Properties.ContainerDefinitions,
+    ) as any[];
+  const envOf = (c: any) => Object.fromEntries(c.Environment.map((e: any) => [e.Name, e.Value]));
+
+  test.each([["dev", SERVICE_TEMPLATE_DEV, 1], ["prod", PROD, 2]] as const)(
+    "engine service runs uvicorn engine_main on the backend image (%s)",
+    (env, template, desired) => {
+      const [svc] = Object.values(
+        template.findResources("AWS::ECS::Service", { Properties: { ServiceName: `lightbulb-${env}-engine` } }),
+      ) as any[];
+      expect(svc.Properties.DesiredCount).toBe(desired);
+      expect(svc.Properties.LoadBalancers).toEqual([
+        expect.objectContaining({ ContainerName: "engine", ContainerPort: 8000 }),
+      ]);
+      expect(JSON.stringify(svc.Properties.LoadBalancers[0].TargetGroupArn)).toContain("EngineTargetGroup");
+      const [td] = Object.values(
+        template.findResources("AWS::ECS::TaskDefinition", { Properties: { Family: `lightbulb-${env}-engine` } }),
+      ) as any[];
+      expect([td.Properties.Cpu, td.Properties.Memory]).toEqual(["512", "1024"]);
+      const backendTd = Object.values(
+        template.findResources("AWS::ECS::TaskDefinition", { Properties: { Family: `lightbulb-${env}-backend` } }),
+      )[0] as any;
+      expect(td.Properties.TaskRoleArn).toEqual(backendTd.Properties.TaskRoleArn);
+      expect(td.Properties.ExecutionRoleArn).toEqual(backendTd.Properties.ExecutionRoleArn);
+      const engine = containers(template).find((c) => c.Name === "engine");
+      const backend = containers(template).find((c) => c.Name === "backend");
+      expect(engine.Command.slice(0, 8)).toEqual([
+        "/app/.venv/bin/python", "-m", "uvicorn", "engine_main:app", "--host", "0.0.0.0", "--port", "8000",
+      ]);
+      expect(engine.Image).toEqual(backend.Image);
+      expect(engine.PortMappings).toEqual([expect.objectContaining({ ContainerPort: 8000 })]);
+      expect(engine.LogConfiguration.Options["awslogs-stream-prefix"]).toBe("engine");
+    },
+  );
+
+  test("engine listener 8082 admits only the service SG", () => {
+    const rules = Object.values(SERVICE_TEMPLATE_DEV.findResources("AWS::EC2::SecurityGroupIngress"))
+      .map((r: any) => r.Properties)
+      .filter((p: any) => p.FromPort <= 8082 && p.ToPort >= 8082);
+    expect(rules).toHaveLength(1);
+    const [sgId] = Object.keys(
+      SERVICE_TEMPLATE_DEV.findResources("AWS::EC2::SecurityGroup", {
+        Properties: { GroupDescription: Match.stringLikeRegexp("Fargate service security group") },
+      }),
+    );
+    expect(rules[0]).toMatchObject({
+      IpProtocol: "tcp",
+      FromPort: 8082,
+      ToPort: 8082,
+      SourceSecurityGroupId: { "Fn::GetAtt": [sgId, "GroupId"] },
+    });
+    expect(JSON.stringify(rules[0].GroupId)).toContain("AlbSecurityGroup");
+    expect(rules[0].CidrIp).toBeUndefined();
+  });
+
+  test.each([["dev", SERVICE_TEMPLATE_DEV], ["prod", PROD]] as const)("ENGINE_TRANSPORT is inprocess in both envs (%s)", (env, template) => {
+    const names = ["backend", "temporal-worker", "temporal-watchdog", "engine"];
+    for (const name of names) {
+      const c = containers(template).find((x) => x.Name === name);
+      const e = envOf(c);
+      expect(e.ENGINE_TRANSPORT).toBe("inprocess");
+      // The ALB's internal DNS name: the engine on the 8082 listener, the products' callbacks on 80.
+      expect(JSON.stringify(e.ENGINE_URL)).toMatch(/http:\/\/.*DNSName.*:8082/);
+      expect(JSON.stringify(e.PRODUCT_CALLBACK_URL)).toMatch(/http:\/\/.*DNSName/);
+      expect(JSON.stringify(e.PRODUCT_CALLBACK_URL)).not.toContain(":8082");
+      const token = c.Secrets.find((s: any) => s.Name === "ENGINE_SERVICE_TOKEN");
+      expect(JSON.stringify(token.ValueFrom)).toContain(`secret:lightbulb/${env}/engine_service_token`);
+    }
+    // The provisioner and work-consumer Lambdas rebuild the same env and secrets at cold start.
+    const [param] = Object.values(
+      template.findResources("AWS::SSM::Parameter", { Properties: { Name: `/lightbulb/${env}/provisioner-env` } }),
+    ) as any[];
+    expect(JSON.stringify(param.Properties.Value)).toContain('\\"ENGINE_TRANSPORT\\":\\"inprocess\\"');
+    const fns = Object.values(template.findResources("AWS::Lambda::Function")).filter(
+      (fn: any) => fn.Properties.Environment?.Variables?.LAMBDA_SECRET_ENV_MAP,
+    );
+    expect(fns).toHaveLength(2);
+    for (const fn of fns as any[]) {
+      expect(JSON.stringify(fn.Properties.Environment.Variables.LAMBDA_SECRET_ENV_MAP)).toContain("ENGINE_SERVICE_TOKEN");
+    }
   });
 });

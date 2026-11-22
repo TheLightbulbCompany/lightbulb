@@ -1050,23 +1050,48 @@ describe("ApiStack — super-agent tasks table (contracts-v2 §3, dev + prod)", 
 
 describe("ApiStack: engine paths are not public", () => {
   // The backend serves the engine's callbacks under /api/v1/internal/engine/*, and the engine service
-  // serves /engine/v1/*. Both are for in-VPC callers on the ALB. The public HTTP API forwards every other
-  // path to the backend ($default), so each engine prefix has its own route with no integration: API
-  // Gateway answers 404 itself and the request never reaches the ALB.
+  // serves /engine/v1/*. Both are for in-VPC callers on the ALB. A route with no target falls through to
+  // $default, so each engine prefix routes to a Lambda that answers 404 and never reaches the ALB.
   const ENGINE_PREFIXES = ["/api/v1/internal/engine", "/engine/v1"];
+  const routes = () => Object.values(API_TEMPLATE.findResources("AWS::ApiGatewayV2::Route")) as any[];
+  const integrations = API_TEMPLATE.findResources("AWS::ApiGatewayV2::Integration") as Record<string, any>;
+  const integrationOf = (route: any) => {
+    const target = JSON.stringify(route.Properties.Target ?? "");
+    const id = Object.keys(integrations).find((k) => target.includes(`"Ref":"${k}"`));
+    return id ? integrations[id].Properties : undefined;
+  };
 
-  test("each engine prefix has a gateway route that integrates with nothing", () => {
-    const routes = Object.values(API_TEMPLATE.findResources("AWS::ApiGatewayV2::Route")) as any[];
+  test("each engine prefix routes to the 404 Lambda, not the ALB", () => {
     for (const prefix of ENGINE_PREFIXES) {
-      const route = routes.find((r) => r.Properties.RouteKey === `ANY ${prefix}/{proxy+}`);
+      const route = routes().find((r) => r.Properties.RouteKey === `ANY ${prefix}/{proxy+}`);
       expect(route).toBeDefined();
-      expect(route.Properties.Target).toBeUndefined();
+      const integration = integrationOf(route);
+      expect(integration).toMatchObject({ IntegrationType: "AWS_PROXY", PayloadFormatVersion: "2.0" });
+      expect(JSON.stringify(integration.IntegrationUri)).toContain("EnginePathNotFound");
     }
   });
 
-  test("no integrated route can serve an engine path except through $default", () => {
-    const routes = Object.values(API_TEMPLATE.findResources("AWS::ApiGatewayV2::Route")) as any[];
-    const integrated = routes.filter((r) => r.Properties.Target).map((r) => r.Properties.RouteKey);
-    expect(integrated).toEqual(["$default"]);
+  test("the 404 Lambda answers 404 with bounded concurrency", () => {
+    const fns = Object.values(
+      API_TEMPLATE.findResources("AWS::Lambda::Function", {
+        Properties: { FunctionName: Match.stringLikeRegexp("engine-path-not-found$") },
+      }),
+    ) as any[];
+    expect(fns).toHaveLength(1);
+    expect(fns[0].Properties.Code.ZipFile).toContain('"statusCode": 404');
+    expect(fns[0].Properties.ReservedConcurrentExecutions).toBe(2);
+  });
+
+  test("no route whose key starts with an engine prefix integrates with the backend ALB", () => {
+    const engineRoutes = routes().filter((r) =>
+      ENGINE_PREFIXES.some((p) => String(r.Properties.RouteKey).split(" ").pop()!.startsWith(p)),
+    );
+    expect(engineRoutes.length).toBeGreaterThanOrEqual(ENGINE_PREFIXES.length);
+    for (const route of engineRoutes) {
+      const integration = integrationOf(route);
+      expect(integration).toBeDefined();
+      expect(integration.ConnectionType).not.toBe("VPC_LINK");
+      expect(integration.IntegrationType).not.toBe("HTTP_PROXY");
+    }
   });
 });

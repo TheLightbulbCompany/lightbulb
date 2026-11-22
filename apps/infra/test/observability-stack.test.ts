@@ -1183,4 +1183,21 @@ describe("ObservabilityStack: engine service alarms", () => {
     expect(engineDims(alarm)).toBe(true);
     expect(JSON.stringify(alarm.AlarmActions)).toContain("AlertsWarn");
   });
+
+  test("W89 warns when no engine target is healthy for 10 min, not on one Spot replacement", () => {
+    const alarm = alarms.find((a) => a.AlarmName?.endsWith("W89-engine-healthy-hosts"));
+    expect(alarm).toBeDefined();
+    expect(alarm).toMatchObject({
+      MetricName: "HealthyHostCount",
+      Statistic: "Maximum",
+      Period: 300,
+      Threshold: 1,
+      ComparisonOperator: "LessThanThreshold",
+      EvaluationPeriods: 2,
+      DatapointsToAlarm: 2,
+      TreatMissingData: "breaching",
+    });
+    expect(engineDims(alarm)).toBe(true);
+    expect(JSON.stringify(alarm.AlarmActions)).toContain("AlertsWarn");
+  });
 });

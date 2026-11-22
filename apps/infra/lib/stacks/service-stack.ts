@@ -2594,6 +2594,14 @@ export class ServiceStack extends cdk.Stack {
       logging: ecs.LogDrivers.awsLogs({ streamPrefix: "engine", logGroup }),
       stopTimeout: cdk.Duration.seconds(30),
     });
+    // The engine's own SG admits only the ALB (traffic and health checks). It does not take serviceSg,
+    // which admits the AgentCore runtimes on 8000. Egress is open: Temporal, AWS APIs and the ALB's :80.
+    const engineSg = new ec2.SecurityGroup(this, "EngineSecurityGroup", {
+      vpc: props.vpc,
+      description: `Lightbulb ${env} engine service security group`,
+      allowAllOutbound: true,
+    });
+    engineSg.addIngressRule(props.albSecurityGroup, ec2.Port.tcp(8000), "HTTP from ALB");
     const engineService = new ecs.FargateService(this, "EngineService", {
       serviceName: `lightbulb-${env}-engine`,
       cluster: props.container.cluster,
@@ -2604,7 +2612,7 @@ export class ServiceStack extends cdk.Stack {
       maxHealthyPercent: 200,
       circuitBreaker: { rollback: true },
       ...taskNetwork,
-      securityGroups: [serviceSg],
+      securityGroups: [engineSg],
       enableExecuteCommand: true,
     });
     engineService.attachToApplicationTargetGroup(props.engineTargetGroup);

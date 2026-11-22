@@ -34,6 +34,7 @@ from core.services.provision_gate import evaluate_provision_gate
 from main import app
 from scripts import provision_runner
 from tests.unit.auth.conftest import Tenant, calls, ddb, jwks  # noqa: F401
+from tests.unit.services.test_account_wipe import wipe_mocks  # noqa: F401
 
 PERSON = "user_x"
 
@@ -204,3 +205,25 @@ async def test_source_adopted_after_provision(ddb, calls, jwks):  # noqa: F811
         assert r.status_code == 200, r.text[:300]
     item = await webhook_dedup._read_event(f"ws-source:{PERSON}")
     assert item["record"]["self_reported_source"] == "friend" and "ttl" not in item
+
+
+async def test_user_deleted_keeps_an_org_bound_chatgpt_sign_in(ddb, wipe_mocks):  # noqa: F811
+    """A member who connected ChatGPT for an org is deleted: that org's credential row stays (the org's own
+    lifecycle owns it) and nothing of the org's is touched. A person's sign-in for their own tenant goes."""
+    from unittest.mock import patch
+
+    from core.services import account_wipe, oauth_service
+
+    oauth_service._table().put_item(Item={"user_id": "user_m", "bound_owner_id": "org_x", "state": "active"})
+    oauth_service._table().put_item(Item={"user_id": PERSON, "bound_owner_id": PERSON, "state": "active"})
+    wipe_mocks.messaging_list_rooms.return_value = []
+    with (
+        patch.object(account_wipe, "bound_owner_of", oauth_service.bound_owner_of),
+        patch.object(account_wipe, "revoke_user_oauth", oauth_service.revoke_user_oauth),
+    ):
+        for who in ("user_m", PERSON):
+            await account_wipe.wipe_account(who, actor_admin_id="clerk:user.deleted", clerk_user_deleted=True)
+    assert oauth_service._table().get_item(Key={"user_id": "user_m"})["Item"]["bound_owner_id"] == "org_x"
+    assert "Item" not in oauth_service._table().get_item(Key={"user_id": PERSON})
+    touched = {c.args[0] for m in (wipe_mocks.billing_delete, wipe_mocks.stripe_delete) for c in m.await_args_list}
+    assert touched <= {"user_m", PERSON}  # no org's billing row or Stripe customer

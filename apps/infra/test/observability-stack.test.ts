@@ -187,6 +187,8 @@ const EMITTED_DIMENSION_SETS: Record<string, string[][]> = {
   "messaging.jev.decision": [["outcome"]],
   // core/services/run_analytics.py _enrich_and_capture; no alarm since the Paperclip exit.
   "nightly_ceo.run": [["outcome"]],
+  // routers/webhooks.py user.deleted, when the tenant wipe has a failed step; no dims. W89.
+  "clerk.webhook.user_deleted_wipe_failed": [[]],
   // core/services/messaging.py count_first_turn_failure; P29 binds the bare rollup.
   "messaging.run.first_turn_failed": [[]],
   // apps/infra/lambda/openrouter-settlement/index.py Store.commit (EMF, own service); W81.
@@ -1120,6 +1122,18 @@ describe("ObservabilityStack — prod-only paths", () => {
       Dimensions: Match.arrayWith([{ Name: "service", Value: "openrouter-settlement" }]),
       Threshold: 0,
       ComparisonOperator: "GreaterThanThreshold",
+      AlarmActions: [{ Ref: Match.stringLikeRegexp("^AlertsWarn") }],
+    });
+  });
+
+  test.each(["dev", "prod"] as const)("%s warns when a deleted person's tenant wipe fails a step", (env) => {
+    buildTemplate(env).hasResourceProperties("AWS::CloudWatch::Alarm", {
+      AlarmName: `lightbulb-${env}-W89-user-deleted-wipe-failed`,
+      Namespace: "LightbulbAI",
+      MetricName: "clerk.webhook.user_deleted_wipe_failed",
+      Dimensions: Match.arrayWith([{ Name: "service", Value: "lightbulb-backend" }]),
+      Threshold: 1,
+      ComparisonOperator: "GreaterThanOrEqualToThreshold",
       AlarmActions: [{ Ref: Match.stringLikeRegexp("^AlertsWarn") }],
     });
   });

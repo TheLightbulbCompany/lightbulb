@@ -74,5 +74,10 @@ def test_claim_hands_the_hold_to_the_callers_new_workspace(monkeypatch):
         claim.return_value = False
         assert c.post("/api/v1/company/slug/claim", json=body).status_code == 409
         assert c.post("/api/v1/company/slug/claim", json={"slug": "bench-club", "name": " "}).status_code == 422
+        # The org page sends the slug alone: still claimed, and no name is written.
+        named.reset_mock()
+        claim.return_value = True
+        assert c.post("/api/v1/company/slug/claim", json={"slug": "bench-club"}).status_code == 200
+        named.assert_not_awaited()
     finally:
         app.dependency_overrides.clear()

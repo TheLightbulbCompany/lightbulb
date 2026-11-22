@@ -92,6 +92,7 @@ import httpx
 from core.auth import is_org_owner_id
 from core.billing.bedrock_gate_tokens import delete_gate_token_rows, owner_gate_token_hashes
 from core.billing.metronome_client import for_settings as metronome_for_settings
+from core.billing.metronome_fast_gate import MetronomeFastGate
 from core.config import settings
 from core.dynamodb import get_table, run_in_thread
 from core.services.credentials import integration_secret_store
@@ -115,7 +116,7 @@ from core.services import clerk_admin, company_stripe, connection_service, text_
 from core.voice.meetings import records as meeting_records
 from core.voice.phone import voice_onboarding
 from core.services.billing_service import delete_stripe_customer
-from core.services.oauth_service import revoke_user_oauth
+from core.services.oauth_service import bound_owner_of, revoke_user_oauth
 from core.services.owner_secret_sweep import (
     _list_names_with_prefix,
     delete_owner_secrets,
@@ -201,6 +202,11 @@ async def _delete_openrouter_key(owner_id: str) -> None:
         get_table("openrouter-keys").delete_item(Key={"owner_id": owner_id})
 
     await run_in_thread(_delete)
+
+
+async def _delete_fast_gate_row(owner_id: str) -> str:
+    await MetronomeFastGate().delete_row(owner_id)
+    return "metronome fast-gate row deleted"
 
 
 async def retire_openrouter_key(owner_id: str) -> str:
@@ -629,6 +635,8 @@ async def preview_wipe(owner_id: str) -> WipeReport:
         detail_if_absent="no metronome_customer_id on billing row",
     )
 
+    steps.append(WipeStep("metronome_fast_gate", "delete_row", "would_delete", "metronome fast-gate row"))
+
     stripe_customer_id = (ids.billing or {}).get("stripe_customer_id")
     _preview_step(
         steps,
@@ -939,6 +947,13 @@ async def wipe_account(owner_id: str, *, actor_admin_id: str, clerk_user_deleted
     else:
         _skip(steps, "metronome", "archive_customer", "no metronome_customer_id on billing row")
 
+    await _step(
+        steps,
+        system="metronome_fast_gate",
+        action="delete_row",
+        fn=lambda: _delete_fast_gate_row(owner_id),
+    )
+
     # --- Step 8 (spec #10): Stripe ------------------------------------------
     stripe_customer_id = (ids.billing or {}).get("stripe_customer_id")
     if stripe_customer_id:
@@ -1089,6 +1104,9 @@ async def wipe_account(owner_id: str, *, actor_admin_id: str, clerk_user_deleted
     # this codebase, so the grant stays live on their side until it expires
     # or the human revokes it in their OpenAI account settings.
     async def _s9h() -> str:
+        # A sign-in the person made for an org is that org's credential: its own lifecycle owns it.
+        if clerk_user_deleted and await bound_owner_of(owner_id) not in (None, owner_id):
+            return "kept: the stored ChatGPT sign-in is bound to an organization"
         await revoke_user_oauth(user_id=owner_id)
         return "stored chatgpt oauth tokens deleted (grant NOT revoked upstream at OpenAI)"
 

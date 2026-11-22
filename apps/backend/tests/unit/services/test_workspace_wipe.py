@@ -187,7 +187,7 @@ def ws_mocks():
         ("core.services.account_wipe._delete_openrouter_key", openrouter_delete),
         ("core.services.workspace_wipe.workspace_join_repo.get_link", join_link_get),
         ("core.services.workspace_wipe.workspace_join_repo.delete_link", join_link_delete),
-        ("core.services.workspace_wipe.MetronomeFastGate", MagicMock(return_value=fast_gate_instance)),
+        ("core.services.account_wipe.MetronomeFastGate", MagicMock(return_value=fast_gate_instance)),
     ]
     with ExitStack() as _stack:
         for _target, _new in _patches:

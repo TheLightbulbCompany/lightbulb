@@ -872,3 +872,16 @@ async def test_last_member_leaving_a_parked_workspace_still_reaches_the_teardown
     wake.assert_awaited_once_with("org_acme")
     teardown.assert_awaited_once_with("org_acme")
     no_evaluator_wipe["delete_sessions"].assert_awaited_once_with("user_a", workspace_id="org_acme")
+
+
+@pytest.mark.asyncio
+async def test_user_deleted_keeps_a_sign_in_bound_to_an_org(async_client, monkeypatch, wipe_mocks):  # noqa: F811
+    """A ChatGPT sign-in the person made for an org is the org's credential: deleting the person leaves it."""
+    _bypass_svix(monkeypatch)
+    wipe_mocks.oauth_bound.return_value = "org_x"
+
+    resp = await _user_deleted(async_client)
+
+    assert resp.status_code == 200, resp.text
+    wipe_mocks.oauth_revoke.assert_not_awaited()
+    wipe_mocks.fast_gate_delete.assert_awaited_once_with(OWNER_ID)

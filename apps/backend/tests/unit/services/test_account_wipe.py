@@ -56,6 +56,7 @@ EXPECTED_ORDER = [
     # (bedrock_aip.reap_owner_bedrock_resources).
     "runtime",
     "metronome",
+    "metronome_fast_gate",
     "stripe",
     # Step 8b shares the "stripe" system name with Step 8 above -- one is the
     # subscription-billing customer delete, the other is the company Stripe
@@ -230,6 +231,8 @@ def wipe_mocks():
     openrouter_get = AsyncMock(return_value=None)
     openrouter_retire = AsyncMock(return_value=True)
     held_number = AsyncMock(return_value="")
+    fast_gate_delete = AsyncMock(return_value="metronome fast-gate row deleted")
+    oauth_bound = AsyncMock(return_value=None)
 
     # ExitStack, not a parenthesised `with (patch(...), ...)` chain: that
     # form is one statically nested block PER patch and CPython caps those
@@ -285,6 +288,8 @@ def wipe_mocks():
         ("core.services.account_wipe.openrouter_key_repo.get", openrouter_get),
         ("core.services.account_wipe.openrouter_key_repo.mark_retiring", openrouter_retire),
         ("core.services.account_wipe.voice_onboarding.held_number", held_number),
+        ("core.services.account_wipe._delete_fast_gate_row", fast_gate_delete),
+        ("core.services.account_wipe.bound_owner_of", oauth_bound),
     ]
     with ExitStack() as _stack:
         for _target, _new in _patches:
@@ -337,6 +342,8 @@ def wipe_mocks():
             openrouter_get=openrouter_get,
             openrouter_retire=openrouter_retire,
             held_number=held_number,
+            fast_gate_delete=fast_gate_delete,
+            oauth_bound=oauth_bound,
         )
 
 
@@ -656,6 +663,7 @@ async def test_clerk_delete_still_runs_when_every_other_step_fails(wipe_mocks):
     wipe_mocks.person_memory_delete.side_effect = RuntimeError("memory down")
     wipe_mocks.engine_wipe.side_effect = RuntimeError("temporal down")
     wipe_mocks.openrouter_get.side_effect = RuntimeError("ddb down")
+    wipe_mocks.fast_gate_delete.side_effect = RuntimeError("ddb down")
 
     report = await wipe_account(OWNER_ID, actor_admin_id="admin_1")
 

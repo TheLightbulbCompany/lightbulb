@@ -85,7 +85,6 @@ from typing import Awaitable, Callable
 
 from core.auth import is_org_owner_id
 from core.billing.bedrock_gate_tokens import delete_gate_token_rows, owner_gate_token_hashes
-from core.billing.metronome_fast_gate import MetronomeFastGate
 from core.config import settings
 from core.repositories import (
     agent_email_repo,
@@ -110,6 +109,7 @@ from core.services.account_wipe import (
     WipeReport,
     WipeStep,
     _archive_metronome_customer,
+    _delete_fast_gate_row,
     _preview_step,
     _runtime_detail,
     _skip,
@@ -681,11 +681,6 @@ async def _join_link_run(snap: WorkspaceSnapshot) -> str:
     return "workspace join link deleted"
 
 
-async def _fast_gate_run(snap: WorkspaceSnapshot) -> str:
-    await MetronomeFastGate().delete_row(snap.org_id)
-    return "metronome fast-gate row deleted"
-
-
 def member_plan(snap: WorkspaceSnapshot) -> list[dict]:
     """Per person: delete the account, or remove only this org's membership."""
     deletable = set(deletable_member_ids(snap))
@@ -765,7 +760,7 @@ WORKSPACE_STEP_REGISTRY: tuple[WorkspaceStepDef, ...] = (
         "delete_row",
         LAYER_BILLING,
         lambda snap: (True, "metronome fast-gate row"),
-        _fast_gate_run,
+        lambda snap: _delete_fast_gate_row(snap.org_id),
     ),
     WorkspaceStepDef("stripe", "delete_stripe_customer", LAYER_BILLING, _stripe_preview, _stripe_run),
     WorkspaceStepDef(

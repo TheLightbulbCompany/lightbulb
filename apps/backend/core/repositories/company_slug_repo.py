@@ -180,9 +180,12 @@ async def delete_for_owner(owner_id: str) -> str | None:
     row = await get_by_owner(owner_id)
     if not row or not row.get("slug"):
         return None
-    slug = row["slug"]
-    await run_in_thread(_get_table().delete_item, Key={"slug": normalize(slug)})
-    return slug
+    response = await run_in_thread(
+        _get_table().query, IndexName="by-owner", KeyConditionExpression=Key("owner_id").eq(owner_id)
+    )
+    for item in response.get("Items", []):  # every row the owner holds, not only the canonical one
+        await run_in_thread(_get_table().delete_item, Key={"slug": normalize(item["slug"])})
+    return row["slug"]
 
 
 async def scan_all() -> list[dict]:

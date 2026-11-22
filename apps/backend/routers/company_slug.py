@@ -84,7 +84,7 @@ async def stash_source(body: SourceBody, auth: Annotated[AuthContext, Depends(ge
 
 
 class ClaimBody(HoldBody):
-    name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=80)]
+    name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=80)] | None = None
 
 
 @router.post("/slug/claim")
@@ -101,7 +101,8 @@ async def claim_slug(body: ClaimBody, auth: Annotated[AuthContext, Depends(get_c
         raise HTTPException(status_code=409, detail="slug_already_claimed")
     if not await company_slug_repo.claim(slug=slug, user_id=auth.user_id, owner_id=owner_id):
         raise HTTPException(status_code=409, detail="slug_hold_lost")
-    await WorkspaceRepo().set_name(owner_id, body.name)
+    if body.name:
+        await WorkspaceRepo().set_name(owner_id, body.name)
     if owner_id == auth.user_id:  # a person: their address exists from now on (an org's is made on first use)
         user = await user_repo.get(owner_id) or {}
         await agent_email.ensure_team_address(owner_id, user.get("email"))

@@ -1713,19 +1713,19 @@ async def test_without_a_default_room_lines_go_to_the_organizers_dm_with_the_not
         {"kind": "agent", "id": "forge"},
     ]
     # no default room; the meeting's room and the DM are the workspace's
-    rooms = {"meeting-room": {"ownerId": "org_1"}, "dm-1": {"ownerId": "org_1"}}
+    rooms = {"meeting-room": {"ownerId": "user_org"}, "dm-1": {"ownerId": "user_org"}}
     monkeypatch.setattr(messaging_repo, "get_room", AsyncMock(side_effect=rooms.get))
     monkeypatch.setattr(messaging_repo, "list_members", AsyncMock(return_value=members))
     front = AsyncMock(return_value="ceo-agent")
     monkeypatch.setattr(task_conversation, "front_agent_id", front)
     monkeypatch.setattr(engine_messaging, "create_room", create_room)
-    assert await meeting_invites.output_room("org_1", "meeting-room") == "dm-1"
-    front.assert_awaited_with("org_1", room_id="meeting-room")  # the meeting's own front agent writes its notes
+    assert await meeting_invites.output_room("user_org", "meeting-room") == "dm-1"
+    front.assert_awaited_with("user_org", room_id="meeting-room")  # the meeting's own front agent writes its notes
     ((auth, request),) = created
-    assert (auth.user_id, auth.org_id) == ("user_org", "org_1")
+    assert (auth.user_id, auth.org_id) == ("user_org", None)
     assert request.kind == "dm" and [(m.kind, m.id) for m in request.members] == [("agent", "ceo-agent")]
     # The same organizer and agent always name the same DM (found, not duplicated, on the next line).
-    await meeting_invites.output_room("org_1", "meeting-room")
+    await meeting_invites.output_room("user_org", "meeting-room")
     assert created[0][1].client_room_id == created[1][1].client_room_id
     # A DM that cannot be opened leaves the line in the meeting's own room: nothing is lost.
     monkeypatch.setattr(
@@ -1733,7 +1733,7 @@ async def test_without_a_default_room_lines_go_to_the_organizers_dm_with_the_not
         "create_room",
         AsyncMock(side_effect=engine_messaging.ApiProblem("ROOM_FORBIDDEN", "no")),
     )
-    assert await meeting_invites.output_room("org_1", "meeting-room") == "meeting-room"
+    assert await meeting_invites.output_room("user_org", "meeting-room") == "meeting-room"
 
 
 async def test_verified_secondary_sender_uses_current_member_identity(room):

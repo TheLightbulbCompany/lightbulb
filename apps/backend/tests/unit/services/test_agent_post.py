@@ -13,7 +13,7 @@ from tests.unit.services.test_agent_message_attachments import AGENT, OWNER, ROO
 
 DM = str(uuid.UUID(int=77))
 GENERAL = messaging.default_room_id(OWNER)
-USER = "user_ann"
+USER = OWNER  # the tenant is one person: the only human an agent can DM
 
 
 def _post(**over) -> messaging.AgentPostRequest:
@@ -31,7 +31,6 @@ def dms(monkeypatch):
     create_room = AsyncMock(return_value=SimpleNamespace(room_id=uuid.UUID(DM)))
     monkeypatch.setattr(messaging.messaging_repo, "list_rooms_for_member", listed)
     monkeypatch.setattr(messaging, "create_room", create_room)
-    monkeypatch.setattr(messaging, "_validate_human_in_owner", AsyncMock())
     return listed, create_room
 
 
@@ -89,7 +88,7 @@ async def test_step2_user_dm_is_created_when_missing_through_create_room(created
     await messaging.post_agent_message(OWNER, _post(userId=USER))
     assert _room_of(created) == DM
     auth, request = create_room.call_args.args
-    assert (auth.user_id, auth.org_id) == (USER, OWNER)
+    assert (auth.user_id, auth.org_id) == (OWNER, None)
     assert request.kind == "dm" and request.name is None
     assert [(m.kind, m.id, m.listen_mode) for m in request.members] == [("agent", AGENT, "active")]
     # Deterministic, so two racing posts converge on ONE DM.
@@ -98,10 +97,7 @@ async def test_step2_user_dm_is_created_when_missing_through_create_room(created
 
 
 @pytest.mark.asyncio
-async def test_step2_user_outside_the_workspace_is_refused(created, dms, monkeypatch):  # noqa: F811
-    monkeypatch.setattr(
-        messaging, "_validate_human_in_owner", AsyncMock(side_effect=messaging.ApiProblem("MEMBER_NOT_FOUND", "no"))
-    )
+async def test_step2_user_outside_the_workspace_is_refused(created, dms):  # noqa: F811
     with pytest.raises(messaging.ApiProblem) as exc:
         await messaging.post_agent_message(OWNER, _post(userId="user_stranger"))
     assert exc.value.error.code == "MEMBER_NOT_FOUND"
@@ -109,8 +105,8 @@ async def test_step2_user_outside_the_workspace_is_refused(created, dms, monkeyp
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("user_id", [OWNER, "org_other"])
-async def test_step2_an_org_id_is_never_a_human(created, dms, user_id):  # noqa: F811
+@pytest.mark.parametrize("user_id", ["user_stranger", "org_other"])
+async def test_step2_only_the_tenants_own_person_is_a_dm_target(created, dms, user_id):  # noqa: F811
     with pytest.raises(messaging.ApiProblem) as exc:
         await messaging.post_agent_message(OWNER, _post(userId=user_id))
     assert exc.value.error.code == "MEMBER_NOT_FOUND"

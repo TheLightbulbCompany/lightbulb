@@ -438,7 +438,7 @@ async def _chat(bot_id: str, room_id: str, data: dict, nonce: str) -> None:
             return
         seated = await engine.get_conversation(conv.tenant_id, room_id, with_members=True)
         member = inviting_member(meeting, seated.members if seated else [])
-        if not member:
+        if not member or member != conv.tenant_id:  # a webhook speaks only as the tenant's own person
             return
         await engine.append_line(
             LineIn(

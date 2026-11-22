@@ -351,15 +351,14 @@ async def start_front_desk_build_for_line(owner_id: str) -> bool:
             return False
         path, url = first_message_intake(text)
         by = getattr(row, "onboarding_submitted_by", None)
-    if path != "grow" or not url or not by:
+    if path != "grow" or not url or by != owner_id:  # the tenant is one person: only their brief builds
         return False
     agent_id = await customer_ops_agent_id(owner_id)
     if not agent_id:
         return False
-    user_id = str(by)
-    room_id = await messaging._agent_dm_room_id(owner_id, user_id, agent_id)
+    room_id = await messaging._agent_dm_room_id(owner_id, owner_id, agent_id)
     await messaging.create_human_message(
-        AuthContext(user_id=user_id, org_id=owner_id),
+        AuthContext(user_id=owner_id, human_session=True),
         room_id,
         messaging.CreateMessageRequest(
             client_message_id=uuid.uuid5(uuid.NAMESPACE_URL, f"lightbulb-front-desk|{owner_id}|{url.strip().lower()}"),

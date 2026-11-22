@@ -74,11 +74,11 @@ def _member(kind, mid, role="member", listen="active", name=None, handle=None):
     }
 
 
-async def _room(members=None, client_room_id="c-room-1", name="launch", kind="channel"):
+async def _room(members=None, client_room_id="c-room-1", name="launch", kind="channel", owner=OWNER):
     members = members or [_member("human", USER_A, "owner"), _member("agent", FRIDAY, handle="friday")]
-    room_id = repo.deterministic_room_id(OWNER, USER_A, client_room_id)
+    room_id = repo.deterministic_room_id(owner, USER_A, client_room_id)
     meta = await repo.create_room(
-        owner_id=OWNER,
+        owner_id=owner,
         room_id=room_id,
         client_room_id=client_room_id,
         creator_user_id=USER_A,
@@ -1372,8 +1372,8 @@ async def test_with_the_switch_the_welcome_and_chips_go_to_the_owners_lightbulb_
         return await real_create_room(**kwargs)
 
     monkeypatch.setattr(repo, "create_room", create_room)
-    general = await messaging.ensure_default_room(OWNER, USER_A)
-    dm = await messaging._agent_dm_room_id(OWNER, USER_A, ceo)
+    general = await messaging.ensure_default_room(USER_A, USER_A)
+    dm = await messaging._agent_dm_room_id(USER_A, USER_A, ceo)
     assert next(c for c in created if c["kind"] == "dm")["extra"] == {
         "firstRun": True,
         "frontAgentId": ceo,
@@ -1390,16 +1390,16 @@ async def test_with_the_switch_the_welcome_and_chips_go_to_the_owners_lightbulb_
         assert dm_meta["firstRun"] is True and dm_meta["frontAgentId"] == ceo
         (line,), _ = await repo.list_messages(general, 0, 100)
         assert (line["text"], line["kind"]) == (messaging.team_welcome("Acme"), messaging.TEAM_WELCOME_KIND)
-        assert await messaging.ensure_default_room(OWNER, USER_A) == general
+        assert await messaging.ensure_default_room(USER_A, USER_A) == general
         # #general's welcome is the done signal; a second seed of the DM alone (a retry) replays under the new name.
-        await messaging._post_first_run_welcome(OWNER, USER_A, ceo, messaging.default_room_welcome("Acme Renamed"))
-    summaries = {s.room_id: s for s in await messaging._room_summaries(OWNER, USER_A)}
+        await messaging._post_first_run_welcome(USER_A, USER_A, ceo, messaging.default_room_welcome("Acme Renamed"))
+    summaries = {s.room_id: s for s in await messaging._room_summaries(USER_A, USER_A)}
     assert summaries[uuid.UUID(dm)].first_run and not summaries[uuid.UUID(general)].first_run
 
     # The owner's first answer closes the first run; a later replay of the seed never reopens it.
     await messaging.close_first_run(dm)
     assert "firstRun" not in await repo.get_room(dm)
-    await messaging._post_first_run_welcome(OWNER, USER_A, ceo, messaging.default_room_welcome("Acme"))
+    await messaging._post_first_run_welcome(USER_A, USER_A, ceo, messaging.default_room_welcome("Acme"))
     assert "firstRun" not in await repo.get_room(dm)
 
 
@@ -1408,15 +1408,15 @@ async def test_an_owner_who_wrote_before_setup_finished_still_gets_the_welcome_a
     from core.auth import AuthContext
 
     messaging, ceo, _ = _switch_on(monkeypatch)
-    dm = await messaging._agent_dm_room_id(OWNER, USER_A, ceo)  # opened before provisioning seeded the welcome
+    dm = await messaging._agent_dm_room_id(USER_A, USER_A, ceo)  # opened before provisioning seeded the welcome
     await messaging.create_human_message(
-        AuthContext(user_id=USER_A, org_id=OWNER),
+        AuthContext(user_id=USER_A, human_session=True),
         dm,
         messaging.CreateMessageRequest(
             client_message_id=uuid.uuid4(), text="hello?", reply_to_message_id=None, thread_root_message_id=None
         ),
     )
-    await messaging.ensure_default_room(OWNER, USER_A)
+    await messaging.ensure_default_room(USER_A, USER_A)
     rows, _ = await repo.list_messages(dm, 0, 100)
     assert [(r["author"]["kind"], r.get("kind")) for r in rows] == [
         ("human", None),

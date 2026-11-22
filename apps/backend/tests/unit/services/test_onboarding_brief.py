@@ -447,7 +447,7 @@ async def test_a_new_path_message_lands_with_no_detail():
 def _desk_repo(ids, *, pending=None, row=None):
     repo = MagicMock()
     repo.get_pending_brief = AsyncMock(
-        return_value={"path": "grow", "input": "https://acme.example", "submitted_by": "user_m"}
+        return_value={"path": "grow", "input": "https://acme.example", "submitted_by": OWNER}
         if pending is None
         else pending
     )
@@ -469,7 +469,7 @@ async def test_start_dms_customer_operations_with_the_prompt():
         patch("core.services.messaging._agent_dm_room_id", dm),
     ):
         assert await start_front_desk_build_for_line(OWNER) is True
-    dm.assert_awaited_once_with(OWNER, "user_m", "co-1")
+    dm.assert_awaited_once_with(OWNER, OWNER, "co-1")
     args, kwargs = post.await_args
     assert args[1] == "room-dm"
     assert args[2].text == FRONT_DESK_BUILD_PROMPT.format(url="https://acme.example")
@@ -483,7 +483,7 @@ async def test_start_is_idempotent_per_url():
 
     post = AsyncMock(return_value=SimpleNamespace(message_id="m1"))
     briefs = [
-        {"path": "grow", "input": url, "submitted_by": "u"}
+        {"path": "grow", "input": url, "submitted_by": OWNER}
         for url in ("https://Acme.example ", "https://acme.example", "https://other.example")
     ]
     for brief in briefs:
@@ -552,18 +552,22 @@ async def test_first_message_no_longer_starts_the_build():
 @pytest.mark.parametrize(
     ("pending", "row", "expected"),
     [
-        ({"path": "grow", "input": "https://acme.example", "submitted_by": "u1"}, None, ("https://acme.example", "u1")),
-        ({"path": "new", "input": "a bakery", "submitted_by": "u1"}, None, None),
+        (
+            {"path": "grow", "input": "https://acme.example", "submitted_by": OWNER},
+            None,
+            ("https://acme.example", OWNER),
+        ),
+        ({"path": "new", "input": "a bakery", "submitted_by": OWNER}, None, None),
         (
             {},
             SimpleNamespace(
                 onboarding_brief_text="Here's our website: https://acme.example",
-                onboarding_submitted_by="u2",
+                onboarding_submitted_by=OWNER,
                 starter_agent_ids={"customer_operations": "co-1"},
             ),
-            ("https://acme.example", "u2"),
+            ("https://acme.example", OWNER),
         ),
-        ({}, SimpleNamespace(onboarding_brief_text=None, onboarding_submitted_by="u2"), None),
+        ({}, SimpleNamespace(onboarding_brief_text=None, onboarding_submitted_by=OWNER), None),
     ],
 )
 async def test_the_build_reads_the_website_from_the_brief(pending, row, expected):

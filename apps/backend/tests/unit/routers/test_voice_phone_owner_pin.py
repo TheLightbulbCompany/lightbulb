@@ -18,7 +18,7 @@ client, router_seat = vp.client, vp.router_seat  # the phone tests' moto table a
 
 MOBILE = "+14155550133"  # the caller number _start dials from
 DM = "7f1d2c3b-0000-4000-8000-0000000000dd"
-OWNER = AuthContext(user_id="user_owner", org_id="org_1")
+OWNER = AuthContext(user_id="user_owner", human_session=True)
 
 
 @pytest.fixture
@@ -29,7 +29,7 @@ async def dm(client):
                {"kind": "agent", "id": "agent_front", "displayName": "Lightbulb", "mentionHandle": "lightbulb",
                 "role": "member", "listenMode": "active"}]  # fmt: skip
     await messaging_repo.create_room(
-        owner_id="org_1", room_id=DM, client_room_id="dm", creator_user_id="user_owner", name=None, kind="dm",
+        owner_id="user_owner", room_id=DM, client_room_id="dm", creator_user_id="user_owner", name=None, kind="dm",
         members=members, req_hash=messaging_repo.request_hash(None, "dm", DM),
     )  # fmt: skip
     with patch.object(voice_phone, "owner_dm", AsyncMock(return_value=DM)) as opened:
@@ -54,7 +54,7 @@ async def test_the_pin_is_stored_hashed_and_never_shown_back(client):
     assert await voice.get_phone_pin(OWNER) == {"set": False, "mobile": ""}
     assert await _set(mobile="(415) 555-0133") == {"set": True, "mobile": MOBILE}
     assert await voice.get_phone_pin(OWNER) == {"set": True, "mobile": MOBILE}
-    row = await messaging_repo._get("OWNER#org_1", "PHONEPIN#user_owner")
+    row = await messaging_repo._get("OWNER#user_owner", "PHONEPIN#user_owner")
     assert "4821" not in str(row) and len(row["hash"]) == 64 and row["salt"]
 
 
@@ -90,7 +90,7 @@ async def test_concurrent_guesses_never_exceed_the_day_limit(client, router_seat
 
     with patch.object(voice_phone.phone_pin, "_hash", counting):
         calls = [await _start(client, room=f"phone-{i}") for i in range(4)]
-        outs = await asyncio.gather(*(voice_phone.owner_pin(c["callId"], voice_phone.PinIn(pin=f"{i}{j}{j}{j}"), "org_1")
+        outs = await asyncio.gather(*(voice_phone.owner_pin(c["callId"], voice_phone.PinIn(pin=f"{i}{j}{j}{j}"), "user_owner")
                                       for i, c in enumerate(calls) for j in range(3)))  # fmt: skip
     assert sum(o["ok"] for o in outs) == 0 and len(checked) == voice_phone.phone_pin.DAY_TRIES
     last = await _start(client, room="phone-last")
@@ -110,7 +110,7 @@ async def test_an_owner_mode_answer_to_a_workers_question_answers_it(client, rou
     call = await _owner_call(client)
     ref = {"taskId": "t-1", "qid": "q-1"}
     await messaging_repo.create_message(
-        room_id=DM, owner_id="org_1", idemp_pk=messaging_repo.owner_pk("org_1"), idemp_sk="q", req_hash="q",
+        room_id=DM, owner_id="user_owner", idemp_pk=messaging_repo.owner_pk("user_owner"), idemp_sk="q", req_hash="q",
         author={"kind": "agent", "id": "agent_front", "displayName": "Lightbulb"}, text="Which day works?",
         mentions=[], reply_to_message_id=None, thread_root_message_id=None, run_id=None, dispatch_targets=[],
         source_agent_id=None, client_message_id=None, author_member_check=False,
@@ -127,7 +127,7 @@ async def test_an_owner_mode_answer_to_a_workers_question_answers_it(client, rou
                         json={"n": 1, "text": "Tuesday", "answers": ref}, headers=W)  # fmt: skip
     assert r.json() == {"messageId": "m-a", "answered": "q-1"}
     owner, task, qid, member, body = answer.await_args.args
-    assert (owner, task, qid, member, body.text) == ("org_1", "t-1", "q-1", "user_owner", "Tuesday")
+    assert (owner, task, qid, member, body.text) == ("user_owner", "t-1", "q-1", "user_owner", "Tuesday")
     assert sent.await_args.kwargs == {"via": "voice", "wake": False}
 
 
@@ -190,18 +190,18 @@ async def test_the_right_pin_flips_the_call_and_the_next_line_is_the_members_own
     assert _pin(client, call, "4821") == {"ok": True, "after": 0}
     rec = (await messaging_repo.get_room(call["callId"]))["call"]
     assert (rec["ownerMode"], rec["ownerModeUserId"], rec["dmRoomId"]) == (True, "user_owner", DM)
-    dm.assert_awaited_once_with("org_1", "user_owner")
+    dm.assert_awaited_once_with("user_owner", "user_owner")
     sent = AsyncMock(return_value=type("M", (), {"message_id": "m-owner", "message_seq": 1})())
     with patch.object(messaging, "create_human_message", sent):
         assert _turn(client, call, n=3).json() == {"messageId": "m-owner"}
     auth, room, request = sent.await_args.args
     # the orb's owner path (voice_owner.turn): the member's message in their DM, which wakes the DM's Router
-    assert (auth.user_id, auth.org_id, room) == ("user_owner", "org_1", DM)
+    assert (auth.user_id, auth.org_id, room) == ("user_owner", None, DM)
     assert request.text == "What's on my calendar today?" and sent.await_args.kwargs == {"via": "voice", "wake": True}
     enq.assert_not_awaited()  # no caller trigger
     with patch.object(engine_api, "_agent_lines", AsyncMock(return_value={"messages": [], "after": 7})) as lines:
         r = client.post(f"/api/v1/internal/voice/calls/{call['callId']}/events", json={"after": 5}, headers=W)
-    assert r.json() == {"messages": [], "after": 7} and lines.await_args.args == ("org_1", DM, 5)
+    assert r.json() == {"messages": [], "after": 7} and lines.await_args.args == ("user_owner", DM, 5)
 
 
 async def test_my_bookings_cross_account(client, router_seat, dm):

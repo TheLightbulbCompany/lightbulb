@@ -14,7 +14,7 @@ from routers import voice_owner
 
 ROOM = "7f1d2c3b-0000-4000-8000-000000000002"
 MEMBERS = [{"kind": "human", "id": "user_maya", "role": "owner"}, {"kind": "agent", "id": "a1", "displayName": "Nova"}]
-META = {"ownerId": "org_1", "kind": "dm"}
+META = {"ownerId": "user_maya", "kind": "dm"}
 
 
 @pytest.fixture
@@ -36,7 +36,7 @@ async def test_owner_end_creates_yours_item(m):
     from routers import voice
 
     body = voice_owner.EndIn(
-        ownerId="org_1", roomToken="t", speakerUserId="user_maya", sessionId="job_1", durationSec=42,
+        ownerId="user_maya", roomToken="t", speakerUserId="user_maya", sessionId="job_1", durationSec=42,
         transcript=[{"who": "caller", "text": "Anything I need to handle?", "t": 0.4},
                     {"who": "assistant", "text": "Priya moved to 11:30. I'm drafting the post.", "t": 2.1},
                     {"who": "nobody", "text": "dropped"}],
@@ -44,14 +44,14 @@ async def test_owner_end_creates_yours_item(m):
     with patch.object(messaging_repo, "create_room", AsyncMock(return_value=META)) as create:
         out = await voice_owner.end(ROOM, body)
     kw = create.await_args.kwargs
-    assert (kw["owner_id"], kw["kind"], kw["room_id"]) == ("org_1", "call", out["roomId"])
+    assert (kw["owner_id"], kw["kind"], kw["room_id"]) == ("user_maya", "call", out["roomId"])
     assert kw["extra"]["hidden"] is True and kw["members"][0]["id"] == "user_maya"
     call = kw["extra"]["call"]
     assert call["ownerMode"] is True and call["durationSec"] == 42 and call["status"] == "ended"
     assert call["transcript"] == [{"who": "caller", "text": "Anything I need to handle?", "t": 0.4},
                                   {"who": "assistant", "text": "Priya moved to 11:30. I'm drafting the post.", "t": 2.1}]  # fmt: skip
     assert call["summary"] == "“Anything I need to handle?”" and call["followUps"] == []
-    talk = ConversationOut(conversation_id=out["roomId"], tenant_id="org_1", kind="call",
+    talk = ConversationOut(conversation_id=out["roomId"], tenant_id="user_maya", kind="call",
                            created_at="2026-11-07T08:02:00Z", annotations={"call": call})  # fmt: skip
     item = voice._items(talk)[0]
     assert item["type"] == "call" and item["ownerMode"] is True  # the "Yours" chip's test
@@ -59,7 +59,7 @@ async def test_owner_end_creates_yours_item(m):
 
 async def test_a_talk_with_nothing_said_is_not_kept(m):
     body = voice_owner.EndIn(
-        ownerId="org_1", roomToken="t", speakerUserId="user_maya", sessionId="job_2", durationSec=3
+        ownerId="user_maya", roomToken="t", speakerUserId="user_maya", sessionId="job_2", durationSec=3
     )
     with patch.object(messaging_repo, "create_room", AsyncMock(return_value=META)) as create:
         assert await voice_owner.end(ROOM, body) == {"kept": False}
@@ -68,7 +68,7 @@ async def test_a_talk_with_nothing_said_is_not_kept(m):
 
 async def test_billing_receipt_failure_cannot_lose_nonempty_transcript(m):
     body = voice_owner.EndIn(
-        ownerId="org_1",
+        ownerId="user_maya",
         roomToken="t",
         speakerUserId="user_maya",
         sessionId="j",
@@ -90,7 +90,7 @@ async def test_billing_receipt_failure_cannot_lose_nonempty_transcript(m):
 
 async def test_silent_provider_usage_is_reported_before_empty_transcript_return(m):
     body = voice_owner.EndIn(
-        ownerId="org_1",
+        ownerId="user_maya",
         roomToken="t",
         speakerUserId="user_maya",
         sessionId="job_2",
@@ -99,12 +99,12 @@ async def test_silent_provider_usage_is_reported_before_empty_transcript_return(
     )
     with patch.object(voice_owner.voice_billing, "report_owner_minutes", AsyncMock()) as report:
         assert await voice_owner.end(ROOM, body) == {"kept": False}
-        report.assert_awaited_once_with("org_1", f"owner:{ROOM}:job_2:0", "2026-11-08T16:00:00+00:00", 24)
+        report.assert_awaited_once_with("user_maya", f"owner:{ROOM}:job_2:0", "2026-11-08T16:00:00+00:00", 24)
 
 
 async def test_sessions_preserve_their_own_utc_period_and_require_seated_owner(m):
     body = voice_owner.EndIn(
-        ownerId="org_1",
+        ownerId="user_maya",
         roomToken="t",
         speakerUserId="user_maya",
         sessionId="j",
@@ -117,8 +117,8 @@ async def test_sessions_preserve_their_own_utc_period_and_require_seated_owner(m
     with patch.object(voice_owner.voice_billing, "report_owner_minutes", AsyncMock()) as report:
         await voice_owner.end(ROOM, body)
         assert [c.args for c in report.await_args_list] == [
-            ("org_1", f"owner:{ROOM}:j:0", "2026-11-30T23:59:00+00:00", 10),
-            ("org_1", f"owner:{ROOM}:j:1", "2026-12-01T00:20:00+00:00", 600),
+            ("user_maya", f"owner:{ROOM}:j:0", "2026-11-30T23:59:00+00:00", 10),
+            ("user_maya", f"owner:{ROOM}:j:1", "2026-12-01T00:20:00+00:00", 600),
         ]
         report.reset_mock()
         with pytest.raises(HTTPException) as exc:
@@ -128,7 +128,9 @@ async def test_sessions_preserve_their_own_utc_period_and_require_seated_owner(m
 
 
 async def test_only_the_seated_member_can_keep_a_talk(m):
-    body = voice_owner.EndIn(ownerId="org_1", roomToken="t", speakerUserId="user_other", sessionId="j", durationSec=1)
+    body = voice_owner.EndIn(
+        ownerId="user_maya", roomToken="t", speakerUserId="user_other", sessionId="j", durationSec=1
+    )
     with pytest.raises(HTTPException) as e:
         await voice_owner.end(ROOM, body)
     assert e.value.status_code == 403
@@ -136,7 +138,7 @@ async def test_only_the_seated_member_can_keep_a_talk(m):
 
 async def test_a_retried_end_keeps_the_row_it_made(m):
     body = voice_owner.EndIn(
-        ownerId="org_1", roomToken="t", speakerUserId="user_maya", sessionId="job_1", durationSec=5,
+        ownerId="user_maya", roomToken="t", speakerUserId="user_maya", sessionId="job_1", durationSec=5,
         transcript=[{"who": "caller", "text": "Hi", "t": 0.1}],
     )  # fmt: skip
     conflict = AsyncMock(side_effect=messaging_repo.MessagingRepoError("exists"))
@@ -149,7 +151,9 @@ async def test_a_retried_end_keeps_the_row_it_made(m):
 
 
 def _turn(text="What have we shipped in the last week?", n=0, speaker="user_maya"):
-    return voice_owner.TurnIn(ownerId="org_1", roomToken="t", speakerUserId=speaker, sessionId="job_1", n=n, text=text)
+    return voice_owner.TurnIn(
+        ownerId="user_maya", roomToken="t", speakerUserId=speaker, sessionId="job_1", n=n, text=text
+    )
 
 
 async def test_a_spoken_line_is_the_members_message_and_wakes_the_router(m):
@@ -164,7 +168,7 @@ async def test_a_spoken_line_is_the_members_message_and_wakes_the_router(m):
     auth, room, req = first.args
     assert (auth.user_id, auth.org_id, room, req.text) == (
         "user_maya",
-        "org_1",
+        None,
         ROOM,
         "What have we shipped in the last week?",
     )
@@ -192,7 +196,7 @@ async def test_only_the_seated_member_writes_turns(m):
 
 
 async def test_start_names_the_assistant_its_agent_and_the_first_cursor(m):
-    body = voice_owner.OwnerIn(ownerId="org_1", roomToken="t", speakerUserId="user_maya")
+    body = voice_owner.OwnerIn(ownerId="user_maya", roomToken="t", speakerUserId="user_maya")
     with (
         patch.object(voice_owner, "assistant_name", AsyncMock(return_value="Nova")),
         patch.object(
@@ -204,7 +208,7 @@ async def test_start_names_the_assistant_its_agent_and_the_first_cursor(m):
         # a reconnect: the last handled seq, so what was posted in the gap is still said
         assert (await voice_owner.start(ROOM, body))["after"] == 37
     seq.assert_awaited_once_with(ROOM, 10**19, 1)  # the room's newest message
-    assert gv.await_args.args == ("org_1", f"owner-mouth:{ROOM}:user_maya")
+    assert gv.await_args.args == ("user_maya", f"owner-mouth:{ROOM}:user_maya")
 
 
 async def test_events_are_the_dms_agent_lines_for_the_seated_member_only(m):
@@ -213,10 +217,10 @@ async def test_events_are_the_dms_agent_lines_for_the_seated_member_only(m):
         patch.object(engine_api, "_agent_lines", AsyncMock(return_value=lines)) as al,
         patch.object(voice_owner.store, "put_voice_run", AsyncMock()) as put,
     ):
-        body = voice_owner.EventsIn(ownerId="org_1", roomToken="t", speakerUserId="user_maya", after=5, spoken=5)
+        body = voice_owner.EventsIn(ownerId="user_maya", roomToken="t", speakerUserId="user_maya", after=5, spoken=5)
         assert await voice_owner.events(ROOM, body) == lines
-        al.assert_awaited_once_with("org_1", ROOM, 5)
-        put.assert_awaited_once_with("org_1", f"owner-mouth:{ROOM}:user_maya", {"spoken": 5})
+        al.assert_awaited_once_with("user_maya", ROOM, 5)
+        put.assert_awaited_once_with("user_maya", f"owner-mouth:{ROOM}:user_maya", {"spoken": 5})
         with pytest.raises(HTTPException) as e:
             await voice_owner.events(ROOM, body.model_copy(update={"speakerUserId": "user_other"}))
     assert e.value.status_code == 403
@@ -261,4 +265,6 @@ async def test_the_orbs_line_after_a_said_question_answers_it(m):
     ):
         assert await voice_owner.turn(ROOM, body) == {"messageId": "m7", "answered": "q-2"}
     assert ch.await_args.kwargs == {"via": "voice", "wake": False} and ch.await_args.args[2].text == "Nail gels."
-    assert sa.await_args.args[:4] == ("org_1", "k1", "q-2", "user_maya") and sa.await_args.args[4].text == "Nail gels."
+    assert (
+        sa.await_args.args[:4] == ("user_maya", "k1", "q-2", "user_maya") and sa.await_args.args[4].text == "Nail gels."
+    )

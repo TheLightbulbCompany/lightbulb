@@ -739,7 +739,7 @@ def test_signed_chat_is_durable_candidate_input_with_stable_replay_identity(env)
 
     store = AsyncMock(return_value=SimpleNamespace(message_id="m", message_seq=1))
     with (
-        patch.object(records, "inviting_member", return_value="maya"),
+        patch.object(records, "inviting_member", return_value="org_a"),
         patch.object(messaging_repo, "list_members", AsyncMock(return_value=[])),
         patch.object(engine_messaging, "create_human_message", store),
     ):
@@ -749,7 +749,21 @@ def test_signed_chat_is_durable_candidate_input_with_stable_replay_identity(env)
     assert store.await_count == 2  # canonical message writer dedupes the stable client ID transactionally
     assert store.await_args_list[0].args[2].client_message_id == store.await_args_list[1].args[2].client_message_id
     assert store.await_args.kwargs["via"] == "meeting_chat"
-    assert store.await_args.args[0].org_id == "org_a"
+    assert store.await_args.args[0].user_id == "org_a"
+
+
+def test_a_chat_from_someone_who_is_not_the_tenant_is_dropped(env):
+    env["meta"]["meeting"].update(status="in_call", inCallAt=int(time.time()) - 10, invitedBy="maya")
+    from core.voice.meetings import records
+
+    store = AsyncMock()
+    with (
+        patch.object(records, "inviting_member", return_value="user_other"),
+        patch.object(messaging_repo, "list_members", AsyncMock(return_value=[])),
+        patch.object(engine_messaging, "create_human_message", store),
+    ):
+        assert _post(env["client"], _chat_event(), path="/api/v1/webhooks/recall/realtime").status_code == 200
+    store.assert_not_awaited()
 
 
 @pytest.mark.parametrize("change", ["old_bot", "old_nonce", "old_time", "ended", "self", "self_old", "no_inviter"])
@@ -773,7 +787,7 @@ def test_stale_or_self_chat_cannot_start_work(env, change):
         )
     store = AsyncMock()
     with (
-        patch.object(records, "inviting_member", return_value=None if change == "no_inviter" else "maya"),
+        patch.object(records, "inviting_member", return_value=None if change == "no_inviter" else "org_a"),
         patch.object(messaging_repo, "list_members", AsyncMock(return_value=[])),
         patch.object(engine_messaging, "create_human_message", store),
     ):
@@ -789,7 +803,7 @@ def test_chat_from_a_person_named_like_the_brand_is_stored(env):
 
     store = AsyncMock(return_value=SimpleNamespace(message_id="m", message_seq=1))
     with (
-        patch.object(records, "inviting_member", return_value="maya"),
+        patch.object(records, "inviting_member", return_value="org_a"),
         patch.object(messaging_repo, "list_members", AsyncMock(return_value=[])),
         patch.object(engine_messaging, "create_human_message", store),
     ):
@@ -803,7 +817,7 @@ def test_chat_store_failure_is_retryable_instead_of_acknowledged_and_lost(env):
 
     env["meta"]["meeting"].update(status="in_call", inCallAt=int(time.time()) - 10, invitedBy="maya")
     with (
-        patch.object(records, "inviting_member", return_value="maya"),
+        patch.object(records, "inviting_member", return_value="org_a"),
         patch.object(messaging_repo, "list_members", AsyncMock(return_value=[])),
         patch.object(engine_messaging, "create_human_message", AsyncMock(side_effect=RuntimeError("down"))),
     ):

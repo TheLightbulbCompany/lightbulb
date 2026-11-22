@@ -44,6 +44,8 @@ HOOK_ATTEMPT_S, HOOK_BUDGET_S = 8.0, 12.0
 _READ_RETRY_STATUS = frozenset({502, 503})
 #: The connection was never made: nothing reached the other side, so any call may go again.
 _NOT_SENT = (httpx.ConnectError, httpx.ConnectTimeout)
+#: A retry needs at least this long left in the budget to be worth starting.
+_MIN_RETRY_S = 1.0
 
 _clients: dict[str, httpx.AsyncClient] = {}
 
@@ -127,8 +129,9 @@ async def send(
     retry: bool = True,
 ) -> Any:
     """One call to the other side at `base`, within `budget_s` for every attempt together (`attempt_s` each at most).
-    With `retry`, it goes once more with the same body, in the time left, only when it provably did not run: the
-    connection was never made, or a GET got an unmarked 502/503. Never on a timeout or a 504 after a write was sent:
+    With `retry`, it goes once more with the same body, in the time left (at least `_MIN_RETRY_S`), only when it
+    provably did not run: the connection was never made, or a GET got an unmarked 502/503. Never after the deadline
+    (`TimeoutError`), a read timeout or a 504:
     the other side may have run it, and a replay of a claim or an unversioned action can answer differently."""
     if not base:
         raise RuntimeError("the engine's HTTP transport has no URL for the other side")
@@ -140,12 +143,17 @@ async def send(
     loop = asyncio.get_running_loop()
     deadline = loop.time() + budget_s
     for attempt in (1, 2):
-        timeout = min(attempt_s, deadline - loop.time())
+        left = deadline - loop.time()
         last = attempt == 2 or not retry
         try:
-            r = await client.request(method, path, params=params, json=json, headers=headers, timeout=timeout)
+            # one deadline for the whole attempt: httpx's `timeout` is per phase (connect, write, read), not total.
+            # A deadline hit is never retried: the request may have run.
+            async with asyncio.timeout(min(attempt_s, left)):
+                r = await client.request(
+                    method, path, params=params, json=json, headers=headers, timeout=min(attempt_s, left)
+                )
         except _NOT_SENT:
-            if last or deadline - loop.time() <= 0:
+            if last or deadline - loop.time() < _MIN_RETRY_S:
                 raise
             continue
         if (
@@ -153,7 +161,7 @@ async def send(
             and method == "GET"
             and r.status_code in _READ_RETRY_STATUS
             and not any(m in r.headers for m in _MARKS)
-            and deadline - loop.time() > 0
+            and deadline - loop.time() >= _MIN_RETRY_S
         ):
             continue
         return result(r)

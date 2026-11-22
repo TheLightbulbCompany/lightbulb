@@ -244,22 +244,50 @@ async def test_a_read_retries_only_a_gateway_that_never_ran_it(world, wire, monk
     assert failing.calls == calls
 
 
-async def test_the_retry_gets_only_the_time_left(monkeypatch):
-    """Every attempt together stays within the budget: the second attempt is given what the first left."""
-    import asyncio
+class _Scripted(httpx.AsyncBaseTransport):
+    """Each request takes `delay` s, then is refused (`refuse`) or answered 200."""
 
-    seen: list[float] = []
+    def __init__(self, delay: float, refuse: bool) -> None:
+        self.delay, self.refuse, self.calls = delay, refuse, 0
 
-    class Slow(httpx.AsyncBaseTransport):
-        async def handle_async_request(self, request):
-            seen.append(request.extensions["timeout"]["read"])
-            await asyncio.sleep(0.2)
+    async def handle_async_request(self, request):
+        import asyncio
+
+        self.calls += 1
+        await asyncio.sleep(self.delay)
+        if self.refuse:
             raise httpx.ConnectError("refused", request=request)
+        return httpx.Response(200, json={"ok": True})
 
-    monkeypatch.setitem(transport._clients, BASE, httpx.AsyncClient(transport=Slow(), base_url=BASE))
+
+def _scripted(monkeypatch, delay: float, refuse: bool) -> _Scripted:
+    fake = _Scripted(delay, refuse)
+    monkeypatch.setitem(transport._clients, BASE, httpx.AsyncClient(transport=fake, base_url=BASE))
+    return fake
+
+
+async def test_one_deadline_bounds_the_whole_call(monkeypatch):
+    """httpx's timeout is per phase; the call's own deadline is the wall clock, and hitting it is never retried
+    (the request may have run)."""
+    import time
+
+    slow = _scripted(monkeypatch, delay=5.0, refuse=False)
+    start = time.monotonic()
+    with pytest.raises(TimeoutError):
+        await transport.send(BASE, "GET", "/x", attempt_s=0.2, budget_s=3.0)
+    assert time.monotonic() - start < 0.5 and slow.calls == 1
+
+
+async def test_a_retry_needs_time_left(monkeypatch):
+    """A refused connection is retried only while at least `_MIN_RETRY_S` of the budget is left."""
+    quick = _scripted(monkeypatch, delay=0.0, refuse=True)
     with pytest.raises(httpx.ConnectError):
-        await transport.send(BASE, "GET", "/x", attempt_s=0.25, budget_s=0.3)
-    assert seen[0] == 0.25 and 0 < seen[1] <= 0.1 + 0.02
+        await transport.send(BASE, "POST", "/x", budget_s=transport._MIN_RETRY_S + 1)
+    assert quick.calls == 2
+    late = _scripted(monkeypatch, delay=0.3, refuse=True)
+    with pytest.raises(httpx.ConnectError):
+        await transport.send(BASE, "POST", "/x", budget_s=transport._MIN_RETRY_S + 0.2)
+    assert late.calls == 1
 
 
 def test_budgets_sit_under_their_callers_timeouts():
@@ -407,3 +435,49 @@ def test_engine_follows_the_setting(monkeypatch):
         monkeypatch.delitem(vars(package), "engine", raising=False)
         assert package.engine is module
     monkeypatch.delitem(vars(package), "engine", raising=False)
+
+
+BAD_TENANTS = ["", "org_", "user_", "org_a\nb", "org_a\x00", "org_a'b", "org_1/../org_2", "org_a:b", "team_abc", "org"]
+
+
+@pytest.mark.parametrize("tenant", BAD_TENANTS, ids=repr)
+async def test_delete_tenant_refuses_an_id_that_is_not_a_tenant(world, monkeypatch, tenant):
+    """Only a Clerk organisation or user id is wiped: anything else is refused (400 `bad_tenant`, on both transports)
+    before any workflow query, schedule read or delete names it."""
+    from core.repositories import automations_repo
+    from core.temporal import client as temporal_client
+    from tests.unit.services.test_wipe_engine_state import _FakeTemporal
+
+    schedules, delete = AsyncMock(return_value=[]), AsyncMock(return_value=0)
+    monkeypatch.setattr(automations_repo, "list_schedules", schedules)
+    monkeypatch.setattr(tasks_repo, "delete_partition", delete)
+    fake = _FakeTemporal(running=set(), schedules=set())
+    temporal_client.set_client(fake)
+    try:
+        with pytest.raises(EngineError) as refused:
+            await api.delete_tenant(tenant)
+        assert (refused.value.status, refused.value.detail) == (400, {"code": "bad_tenant"})
+        if tenant and "/" not in tenant:  # an empty or path-like id names no route at all (404, nothing runs)
+            with pytest.raises(EngineError) as refused:
+                await client.delete_tenant(tenant)
+            assert (refused.value.status, refused.value.detail) == (400, {"code": "bad_tenant"})
+        else:
+            with pytest.raises(httpx.HTTPStatusError):
+                await client.delete_tenant(tenant)
+    finally:
+        temporal_client.set_client(None)
+    assert fake.queries == [] and schedules.await_count == 0 and delete.await_count == 0
+
+
+@pytest.mark.parametrize("tenant", ["org_2abcDEF9", "user_2abcDEF9"])
+async def test_delete_tenant_takes_org_and_user_ids(world, monkeypatch, tenant):
+    from core.repositories import automations_repo
+    from core.temporal import client as temporal_client
+    from tests.unit.services.test_wipe_engine_state import _FakeTemporal
+
+    monkeypatch.setattr(automations_repo, "list_schedules", AsyncMock(return_value=[]))
+    temporal_client.set_client(_FakeTemporal(running=set(), schedules=set()))
+    try:
+        assert await client.delete_tenant(tenant) == {"workflows": 0, "schedules": 0, "sessions": 0, "rows": 0}
+    finally:
+        temporal_client.set_client(None)

@@ -22,14 +22,15 @@ vi.mock("@/lib/analytics", () => ({
   readWorkspaceDoor: () => null,
   clearWorkspaceDoor: analytics.clearWorkspaceDoor,
 }));
-// Only the name gate reads Clerk: any other Clerk hook used by the page is undefined here and throws.
+// Only useUser (the name gate, the user id) is read from Clerk: any organization hook is undefined here and throws.
 vi.mock("@clerk/nextjs", () => ({
-  useUser: () => ({ isLoaded: clerk.loaded, user: { unsafeMetadata: {}, update: clerk.update, firstName: clerk.firstName } }),
+  useUser: () => ({ isLoaded: clerk.loaded, user: { id: "user_a", unsafeMetadata: {}, update: clerk.update, firstName: clerk.firstName } }),
 }));
 beforeEach(() => {
   Object.assign(clerk, { loaded: true, firstName: "Ada", config: { business: "", onboardingStep: undefined }, configError: undefined });
   vi.clearAllMocks();
   clerk.save.mockResolvedValue(undefined);
+  localStorage.clear();
 });
 describe("business onboarding", () => {
   it("asks a person with no name for one before the business form", () => {
@@ -123,6 +124,50 @@ describe("business onboarding", () => {
     clerk.configError = new Error("offline");
     render(<OnboardingPage />);
     expect(screen.getByRole("alert")).toHaveTextContent("We couldn't load your setup. Reload the page to try again.");
+  });
+  it("claim went through, the save failed, the page reloaded: setup finishes with the same address and no second slug", async () => {
+    const { ApiError } = await vi.importActual<typeof import("@lightbulb/shared")>("@lightbulb/shared");
+    let claimedBy: string | null = null; // the server's slug table, for one slug
+    clerk.apiGet.mockImplementation(async (path: string) => {
+      const slug = new URLSearchParams(path.split("?")[1]).get("slug");
+      return { slug, available: !claimedBy, reason: claimedBy ? "taken" : null, domain: "thelightbulb.company" };
+    });
+    clerk.apiPost.mockImplementation(async (path: string) => {
+      if (path === "/company/slug/hold" && claimedBy) throw new ApiError(409, { detail: "slug_taken" }, "slug_taken");
+      if (path === "/company/slug/claim") claimedBy = "user_a"; // replays for the same tenant succeed
+      return {};
+    });
+    clerk.save.mockRejectedValueOnce(new Error("offline"));
+    const first = render(<OnboardingPage />);
+    fireEvent.change(screen.getByLabelText("Business name"), { target: { value: "Acme" } });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("We couldn't set up your business. Please try again.");
+    first.unmount(); // reload
+
+    render(<OnboardingPage />);
+    fireEvent.change(screen.getByLabelText("Business name"), { target: { value: "Acme" } });
+    await waitFor(() => expect(screen.getByText("agents@acme.thelightbulb.company")).toBeInTheDocument());
+    expect(screen.queryByText("That address is taken. Try another.")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    await waitFor(() => expect(clerk.replace).toHaveBeenCalledWith("/voice"));
+    const slugs = clerk.apiPost.mock.calls.filter(([p]) => p !== "/company/source").map(([p, b]) => [p, (b as { slug: string }).slug]);
+    expect(slugs).toEqual([["/company/slug/hold", "acme"], ["/company/slug/claim", "acme"], ["/company/slug/claim", "acme"]]);
+    expect(clerk.save).toHaveBeenLastCalledWith({ business: "Acme", onboardingStep: 1 });
+  });
+  it("on another device, a hold refused for the person's own claimed address is confirmed by the claim", async () => {
+    const { ApiError } = await vi.importActual<typeof import("@lightbulb/shared")>("@lightbulb/shared");
+    clerk.apiGet.mockImplementation(async () => ({ slug: "acme", available: true, reason: null, domain: "thelightbulb.company" }));
+    clerk.apiPost.mockImplementation(async (path: string) => {
+      if (path === "/company/slug/hold") throw new ApiError(409, { detail: "slug_taken" }, "slug_taken");
+      return {};
+    });
+    render(<OnboardingPage />);
+    fireEvent.change(screen.getByLabelText("Business name"), { target: { value: "Acme" } });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    await waitFor(() => expect(clerk.replace).toHaveBeenCalledWith("/voice"));
+    expect(clerk.apiPost).toHaveBeenCalledWith("/company/slug/claim", { slug: "acme", name: "Acme" });
   });
   it("lets the owner edit the slug, and blocks creation while it is taken", async () => {
     clerk.apiGet.mockImplementation(async (path: string) => {

@@ -2,6 +2,7 @@
 
 import { useEffect, useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
+import { useUser } from "@clerk/nextjs";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { SourceQuestion, reportSource, type SourceAnswer } from "@/components/onboarding/SourceQuestion";
@@ -27,7 +28,8 @@ const SLUG_PROBLEM: Record<NonNullable<SlugCheck["reason"]>, string> = {
 
 /** "Set up your business": its name, plus the address its assistant gets Meet invites at. The slug is HELD, then
  *  claimed with the name for the signed-in person's own account; the name also opens the assistant's setup
- *  (the voice document's `business`), so /voice knows a business is saved. No Clerk call. */
+ *  (the voice document's `business`), so /voice knows a business is saved. No organization call: Clerk is read only
+ *  for the signed-in user's id. */
 function BusinessForm() {
   const api = useApi();
   const router = useRouter();
@@ -44,6 +46,24 @@ function BusinessForm() {
   const [editingSlug, setEditingSlug] = useState(false);
   const [source, setSource] = useState<SourceAnswer>({ answer: "", detail: "" });
   const slug = typedSlug || slugify(name); // clearing the field goes back to the suggestion
+  // The address this person already claimed (the claim went through, then the save failed or the page reloaded). The
+  // backend has no read of a person's own slug, so this browser remembers it; the server confirms it on Continue (a
+  // claim replay for the same tenant), and the hold, which only takes a free slug, is skipped.
+  const { user } = useUser();
+  const claimKey = user?.id ? `lightbulb.claimedSlug:${user.id}` : null;
+  const [claimed, setClaimed] = useState<string | null>(null);
+  const [readFor, setReadFor] = useState<string | null>(null);
+  if (claimKey && readFor !== claimKey) { // once the user id is known (never on the server: no user there)
+    setReadFor(claimKey);
+    let stored: string | null = null;
+    try { stored = localStorage.getItem(claimKey); } catch { /* blocked storage: the hold-409 path still recovers */ }
+    setClaimed(stored);
+    if (stored) setTypedSlug(stored);
+  }
+  const remember = (value: string | null) => {
+    if (!claimKey) return;
+    try { if (value) localStorage.setItem(claimKey, value); else localStorage.removeItem(claimKey); } catch { /* not needed to finish */ }
+  };
 
   useEffect(() => {
     if (!slug) return;
@@ -56,7 +76,10 @@ function BusinessForm() {
     return () => { stale = true; clearTimeout(timer); };
   }, [slug, api]);
 
-  const current = check?.slug === slug ? check : null;
+  const mine = !!claimed && slug === claimed;
+  const checked = check?.slug === slug ? check : null;
+  // Availability reads a claimed slug as taken, even the caller's own: theirs shows as theirs.
+  const current = checked && mine ? { ...checked, available: true, reason: null } : checked;
   const ready = !!name.trim() && !!current?.available && !!config && !named && !busy;
 
   async function submit(event: FormEvent) {
@@ -75,19 +98,27 @@ function BusinessForm() {
           ...touchPayload(),
         })
         .catch(() => undefined);
-      await api.post("/company/slug/hold", { slug });
-      // An account that already has its address (a reload after this step) keeps it; any other refusal stops here,
-      // before the assistant's document is written. The document's `business` is empty here (a saved one never reaches
-      // this form), so nothing stored is overwritten; it must still be written or /voice sends the person back here.
-      await api.post("/company/slug/claim", { slug, name: business }).catch((e) => {
-        if (!(e instanceof ApiError && e.status === 409 && (e.body as { detail?: string })?.detail === "slug_already_claimed")) throw e;
+      // The hold takes only a free slug. A 409 may still be this person's own claimed address: the claim below is the
+      // server's answer (a replay for the same tenant succeeds, anyone else's is a 409).
+      const held = mine ? false : await api.post("/company/slug/hold", { slug }).then(() => true, (e) => {
+        if (e instanceof ApiError && e.status === 409) return false;
+        throw e;
       });
+      // A fresh hold whose claim says the account already has another address keeps that one; any other refusal stops
+      // here, before the assistant's document is written. The document's `business` is empty here (a saved one never
+      // reaches this form), so nothing stored is overwritten; it must still be written or /voice sends the person back.
+      await api.post("/company/slug/claim", { slug, name: business }).catch((e) => {
+        if (!(held && e instanceof ApiError && e.status === 409 && (e.body as { detail?: string })?.detail === "slug_already_claimed")) throw e;
+      });
+      remember(slug);
       await save({ ...config, business, onboardingStep: config.onboardingStep || 1 });
+      remember(null);
       clearWorkspaceDoor();
       reportSource("sign_up", source);
       router.replace("/voice");
     } catch (e) {
       if (e instanceof ApiError && e.status === 409) {
+        if (mine) { remember(null); setClaimed(null); }
         setCheck({ slug, available: false, reason: "taken", domain: current?.domain ?? "" });
       } else {
         setError("We couldn't set up your business. Please try again.");

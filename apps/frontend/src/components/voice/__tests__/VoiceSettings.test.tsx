@@ -5,10 +5,9 @@ import { vi, it, expect } from "vitest";
 const conn = vi.hoisted(() => ({ connections: [] as { provider: string; status: string }[], startOAuth: vi.fn() }));
 vi.mock("@/hooks/useConnections", () => ({ useConnections: () => ({ connections: conn.connections, isLoading: false, startOAuth: conn.startOAuth }) }));
 
-vi.mock("@/components/settings/WorkspaceMembersSection", () => ({ WorkspaceMembersSection: () => { throw new Error("members exploded"); } }));
 vi.mock("@/components/settings/DailySummaryCard", () => ({ DailySummaryCard: () => <div>daily ok</div> }));
 vi.mock("../VoicePlanCard", () => ({ VoicePlanCard: () => null }));
-vi.mock("../PhonePinCard", () => ({ PhonePinCard: () => null }));
+vi.mock("../PhonePinCard", () => ({ PhonePinCard: () => { throw new Error("pin exploded"); } }));
 vi.mock("../data", () => ({ useUsage: () => ({ data: undefined, isLoading: true }), useAgentConfig: () => ({ data: undefined, save: () => {} }) }));
 
 import { fireEvent, waitFor } from "@testing-library/react";
@@ -20,7 +19,7 @@ it("one section throwing leaves the other sections on the page", () => {
   quiet.mockRestore();
   expect(screen.getByText("daily ok")).toBeInTheDocument();
   const broken = screen.getByRole("alert");
-  expect(broken).toHaveTextContent("Members");
+  expect(broken).toHaveTextContent("Phone PIN");
   expect(broken).toHaveTextContent("couldn't load");
 });
 

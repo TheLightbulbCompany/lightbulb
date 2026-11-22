@@ -5,6 +5,7 @@ Recall. Two owners share every store, so each test also proves the other owner's
 
 from __future__ import annotations
 
+import re
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -39,7 +40,7 @@ class _Handle:
 
 
 class _FakeTemporal:
-    """Answers the visibility query the way Temporal does for the `WorkflowId = / STARTS_WITH` clauses it sends."""
+    """Answers the visibility query the way Temporal does for the `STARTS_WITH` clauses it sends."""
 
     def __init__(self, running: set[str], schedules: set[str]):
         self.running, self.schedules, self.terminated, self.queries = running, schedules, [], []
@@ -52,10 +53,10 @@ class _FakeTemporal:
 
     async def list_workflows(self, query: str):
         self.queries.append(query)
-        exact = [c.split("'")[1] for c in query.split(" OR ") if "WorkflowId = '" in c]
-        prefixes = [c.split("'")[1] for c in query.split(" OR ") if "STARTS_WITH" in c]
+        assert query.startswith("ExecutionStatus = 'Running' AND (")
+        prefixes = re.findall(r"WorkflowId STARTS_WITH '([^']*)'", query)
         for wid in sorted(self.running):
-            if wid in exact or any(wid.startswith(p) for p in prefixes):
+            if any(wid.startswith(p) for p in prefixes):
                 yield SimpleNamespace(id=wid)
 
 

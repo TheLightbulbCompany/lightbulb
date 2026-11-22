@@ -922,7 +922,7 @@ def warm(tenant_id: str, agent_ids: list[str], conversation_id: str | None = Non
 # --- terminal wipe ------------------------------------------------------------------------------------------------
 
 #: Every workflow id that names a tenant starts with one of these (`tasks_schema`, `automation_schedule`,
-#: `automation_hooks.keeper_id`, `routers.hooks`); the Router's is exactly `router:{ws}`.
+#: `automation_hooks.keeper_id`, `routers.hooks`). The Router's is exactly `router:{ws}`, terminated by name.
 _TENANT_WORKFLOW_PREFIXES = ("task", "learn", "gwatch", "fire", "hook")
 
 
@@ -933,20 +933,20 @@ async def delete_tenant(tenant_id: str) -> dict[str, int]:
     if not tenant_id or any(c in tenant_id for c in "'\"\\"):
         raise ValueError("bad tenant id")
     client = temporal_client.get_client()
-    names = " OR ".join(
-        [f"WorkflowId = '{ts.router_workflow_id(tenant_id)}'"]
-        + [f"WorkflowId STARTS_WITH '{p}:{tenant_id}:'" for p in _TENANT_WORKFLOW_PREFIXES]
-    )
-    running = {ts.router_workflow_id(tenant_id)}  # named outright: visibility can lag a just-started Router
-    running |= {wf.id async for wf in client.list_workflows(f"ExecutionStatus = 'Running' AND ({names})")}
-    terminated = 0
-    for wid in sorted(running):
+    names = " OR ".join(f"WorkflowId STARTS_WITH '{p}:{tenant_id}:'" for p in _TENANT_WORKFLOW_PREFIXES)
+
+    async def terminate(wid: str) -> int:
         try:
             await client.get_workflow_handle(wid).terminate("account wiped")
-            terminated += 1
+            return 1
         except RPCError as exc:
             if exc.status != RPCStatusCode.NOT_FOUND:
                 raise
+            return 0
+
+    terminated = await terminate(ts.router_workflow_id(tenant_id))  # by name, first: no query, no visibility lag
+    async for wf in client.list_workflows(f"ExecutionStatus = 'Running' AND ({names})"):
+        terminated += await terminate(wf.id)
     schedules = await automations_repo.list_schedules(tenant_id)
     for row in schedules:
         await automation_schedule.delete(tenant_id, row["scheduleId"])

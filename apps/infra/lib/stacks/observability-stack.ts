@@ -1612,6 +1612,29 @@ def handler(event, context):
       severity: "warn",
     });
 
+    // W89: no healthy engine target. W88 counts only unhealthy hosts, so it is silent at zero tasks.
+    // Maximum over each 5-min period, 2 periods running: it fires only when no host was healthy for
+    // 10 min, so a Spot replacement of dev's single task does not warn. A target group with no
+    // targets can stop publishing, so missing data counts as zero.
+    this.createAlarm({
+      id: "W89",
+      name: "engine-healthy-hosts",
+      description: "No healthy engine service target for 10 min (2 consecutive 5-min periods)",
+      metric: new cloudwatch.Metric({
+        namespace: "AWS/ApplicationELB",
+        metricName: "HealthyHostCount",
+        statistic: "Maximum",
+        period: cdk.Duration.minutes(5),
+        dimensionsMap: engineDims,
+      }),
+      threshold: 1,
+      comparisonOperator: cloudwatch.ComparisonOperator.LESS_THAN_THRESHOLD,
+      evaluationPeriods: 2,
+      datapointsToAlarm: 2,
+      treatMissingData: cloudwatch.TreatMissingData.BREACHING,
+      severity: "warn",
+    });
+
     // W30-W32 (API Gateway WebSocket) and W33-W35 (its ws-authorizer Lambda)
     // DELETED: see P10. The API itself is gone too.
 

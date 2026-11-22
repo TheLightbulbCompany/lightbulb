@@ -327,17 +327,55 @@ export class ApiStack extends cdk.Stack {
       target: `integrations/${httpIntegration.ref}`,
     });
 
-    // --- Engine paths: no integration ---
+    // --- Engine paths: answered by a 404 Lambda ---
     // The backend serves the engine's callbacks at /api/v1/internal/engine/* and the engine service
-    // serves /engine/v1/*, both for callers inside the VPC on the internal ALB. A route with no
-    // integration answers 404 at the gateway, and a specific route wins over $default, so a public
-    // request for either prefix never reaches the ALB. The backend also refuses those callbacks when
-    // they carry the X-Lightbulb-Client-Ip header the integration above sets (core/engine/transport.py).
+    // serves /engine/v1/*, both for callers inside the VPC on the internal ALB. A route with no target
+    // does not stop a request (it falls through to $default), so each prefix routes to a Lambda that
+    // answers 404 and never reaches the ALB. Reserved concurrency bounds what a flood of public
+    // requests can spend; a throttled call still answers at the gateway. The backend also refuses
+    // those callbacks when they carry the X-Lightbulb-Client-Ip header the integration above sets
+    // (core/engine/transport.py).
+    const enginePathNotFoundFn = new lambda.Function(this, "EnginePathNotFound", {
+      functionName: `${resourcePrefix(env)}engine-path-not-found`,
+      runtime: lambda.Runtime.PYTHON_3_13,
+      architecture: lambda.Architecture.ARM_64,
+      handler: "index.handler",
+      code: lambda.Code.fromInline(`
+def handler(event, context):
+    return {"statusCode": 404, "headers": {"content-type": "application/json"}, "body": '{"message":"Engine path not public"}'}
+`),
+      memorySize: 128,
+      timeout: cdk.Duration.seconds(3),
+      reservedConcurrentExecutions: 2,
+      logGroup: new logs.LogGroup(this, "EnginePathNotFoundLogs", {
+        logGroupName: logGroupPath(env, "engine-path-not-found"),
+        retention: logs.RetentionDays.ONE_WEEK,
+        removalPolicy: cdk.RemovalPolicy.DESTROY,
+      }),
+    });
+    enginePathNotFoundFn.addPermission("HttpApiInvoke", {
+      principal: new iam.ServicePrincipal("apigateway.amazonaws.com"),
+      sourceArn: cdk.Stack.of(this).formatArn({
+        service: "execute-api",
+        resource: httpApi.ref,
+        resourceName: "*",
+      }),
+    });
+    const enginePathNotFound = new apigatewayv2.CfnIntegration(this, "HttpEnginePathNotFound", {
+      apiId: httpApi.ref,
+      integrationType: "AWS_PROXY",
+      integrationUri: enginePathNotFoundFn.functionArn,
+      payloadFormatVersion: "2.0",
+    });
     for (const [id, prefix] of [
       ["HttpEngineCallbacksBlocked", "/api/v1/internal/engine"],
       ["HttpEngineApiBlocked", "/engine/v1"],
     ]) {
-      new apigatewayv2.CfnRoute(this, id, { apiId: httpApi.ref, routeKey: `ANY ${prefix}/{proxy+}` });
+      new apigatewayv2.CfnRoute(this, id, {
+        apiId: httpApi.ref,
+        routeKey: `ANY ${prefix}/{proxy+}`,
+        target: `integrations/${enginePathNotFound.ref}`,
+      });
     }
 
     // --- HTTP API Log Group ---

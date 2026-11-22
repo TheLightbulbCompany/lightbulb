@@ -1888,6 +1888,24 @@ describe("ServiceStack: engine service, dark (engine-service plan Task 9)", () =
     },
   );
 
+  test("engine tasks have their own SG that admits only the ALB on 8000", () => {
+    const [svc] = Object.values(
+      SERVICE_TEMPLATE_DEV.findResources("AWS::ECS::Service", { Properties: { ServiceName: "lightbulb-dev-engine" } }),
+    ) as any[];
+    const sgs = svc.Properties.NetworkConfiguration.AwsvpcConfiguration.SecurityGroups;
+    expect(sgs).toHaveLength(1);
+    const sgId = sgs[0]["Fn::GetAtt"][0];
+    expect(sgId).toMatch(/^EngineSecurityGroup/);
+    const ingress = SERVICE_TEMPLATE_DEV.toJSON().Resources[sgId].Properties.SecurityGroupIngress ?? [];
+    const separate = Object.values(SERVICE_TEMPLATE_DEV.findResources("AWS::EC2::SecurityGroupIngress"))
+      .map((r: any) => r.Properties)
+      .filter((p: any) => JSON.stringify(p.GroupId).includes(sgId));
+    const rules = [...ingress, ...separate];
+    expect(rules).toHaveLength(1);
+    expect(rules[0]).toMatchObject({ IpProtocol: "tcp", FromPort: 8000, ToPort: 8000 });
+    expect(JSON.stringify(rules[0].SourceSecurityGroupId)).toContain("AlbSecurityGroup");
+  });
+
   test("engine listener 8082 admits only the service SG", () => {
     const rules = Object.values(SERVICE_TEMPLATE_DEV.findResources("AWS::EC2::SecurityGroupIngress"))
       .map((r: any) => r.Properties)

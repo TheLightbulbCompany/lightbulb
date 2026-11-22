@@ -131,7 +131,7 @@ describe("NetworkStack — WAF web ACL (count-only)", () => {
   });
 });
 
-describe("NetworkStack — engine listener", () => {
+describe("NetworkStack: engine listener", () => {
   const template = buildNetworkStack("dev");
 
   test("8082 forwards to the engine target group, which health-checks /health on 8000", () => {

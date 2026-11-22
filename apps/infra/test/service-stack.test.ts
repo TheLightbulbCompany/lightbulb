@@ -1849,7 +1849,7 @@ describe("ServiceStack — coherent ARM64 backend image consumers", () => {
   });
 });
 
-describe("ServiceStack — engine service, dark (engine-service plan Task 9)", () => {
+describe("ServiceStack: engine service, dark (engine-service plan Task 9)", () => {
   const PROD = buildServiceStack("prod");
   const containers = (template: Template) =>
     Object.values(template.findResources("AWS::ECS::TaskDefinition")).flatMap(

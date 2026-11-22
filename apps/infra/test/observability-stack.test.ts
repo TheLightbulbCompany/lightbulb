@@ -1167,7 +1167,7 @@ describe("ObservabilityStack — prod-only paths", () => {
   });
 });
 
-describe("ObservabilityStack — engine service alarms", () => {
+describe("ObservabilityStack: engine service alarms", () => {
   const dev = buildTemplate("dev");
   const alarms = Object.values(dev.findResources("AWS::CloudWatch::Alarm")).map((r: any) => r.Properties);
   const engineDims = (a: any) => JSON.stringify(a.Dimensions ?? []).includes("EngineTG");

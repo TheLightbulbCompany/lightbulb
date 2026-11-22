@@ -59,7 +59,7 @@ describe("AuthStack — hook grant signing key", () => {
   });
 });
 
-describe("AuthStack — engine service token", () => {
+describe("AuthStack: engine service token", () => {
   test("engine_service_token secret exists", () => {
     buildStack("dev").hasResourceProperties("AWS::SecretsManager::Secret", {
       Name: "lightbulb/dev/engine_service_token",

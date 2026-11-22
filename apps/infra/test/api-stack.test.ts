@@ -1048,7 +1048,7 @@ describe("ApiStack — super-agent tasks table (contracts-v2 §3, dev + prod)", 
   });
 });
 
-describe("ApiStack — engine paths are not public", () => {
+describe("ApiStack: engine paths are not public", () => {
   // The backend serves the engine's callbacks under /api/v1/internal/engine/*, and the engine service
   // serves /engine/v1/*. Both are for in-VPC callers on the ALB. The public HTTP API forwards every other
   // path to the backend ($default), so each engine prefix has its own route with no integration: API

@@ -1906,6 +1906,22 @@
           "default": null,
           "title": "Actoruserid"
         },
+        "actorKind": {
+          "anyOf": [
+            {
+              "enum": [
+                "person",
+                "system"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Actorkind"
+        },
         "routedTo": {
           "anyOf": [
             {

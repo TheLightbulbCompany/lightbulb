@@ -3,7 +3,6 @@ import Link from "next/link";
 
 import { Logo } from "@/components/Logo";
 import { AuthSwitchLink } from "@/components/onboarding/AuthSwitchLink";
-import { SignUpDoors } from "@/components/onboarding/SignUpDoors";
 
 export default function Page() {
   return (
@@ -187,41 +186,6 @@ export default function Page() {
         }
         .auth-footer-links a:hover { color: var(--midnight-soft); }
 
-        .auth-doors {
-          display: grid;
-          grid-template-columns: 1fr 1fr;
-          gap: 8px;
-          width: 100%;
-          margin-bottom: 20px;
-        }
-        .auth-door {
-          display: flex;
-          flex-direction: column;
-          gap: 4px;
-          padding: 12px;
-          text-align: left;
-          border: 1px solid color-mix(in srgb, var(--midnight) 14%, transparent);
-          border-radius: 10px;
-          background: transparent;
-          font-family: var(--font-sans), system-ui, sans-serif;
-          cursor: pointer;
-        }
-        .auth-door[aria-selected="true"] { border-color: var(--midnight); }
-        .auth-door-title { font-size: 14px; font-weight: 600; color: var(--midnight); }
-        .auth-door-body { font-size: 12px; line-height: 1.4; color: var(--midnight-muted); }
-
-        .auth-join {
-          margin-top: 24px;
-          width: 100%;
-          display: flex;
-          flex-direction: column;
-          gap: 8px;
-          font-family: var(--font-sans), system-ui, sans-serif;
-          font-size: 13px;
-          color: var(--midnight-muted);
-          line-height: 1.5;
-        }
-
         .auth-legal-links {
           margin-top: 16px;
           text-align: center;
@@ -343,7 +307,7 @@ export default function Page() {
               Set it up in about 15 minutes. Pay when you go live.
             </p>
 
-            <SignUpDoors createForm={<SignUp fallbackRedirectUrl="/voice" signInFallbackRedirectUrl="/voice" />} />
+            <SignUp fallbackRedirectUrl="/voice" signInFallbackRedirectUrl="/voice" />
 
             <div className="auth-footer-links">
               Already have an account?{" "}

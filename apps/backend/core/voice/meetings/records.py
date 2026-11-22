@@ -182,9 +182,11 @@ async def end_meeting(room_id: str, meeting: dict) -> None:
     pulling the bot, and that pull can fail), so an ended one is asked of Recall first (one GET). Raises a
     `RecallError` when Recall refuses."""
     bot = meeting.get("recallBotId")
-    if bot and not (meeting.get("status") == "ended" and await meeting_bots.gone(bot)):
-        await meeting_bots.leave(bot)
-    await livekit_huddles.close_room(room_id, meet=True)
+    try:
+        if bot and not (meeting.get("status") == "ended" and await meeting_bots.gone(bot)):
+            await meeting_bots.leave(bot)
+    finally:  # the Meet's room closes whatever Recall answered
+        await livekit_huddles.close_room(room_id, meet=True)
 
 
 async def end_deleted(owner_id: str, room_id: str) -> None:

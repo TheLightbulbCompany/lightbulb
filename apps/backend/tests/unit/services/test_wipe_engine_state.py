@@ -418,3 +418,17 @@ async def test_a_later_attempt_of_a_task_already_stopped_is_stopped_too(world, r
 
     assert [c.kwargs["task_id"] for c in runtime.stop.await_args_list] == [task_id, task_id]
     assert not _a_rows(world.table)
+
+
+@pytest.mark.asyncio
+async def test_the_meet_room_closes_even_when_recall_does_not_answer():
+    from core.voice.meetings import records
+
+    close = AsyncMock()
+    with (
+        patch.object(records.meeting_bots, "gone", AsyncMock(side_effect=RuntimeError("timeout"))),
+        patch.object(records.livekit_huddles, "close_room", close),
+        pytest.raises(RuntimeError, match="timeout"),  # still the caller's failure (the wipe names the bot)
+    ):
+        await records.end_meeting("room-1", {"recallBotId": "bot-1", "status": "ended"})
+    close.assert_awaited_once_with("room-1", meet=True)

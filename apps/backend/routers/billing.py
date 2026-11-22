@@ -71,7 +71,6 @@ async def get_voice_plan(auth: AuthContext = Depends(get_current_user)):
 @router.post("/voice-plan/checkout")
 async def checkout_voice_plan(body: VoicePlanEnrollment, auth: AuthContext = Depends(get_current_user)):
     """Accept the plan and open Stripe Checkout for the $250/month subscription (promotion codes allowed)."""
-    require_org(auth)
     require_org_admin(auth)
     if body.expectedOwnerId != resolve_owner_id(auth):
         raise HTTPException(status_code=409, detail={"code": "workspace_changed"})

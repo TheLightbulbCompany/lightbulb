@@ -330,7 +330,6 @@ class DraftIn(BaseModel):
 
 @router.post("/voice/onboarding/draft")
 async def onboarding_draft(body: DraftIn, auth: AuthContext = Depends(get_current_user)) -> dict:
-    require_org(auth)
     require_org_admin(auth)
     return {"draft": await voice_onboarding.draft(body.website, body.business, body.city)}
 

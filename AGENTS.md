@@ -408,8 +408,10 @@ org, as their own provisioner, through `GET /container/status`, `POST /container
 `POST /container/retry` (Clerk `user.created` only writes the users row: a sign-up provisions nothing until the
 person opens the product). A person gets a company slug and team address only by claiming one
 (`POST /company/slug/claim`). The Phone setup doors a person passes on their own tenant: `POST /voice/number` with a
-choice, `POST /voice/forward-check`, `GET /agent-mail/address` (it only reads: `none_claimed` before the claim) and
-Go live (`PUT /voice/agent` with `live`; where numbers are bought it needs a voice plan). Every other door that mints a
+choice, `POST /voice/forward-check`, `POST /voice/onboarding/draft` (the website read), `GET /agent-mail/address`
+(it only reads: `none_claimed` before the claim), `POST /billing/voice-plan/checkout` (a Stripe customer keyed to
+the person's own tenant, separate from Spark's) and Go live (`PUT /voice/agent` with `live`; where numbers are
+bought it needs a voice plan). Every other door that mints a
 credential, number, mailbox, grant or paid thing still calls `require_org` until the later tasks of the
 accounts-without-workspaces plan. `user.deleted` runs
 `account_wipe.wipe_account` on the person's own tenant (profiles and memory included; no Clerk read, no org

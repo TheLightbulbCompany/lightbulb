@@ -16,16 +16,19 @@ Each case runs twice (`tenants`): as personal accounts (no `o` claim) and as two
 
 import json
 import uuid
+from urllib.parse import parse_qs, urlsplit
 from dataclasses import dataclass, replace
 from unittest.mock import AsyncMock
 
+import httpx
 import pytest
+import stripe
 from fastapi import HTTPException
 from fastapi.routing import _IncludedRouter
 from fastapi.security import HTTPAuthorizationCredentials
 from httpx import ASGITransport, AsyncClient
 
-from core import tasks_schema as ts
+from core import dynamodb, tasks_schema as ts
 from core.auth import (
     AuthContext,
     get_current_user,
@@ -551,7 +554,7 @@ CASES = [
     Case("voice", "GET", "/api/v1/voice/agent"),
     Case("voice", "PUT", "/api/v1/voice/agent", {"config": {"greeting": "b greeting"}}),
     Case("voice", "POST", "/api/v1/voice/forward-check", {"forwardFrom": "+15550100004"}),
-    Case("voice", "POST", "/api/v1/voice/onboarding/draft", {"website": "example.com"}, org_only=True),
+    Case("voice", "POST", "/api/v1/voice/onboarding/draft", {"website": "example.com"}),
     Case("voice", "POST", "/api/v1/voice/number", {"path": "new", "areaCode": "415"}),
     # billing: tenant = caller; the owner checks out, opens the portal, cancels
     Case("billing", "GET", "/api/v1/billing/account"),
@@ -561,7 +564,7 @@ CASES = [
     Case("billing", "POST", "/api/v1/billing/checkout", {"plan": "workspace"}, org_only=True),
     Case("billing", "POST", "/api/v1/billing/front-desk", {}, org_only=True),
     Case("billing", "GET", "/api/v1/billing/voice-plan"),
-    Case("billing", "POST", "/api/v1/billing/voice-plan/checkout", VOICE_PLAN, org_only=True),
+    Case("billing", "POST", "/api/v1/billing/voice-plan/checkout", VOICE_PLAN),
     Case("billing", "DELETE", "/api/v1/billing/voice-plan", query={"expectedOwnerId": "{b_tenant}"}),
     # apple_iap: tenant = caller (selling is off in prod)
     Case("apple_iap", "POST", "/api/v1/billing/apple/purchase-intent", org_only=True),
@@ -937,7 +940,6 @@ async def test_org_claim_still_wins_interim(tenants):
 REFUSED = [
     ("POST", "/api/v1/billing/checkout", {"plan": "workspace"}, 409),
     ("POST", "/api/v1/billing/front-desk", {}, 409),
-    ("POST", "/api/v1/billing/voice-plan/checkout", VOICE_PLAN, 409),
     ("POST", "/api/v1/billing/apple/purchase-intent", None, 409),
     ("POST", "/api/v1/billing/apple/link", {"signed_transaction": "x"}, 409),
     ("PATCH", "/api/v1/agent-mail/address", {"send_to_anyone": False}, 409),
@@ -955,12 +957,11 @@ REFUSED = [
     ("PUT", "/api/v1/container/workspace/ceo/file", {"path": "USER.md", "content": "x", "tab": "config"}, 409),
     ("POST", "/api/v1/automations", {"name": "n", "instructions": "i"}, 409),  # a Temporal Schedule
     ("POST", "/api/v1/automations/from-integration", {"provider": "stripe", "event_ids": ["x"]}, 409),
-    ("POST", "/api/v1/voice/onboarding/draft", {"website": "example.com"}, 409),  # a model call
     ("POST", "/api/v1/runtime/rpc", {"requestId": "{new}", "method": "agents.create", "params": {}}, 409),
     ("PATCH", "/api/v1/config", {"patch": {"x": 1}}, 409),  # writes every agent's config.yaml
     ("PUT", "/api/v1/automations/hook1/webhook-secret", {"webhook_secret": "whsec_x"}, 409),
     ("POST", "/api/v1/voice/number", {}, 409),  # with no body: takes the environment's shared line
-    ("POST", "/api/v1/oauth/chatgpt/start", None, 402),  # needs a paid plan, which a person cannot buy yet
+    ("POST", "/api/v1/oauth/chatgpt/start", None, 402),  # needs the paid workspace plan, whose checkout refuses
 ]
 
 
@@ -1037,3 +1038,174 @@ async def test_go_live_cannot_take_another_tenants_line(tenants, ddb, calls, mon
     assert r.status_code == 409 and r.json()["detail"] == {"code": "number_unavailable", "reason": "taken"}
     assert snapshot(ddb, a.tenant, a.user_id, "+15550100009") == before
     assert not (await store.get_voice_agent(b.tenant) or {}).get("live")
+
+
+# --- the website read and the voice plan a person passes on their own tenant ---------------------------------
+
+
+def _bedrock(seen: list):
+    """Bedrock's converse, answering one Agent page draft and recording each call."""
+
+    class Client:
+        def converse(self, **kwargs):
+            seen.append(kwargs)
+            text = json.dumps({"staff": ["Ana"], "phone": "", "toAdd": ["Parking?"]})
+            return {"output": {"message": {"content": [{"text": text}]}}}
+
+    return Client()
+
+
+async def test_person_draft_reads_a_public_site_and_refuses_a_private_one(ddb, calls, jwks, monkeypatch):
+    """A person's website read runs the repo's SSRF-safe fetcher and one model call, as for an org; a private,
+    loopback or link-local address, or a redirect to one, is never fetched and makes no model call."""
+    from core.services import link_preview
+    from core.voice.phone import voice_onboarding
+
+    fetched, model = [], []
+
+    def site(request: httpx.Request) -> httpx.Response:
+        fetched.append(str(request.url))
+        if request.url.path == "/moved":
+            return httpx.Response(302, headers={"location": "http://127.0.0.1/admin"})
+        return httpx.Response(200, html="<p>Ana cuts hair</p>", headers={"content-type": "text/html"})
+
+    monkeypatch.setattr(link_preview, "_TRANSPORT", httpx.MockTransport(site))
+    monkeypatch.setattr(voice_onboarding, "_bedrock", lambda: _bedrock(model))
+    person = Tenant("user_solo", None)
+    draft = (await ok(person, "POST", "/api/v1/voice/onboarding/draft", {"website": "http://1.1.1.1/"}))["draft"]
+    assert draft["read"] is True and draft["staff"] == ["Ana"] and len(model) == 1
+    assert fetched == ["http://1.1.1.1/"]
+    for private in ("http://169.254.169.254/latest", "http://127.0.0.1/", "http://10.0.0.1/", "http://1.1.1.1/moved"):
+        fetched.clear()
+        draft = (await ok(person, "POST", "/api/v1/voice/onboarding/draft", {"website": private}))["draft"]
+        assert draft["read"] is False, private
+        assert all(urlsplit(u).hostname == "1.1.1.1" for u in fetched), fetched  # only the public hop, never 127/8
+    assert len(model) == 1
+
+
+def _voice_sub(sub_id: str, customer: str, owner: str, **extra) -> dict:
+    return {
+        "id": sub_id, "object": "subscription", "customer": customer, "status": "active",
+        "metadata": {"purpose": "voice_plan", "workspace_id": owner, "accepted_by": owner, "plan_version": "x"},
+        "items": {"data": [{"price": {"id": settings.STRIPE_VOICE_PLAN_PRICE_ID}}]}, **extra,
+    }  # fmt: skip
+
+
+async def _webhook(event: dict, monkeypatch) -> None:
+    monkeypatch.setattr(stripe.Webhook, "construct_event", lambda body, sig, secret: event)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        r = await c.post("/api/v1/billing/webhooks/stripe", content="{}", headers={"stripe-signature": "x"})
+    assert r.status_code == 200, r.text[:300]
+
+
+def _stripe_posts(calls: list, path: str) -> list[dict]:
+    """The form bodies of the Stripe POSTs to `path`, each as {field: value}."""
+    return [
+        {k: v[0] for k, v in parse_qs(c[2] or "").items()}
+        for c in calls
+        if c[0] == "stripe" and c[1].startswith("post ") and urlsplit(c[1][5:]).path == path
+    ]
+
+
+async def test_person_buys_goes_live_and_cancels_their_own_voice_plan_and_spark_is_untouched(
+    ddb, calls, jwks, monkeypatch
+):
+    """A person checks out the voice plan on a Stripe customer of their own tenant (never Spark's), the plan's
+    webhook enrolls them, Go live buys exactly one number, the portal and the cancel reach only that customer and
+    subscription; their Spark subscription row is never written, and Spark's own webhook leaves the plan alone."""
+    from core.billing import voice_plan
+    from core.services import provision_dispatch
+    from core.voice.phone import voice_onboarding as vo
+    from tests.unit.services.test_voice_onboarding import NEW, _buying, _fake_twilio
+
+    await seed_billing(Tenant("user_a", None), Tenant("user_b", None), monkeypatch, calls)  # the plan is sold
+    monkeypatch.setattr(settings, "STRIPE_SPARK_PRICE_ID", "price_spark")
+    person = Tenant("user_solo", None)
+    await workspaces(person)
+    users = dynamodb.get_table("users")
+    spark = {"user_id": person.user_id, "os_trial_ends_at": 4102444800, "os_stripe_customer_id": "cus_spark",
+             "os_subscription_id": "sub_spark", "os_subscription_status": "active"}  # fmt: skip
+    await run_in_thread(users.put_item, Item=spark)
+
+    def spark_row():
+        return users.get_item(Key={"user_id": person.user_id})["Item"]
+
+    plan = {**fill(VOICE_PLAN, {"b_tenant": person.user_id})}
+    wrong = await call(person, "POST", "/api/v1/billing/voice-plan/checkout", {**plan, "expectedOwnerId": "user_a"})
+    assert wrong.status_code == 409 and wrong.json()["detail"]["code"] == "workspace_changed"
+    calls.clear()
+    assert (await ok(person, "POST", "/api/v1/billing/voice-plan/checkout", plan))["status"] == "checkout"
+    (customer,) = _stripe_posts(calls, "/v1/customers")
+    assert customer["metadata[workspace_id]"] == person.user_id
+    (session,) = _stripe_posts(calls, "/v1/checkout/sessions")
+    account = await billing_repo.get_by_owner_id(person.user_id, consistent_read=True)
+    voice_customer = account["stripe_customer_id"]
+    assert voice_customer != "cus_spark" and session["customer"] == voice_customer
+    assert session["metadata[workspace_id]"] == person.user_id and session["metadata[purpose]"] == "voice_plan"
+    assert not mentions(json.dumps(calls, default=str), ["cus_spark", "sub_spark"]) and spark_row() == spark
+
+    # Stripe's side of the plan's webhook: the subscription, and Metronome's usage contract for it.
+    subs = {"sub_voice": _voice_sub("sub_voice", voice_customer, person.user_id)}
+    subs["sub_spark"] = {"id": "sub_spark", "object": "subscription", "customer": "cus_spark", "status": "active",
+                         "metadata": {"product": "spark", "user_id": person.user_id}, "items": {"data": []}}  # fmt: skip
+
+    def modify(sub_id, **kwargs):
+        subs[sub_id] |= {"cancel_at_period_end": True, "cancel_at": 4102444800}
+        return subs[sub_id]
+
+    async def enroll(owner_id, acct, client):
+        await billing_repo.set_voice_plan(owner_id, customer_id="m_cus", contract_id="m_contract", usage_key="k",
+                                          started_at="2026-11-01T00:00:00+00:00", billing_anchor="2026-11-01")  # fmt: skip
+
+    monkeypatch.setattr(stripe.Subscription, "retrieve", lambda sub_id, **k: subs[sub_id])
+    monkeypatch.setattr(stripe.Subscription, "modify", modify)
+    monkeypatch.setattr(voice_plan, "_enroll", enroll)
+    monkeypatch.setattr(provision_dispatch, "dispatch_reconcile", AsyncMock(return_value=True))
+    event = {"id": "evt_voice", "type": "customer.subscription.created", "data": {"object": subs["sub_voice"]}}
+    await _webhook(event, monkeypatch)
+    assert (await ok(person, "GET", "/api/v1/billing/voice-plan"))["status"] == "active" and spark_row() == spark
+
+    paid_row = billing_repo.get_by_owner_id
+    _buying(monkeypatch, True)
+    monkeypatch.setattr(vo.billing_repo, "get_by_owner_id", paid_row)  # the real row the webhook made paid
+    twilio = _fake_twilio(monkeypatch)
+    live = {"live": True, "numberChoice": {"path": "new", "areaCode": "610"}}
+    config = (await ok(person, "PUT", "/api/v1/voice/agent", {"config": live}))["config"]
+    assert config["number"] == NEW
+    assert (await ok(person, "PUT", "/api/v1/voice/agent", {"config": config}))["config"]["number"] == NEW
+    assert [c.args for c in twilio.await_args_list].count(("POST", "IncomingPhoneNumbers.json")) == 1
+
+    before = await billing_repo.get_by_owner_id(person.user_id, consistent_read=True)
+    spark_event = {"id": "evt_spark", "type": "customer.subscription.updated", "data": {"object": subs["sub_spark"]}}
+    await _webhook(spark_event, monkeypatch)
+    assert await billing_repo.get_by_owner_id(person.user_id, consistent_read=True) == before
+    assert spark_row()["os_subscription_id"] == "sub_spark"
+
+    calls.clear()
+    assert (await ok(person, "POST", "/api/v1/billing/portal"))["portal_url"]
+    (portal,) = _stripe_posts(calls, "/v1/billing_portal/sessions")
+    assert portal["customer"] == voice_customer
+    bad = await call(person, "DELETE", "/api/v1/billing/voice-plan", query={"expectedOwnerId": "user_a"})
+    assert bad.status_code == 409 and not subs["sub_voice"].get("cancel_at_period_end")
+    r = await call(person, "DELETE", "/api/v1/billing/voice-plan", query={"expectedOwnerId": person.user_id})
+    assert r.status_code == 200 and r.json()["status"] == "canceling", r.text[:300]
+    assert subs["sub_voice"]["cancel_at_period_end"] and "cancel_at_period_end" not in subs["sub_spark"]
+    assert spark_row() == {**spark} and not mentions(json.dumps(calls, default=str), ["cus_spark", "sub_spark"])
+
+
+async def test_voice_plan_doors_refuse_another_tenants_expected_owner(tenants, ddb, calls, monkeypatch):
+    """B naming A's tenant as `expectedOwnerId` is refused at checkout and cancel (409 workspace_changed): no Stripe
+    call is made and A's rows are unchanged, for a person as for an org."""
+    a, b = tenants
+    await seed_billing(a, b, monkeypatch, calls)
+    before = snapshot(ddb, MARKER, a.user_id, a.tenant)
+    calls.clear()
+    plan = fill(VOICE_PLAN, {"b_tenant": a.tenant})
+    for method, path, body, query in (
+        ("POST", "/api/v1/billing/voice-plan/checkout", plan, None),
+        ("DELETE", "/api/v1/billing/voice-plan", None, {"expectedOwnerId": a.tenant}),
+    ):
+        r = await call(b, method, path, body, query)
+        assert r.status_code == 409 and r.json()["detail"]["code"] == "workspace_changed", r.text[:300]
+    assert not [c for c in calls if c[0] == "stripe"]
+    assert snapshot(ddb, MARKER, a.user_id, a.tenant) == before

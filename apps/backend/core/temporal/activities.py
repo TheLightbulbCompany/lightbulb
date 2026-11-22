@@ -25,7 +25,6 @@ from temporalio import activity
 from temporalio.exceptions import ApplicationError
 
 from core import tasks_schema as ts
-from core.auth import is_org_owner_id
 from core.config import settings
 from core.dynamodb import utc_now_iso
 from core.engine import hooks
@@ -1213,8 +1212,8 @@ async def _ensure_task(ws: str, task_id: str, trig: dict, lane: str, status: str
         kind = "person" if asked == "person" else "room"
     else:
         kind = "person" if asked == "person" else "workspace"
-    if kind == "person" and actor == ws and is_org_owner_id(ws):
-        # No person behind it (mail, text: the org itself is the actor): no member's id to show it to.
+    if kind == "person" and trig.get("actorKind") == "system":
+        # No person behind it (mail, text: the tenant itself is the actor): no member's id to show it to.
         kind = "room" if room else "workspace"
     if kind == "person" and not actor:
         # ponytail: refuse rather than widen (lead ruling). Lane A's fires pass the schedule owner as the actor.

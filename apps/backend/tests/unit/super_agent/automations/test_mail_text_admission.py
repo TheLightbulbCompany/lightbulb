@@ -51,6 +51,7 @@ async def test_mail_admitted_once(env):
     assert row["ref"]["reply"] == MAIL_REF and row["ref"]["text"].startswith("From: ada@example.com")
     assert row["version"] == 1  # the second delivery did not rewrite the row
     assert row["actorUserId"] == WS  # no person sent it: the workspace owns (and pays for) what it starts
+    assert row["actorKind"] == "system"
     # the outbox put is unconditional by design (O6): a MODIFY of the same row is ignored by the pipe
     assert env.outbox.await_count == 2 and env.outbox.await_args.args == (WS, "mail:<m1@example.com>")
     assert not env.runtime.called
@@ -64,6 +65,7 @@ async def test_text_admitted_with_text_trigger_id(env):
     )
     row = await tasks_repo.get_trigger(WS, "text:photon:h1")
     assert row["source"] == "text" and row["ref"]["reply"] == ref
+    assert row["actorKind"] == "system"
 
 
 async def test_text_is_capped_to_32k(env):

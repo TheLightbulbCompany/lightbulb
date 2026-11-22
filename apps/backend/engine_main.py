@@ -1,7 +1,8 @@
-"""The engine service's app (engine-service plan Task 8; not deployed yet): the engine's operations for products
-under `/engine/v1` (`routers/engine_api.py`), and the agent runtime's callbacks that land on engine code (task runs,
-Router proposals, messaging). It calls the products back over HTTP only (`core.engine.http_hooks`) and imports no
-product code: same image as the backend, `uvicorn engine_main:app`."""
+"""The engine service's app (`lightbulb-<env>-engine`): the engine's operations for products under `/engine/v1`
+(`routers/engine_api.py`), and the agent runtime's callbacks that land on engine code (task runs, Router proposals,
+messaging), which the internal ALB sends here by path (`apps/infra/lib/engine-paths.json`). It calls the products
+back over HTTP only (`core.engine.http_hooks`) and imports no product code: same image as the backend,
+`uvicorn engine_main:app`."""
 
 from __future__ import annotations
 
@@ -14,9 +15,11 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from core.engine import http_hooks
+from core.observability.logging import configure_logging
 from core.services.messaging import ApiProblem
 from routers import engine_api, internal_automations, messaging_internal, runtime_internal
 
+configure_logging(level="INFO")  # JSON lines as the backend's: INFO from engine code reaches CloudWatch
 http_hooks.register()  # engine code in this process asks the products over HTTP
 
 

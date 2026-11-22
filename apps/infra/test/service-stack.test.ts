@@ -1926,12 +1926,12 @@ describe("ServiceStack: engine service, dark (engine-service plan Task 9)", () =
     expect(rules[0].CidrIp).toBeUndefined();
   });
 
-  test.each([["dev", SERVICE_TEMPLATE_DEV], ["prod", PROD]] as const)("ENGINE_TRANSPORT is inprocess in both envs (%s)", (env, template) => {
+  test.each([["dev", SERVICE_TEMPLATE_DEV], ["prod", PROD]] as const)("ENGINE_TRANSPORT is http in both envs (%s)", (env, template) => {
     const names = ["backend", "temporal-worker", "temporal-watchdog", "engine"];
     for (const name of names) {
       const c = containers(template).find((x) => x.Name === name);
       const e = envOf(c);
-      expect(e.ENGINE_TRANSPORT).toBe("inprocess");
+      expect(e.ENGINE_TRANSPORT).toBe("http");
       // The ALB's internal DNS name: the engine on the 8082 listener, the products' callbacks on 80.
       expect(JSON.stringify(e.ENGINE_URL)).toMatch(/http:\/\/.*DNSName.*:8082/);
       expect(JSON.stringify(e.PRODUCT_CALLBACK_URL)).toMatch(/http:\/\/.*DNSName/);
@@ -1943,7 +1943,7 @@ describe("ServiceStack: engine service, dark (engine-service plan Task 9)", () =
     const [param] = Object.values(
       template.findResources("AWS::SSM::Parameter", { Properties: { Name: `/lightbulb/${env}/provisioner-env` } }),
     ) as any[];
-    expect(JSON.stringify(param.Properties.Value)).toContain('\\"ENGINE_TRANSPORT\\":\\"inprocess\\"');
+    expect(JSON.stringify(param.Properties.Value)).toContain('\\"ENGINE_TRANSPORT\\":\\"http\\"');
     const fns = Object.values(template.findResources("AWS::Lambda::Function")).filter(
       (fn: any) => fn.Properties.Environment?.Variables?.LAMBDA_SECRET_ENV_MAP,
     );

@@ -22,9 +22,16 @@ from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel
 
-from core.auth import AuthContext, get_current_user, require_org, require_org_admin, resolve_owner_id
+from core.auth import (
+    AuthContext,
+    get_current_user,
+    is_org_owner_id,
+    require_org_admin,
+    resolve_owner_id,
+)
 from core.dynamodb import run_in_thread
-from core.repositories import agent_email_repo, container_repo, messaging_repo
+from core.repositories import agent_email_repo, billing_repo, container_repo, messaging_repo
+from core.services.provision_gate import has_always_on_entitlement
 from core.repositories.agent_mail_inbox_repo import (
     MAX_TEXT_CHARS,
     count_received_after,
@@ -188,10 +195,19 @@ async def _team_row(owner_id: str) -> tuple[dict, str | None]:
     return row, owner_email
 
 
+NONE_CLAIMED = {"address": None, "invite_address": None, "status": "none_claimed"}
+
+
 @router.get("/address")
 async def get_address(auth: AuthContext = Depends(get_current_user)) -> dict:
-    require_org(auth)  # the read creates the company slug and mailbox
-    row, _ = await _team_row(resolve_owner_id(auth))
+    """An org's read creates its company slug and mailbox. A person's only reads: their mailbox is made by the slug
+    claim (`POST /company/slug/claim`), and before that this answers `none_claimed`."""
+    owner_id = resolve_owner_id(auth)
+    if not is_org_owner_id(owner_id):
+        address = await team_address(owner_id)
+        row = await agent_email_repo.get_by_address(address) if address else None
+        return _project(row) if row and row.get("owner_id") == owner_id else NONE_CLAIMED
+    row, _ = await _team_row(owner_id)
     return _project(row)
 
 
@@ -204,9 +220,13 @@ class AddressSettings(BaseModel):
 
 @router.patch("/address")
 async def patch_address(body: AddressSettings, auth: AuthContext = Depends(get_current_user)) -> dict:
-    require_org(auth)
     require_org_admin(auth)
     owner_id = resolve_owner_id(auth)
+    widens = body.send_to_anyone or ("outbound_disabled" in body.model_fields_set and body.outbound_disabled is None)
+    if widens and not is_org_owner_id(owner_id):
+        # A person mails anyone, or clears a complaint pause, only on a paid plan (Team or the voice plan).
+        if not has_always_on_entitlement(await billing_repo.get_by_owner_id(owner_id)):
+            raise HTTPException(status_code=402, detail={"status": "paid_plan_required"})
     row, owner_email = await _team_row(owner_id)
     kwargs: dict = {}
     if body.verified_senders is not None:

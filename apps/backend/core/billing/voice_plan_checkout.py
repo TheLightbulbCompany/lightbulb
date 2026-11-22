@@ -15,6 +15,10 @@ PURPOSE = "voice_plan"
 async def start(owner_id: str, *, accepted_by: str) -> dict:
     if not voice_plan.available():
         raise voice_plan.VoicePlanError("voice_plan_unavailable")
+    from core.services.user_provision import _ensure_trial_row
+
+    # The tenant's trial row first (create-if-absent, unarmed): the customer below joins it, never replaces it.
+    await _ensure_trial_row(owner_id, actor_user_id=accepted_by)
     account = await billing_repo.get_by_owner_id(owner_id, consistent_read=True)
     if not account or not account.get("stripe_customer_id"):
         from core.services.billing_service import BillingService

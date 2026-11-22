@@ -92,6 +92,7 @@ from core.repositories import (
     company_slug_repo,
     container_repo,
     integrations_repo,
+    oauth_state_repo,
     messaging_repo,
     openrouter_key_repo,
     slack_installs_repo,
@@ -626,6 +627,13 @@ async def _integrations_run(snap: WorkspaceSnapshot) -> str:
     return f"deleted {len(providers)} integration row(s): {', '.join(providers) or 'none'}"
 
 
+async def _oauth_state_run(snap: WorkspaceSnapshot) -> str:
+    n = 0
+    for owner in [snap.org_id, *deletable_member_ids(snap)]:
+        n += await oauth_state_repo.delete_all_for_owner(owner)
+    return f"deleted {n} pending OAuth state row(s)"
+
+
 async def _oauth_run(snap: WorkspaceSnapshot) -> str:
     targets = [snap.org_id, *deletable_member_ids(snap)]
     for uid in targets:
@@ -739,7 +747,9 @@ async def _clerk_org_run(snap: WorkspaceSnapshot) -> str:
 
 # Steps whose targets include per-member keys; a failure in any of them must
 # hold back the Clerk org delete (see wipe_workspace).
-_MEMBER_KEYED_SYSTEMS = frozenset({"owner_secrets", "integrations", "oauth_tokens", "company_slug", "user_row"})
+_MEMBER_KEYED_SYSTEMS = frozenset(
+    {"owner_secrets", "integrations", "oauth_state", "oauth_tokens", "company_slug", "user_row"}
+)
 
 
 # A failed money step (subscription/usage billing may still be live) holds
@@ -815,6 +825,13 @@ WORKSPACE_STEP_REGISTRY: tuple[WorkspaceStepDef, ...] = (
         lambda snap: retire_openrouter_key(snap.org_id),
     ),
     WorkspaceStepDef("integrations", "delete_all_for_owner", LAYER_SECRETS, _integrations_preview, _integrations_run),
+    WorkspaceStepDef(
+        "oauth_state",
+        "delete_all_for_owner",
+        LAYER_SECRETS,
+        lambda snap: (True, "pending OAuth states (ten minutes at most)"),
+        _oauth_state_run,
+    ),
     WorkspaceStepDef(
         "oauth_tokens",
         "revoke_user_oauth",

@@ -164,6 +164,7 @@ def ws_mocks():
         ("core.services.workspace_wipe.integrations_repo.list_for_owner", integrations_list),
         ("core.services.workspace_wipe.integrations_repo.delete_all_for_owner", integrations_delete),
         ("core.services.workspace_wipe.revoke_user_oauth", oauth_revoke),
+        ("core.services.workspace_wipe.oauth_state_repo.delete_all_for_owner", AsyncMock(return_value=0)),
         ("core.services.workspace_wipe.agent_email_repo.query_by_owner", agent_email_query),
         ("core.services.workspace_wipe.agent_email_repo.delete_all_for_owner", agent_email_delete),
         ("core.services.workspace_wipe.slack_installs_repo.list_for_owner", slack_list),

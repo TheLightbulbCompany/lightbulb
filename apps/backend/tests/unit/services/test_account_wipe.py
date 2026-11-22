@@ -77,6 +77,7 @@ EXPECTED_ORDER = [
     "owner_secrets",
     "openrouter_key",
     "integrations",
+    "oauth_state",
     "oauth_tokens",
     "agent_email_addresses",
     "slack_installs",
@@ -217,6 +218,7 @@ def wipe_mocks():
     owner_secrets_delete = AsyncMock(return_value=["lightbulb/dev/user-keys/user_abc123/anthropic"])
     integrations_list = AsyncMock(return_value=[{"owner_id": "user_abc123", "provider": "slack"}])
     integrations_delete = AsyncMock(return_value=["slack"])
+    oauth_state_delete = AsyncMock(return_value=0)
     oauth_revoke = AsyncMock(return_value=None)
     agent_email_query = AsyncMock(return_value=[{"owner_id": "user_abc123", "address": "friday@acme.isol8.co"}])
     agent_email_delete = AsyncMock(return_value=["friday@acme.isol8.co"])
@@ -279,6 +281,7 @@ def wipe_mocks():
         ("core.services.account_wipe.integrations_repo.list_for_owner", integrations_list),
         ("core.services.account_wipe.integrations_repo.delete_all_for_owner", integrations_delete),
         ("core.services.account_wipe.revoke_user_oauth", oauth_revoke),
+        ("core.services.account_wipe.oauth_state_repo.delete_all_for_owner", oauth_state_delete),
         ("core.services.account_wipe.agent_email_repo.query_by_owner", agent_email_query),
         ("core.services.account_wipe.agent_email_repo.delete_all_for_owner", agent_email_delete),
         ("core.services.account_wipe.slack_installs_repo.list_for_owner", slack_installs_list),
@@ -332,6 +335,7 @@ def wipe_mocks():
             clerk_delete=clerk_delete,
             owner_secrets_delete=owner_secrets_delete,
             integrations_delete=integrations_delete,
+            oauth_state_delete=oauth_state_delete,
             oauth_revoke=oauth_revoke,
             agent_email_delete=agent_email_delete,
             slack_installs_list=slack_installs_list,
@@ -655,6 +659,7 @@ async def test_clerk_delete_still_runs_when_every_other_step_fails(wipe_mocks):
     wipe_mocks.user_delete.side_effect = RuntimeError("ddb down")
     wipe_mocks.owner_secrets_delete.side_effect = RuntimeError("sm down")
     wipe_mocks.integrations_delete.side_effect = RuntimeError("ddb down")
+    wipe_mocks.oauth_state_delete.side_effect = RuntimeError("ddb down")
     wipe_mocks.oauth_revoke.side_effect = RuntimeError("openai down")
     wipe_mocks.agent_email_delete.side_effect = RuntimeError("ddb down")
     wipe_mocks.slack_installs_delete.side_effect = RuntimeError("ddb down")

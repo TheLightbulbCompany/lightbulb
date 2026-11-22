@@ -106,6 +106,7 @@ from core.repositories import (
     container_repo,
     integrations_repo,
     messaging_repo,
+    oauth_state_repo,
     openrouter_key_repo,
     slack_installs_repo,
     usage_repo,
@@ -771,6 +772,8 @@ async def preview_wipe(owner_id: str) -> WipeReport:
         detail_if_exists=f"{len(integration_rows)} integration row(s)",
         detail_if_absent="no integration rows",
     )
+    # Pending OAuth states live at most ten minutes: the preview names the step without scanning for them.
+    steps.append(WipeStep(system="oauth_state", action="delete_all_for_owner", status="would_delete", detail=owner_id))
 
     steps.append(WipeStep(system="oauth_tokens", action="revoke_user_oauth", status="would_delete", detail=owner_id))
 
@@ -1121,6 +1124,11 @@ async def wipe_account(owner_id: str, *, actor_admin_id: str, clerk_user_deleted
         return f"deleted {len(providers)} integration row(s): {', '.join(providers) or 'none'}"
 
     await _step(steps, system="integrations", action="delete_all_for_owner", fn=_s9g)
+
+    async def _s9g2() -> str:
+        return f"deleted {await oauth_state_repo.delete_all_for_owner(owner_id)} pending OAuth state row(s)"
+
+    await _step(steps, system="oauth_state", action="delete_all_for_owner", fn=_s9g2)
 
     # Deletes OUR stored tokens. It does NOT revoke the grant upstream at
     # OpenAI — there is no call to an OpenAI revocation endpoint anywhere in

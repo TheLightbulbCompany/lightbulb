@@ -8,7 +8,7 @@ from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from core.auth import AuthContext, get_current_user, require_org, resolve_owner_id
+from core.auth import AuthContext, get_current_user, resolve_owner_id
 from core.repositories import tasks_repo
 from core.services import (
     container_auth,
@@ -98,7 +98,6 @@ _RUN_FIELDS = {"task_id", "attempt", "run_id", "run_secret"}
 async def recall(body: RecallBody, auth: AuthContext = Depends(get_current_user)) -> dict:
     """The evidence page for a question, with the caller's own private scope included (the
     super-agent acceptance check a12 reads a private fact through it)."""
-    require_org(auth)  # AgentCore memory retrieval
     owner_id = resolve_owner_id(auth)
     return await _guard(memory_api.recall_page(owner_id, auth.user_id, **body.model_dump()))
 

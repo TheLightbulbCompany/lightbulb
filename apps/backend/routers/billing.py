@@ -12,9 +12,9 @@ from pydantic import BaseModel, Field
 
 from core.auth import (
     AuthContext,
+    is_org_owner_id,
     get_current_user,
     resolve_owner_id,
-    require_org,
     require_org_admin,
 )
 from core.config import settings
@@ -71,7 +71,6 @@ async def get_voice_plan(auth: AuthContext = Depends(get_current_user)):
 @router.post("/voice-plan/checkout")
 async def checkout_voice_plan(body: VoicePlanEnrollment, auth: AuthContext = Depends(get_current_user)):
     """Accept the plan and open Stripe Checkout for the $250/month subscription (promotion codes allowed)."""
-    require_org(auth)
     require_org_admin(auth)
     if body.expectedOwnerId != resolve_owner_id(auth):
         raise HTTPException(status_code=409, detail={"code": "workspace_changed"})
@@ -105,6 +104,16 @@ async def cancel_voice_plan(
 async def _get_billing_account(auth: AuthContext) -> dict | None:
     """Resolve billing account from auth context."""
     return await billing_repo.get_by_owner_id(resolve_owner_id(auth))
+
+
+async def _ensure_person_trial(auth: AuthContext) -> None:
+    """Before a checkout, a person's tenant gets its trial row (create-if-absent, unarmed, as the provisioning doors
+    write it), so a Stripe customer joins the trial instead of replacing it. An org's row comes from its webhook."""
+    owner_id = resolve_owner_id(auth)
+    if not is_org_owner_id(owner_id):
+        from core.services.user_provision import _ensure_trial_row
+
+        await _ensure_trial_row(owner_id, actor_user_id=auth.user_id)
 
 
 # _resolve_owner_account was relocated to core/services/stripe_webhook_handlers.py
@@ -291,9 +300,9 @@ async def create_workspace_checkout(
     auth: AuthContext = Depends(get_current_user),
 ):
     """The only subscription Checkout entry point for an active workspace."""
-    require_org(auth)
     require_org_admin(auth)
     owner_id = resolve_owner_id(auth)
+    await _ensure_person_trial(auth)
     account = await _get_billing_account(auth)
     if apple_iap.apple_is_live(account):
         # Billed through the App Store; a web checkout would start a second subscription.
@@ -302,7 +311,7 @@ async def create_workspace_checkout(
         try:
             await BillingService().create_customer_for_owner(
                 owner_id=owner_id,
-                owner_type="org",
+                owner_type="org" if is_org_owner_id(owner_id) else "personal",
                 email=auth.email,
             )
         except Exception as e:  # noqa: BLE001
@@ -342,9 +351,9 @@ async def create_front_desk(
     auth: AuthContext = Depends(get_current_user),
 ):
     """The line itself is provisioned by the Stripe webhook, never by this click."""
-    require_org(auth)
     require_org_admin(auth)
     owner_id = resolve_owner_id(auth)
+    await _ensure_person_trial(auth)
     account = await _get_billing_account(auth)
     if apple_iap.apple_is_live(account):
         raise HTTPException(status_code=409, detail="apple_managed")
@@ -370,7 +379,7 @@ async def create_front_desk(
         try:
             await BillingService().create_customer_for_owner(
                 owner_id=owner_id,
-                owner_type="org",
+                owner_type="org" if is_org_owner_id(owner_id) else "personal",
                 email=auth.email,
             )
         except Exception as e:  # noqa: BLE001

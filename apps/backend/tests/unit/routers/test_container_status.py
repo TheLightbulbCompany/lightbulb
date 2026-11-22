@@ -456,7 +456,7 @@ class TestContainerStatusGate:
         assert result["container_status"] == "running"
 
     @pytest.mark.asyncio
-    async def test_personal_context_requires_workspace_before_provisioning(self):
+    async def test_non_session_token_without_org_has_no_status(self):
         from routers.container import container_status
 
         with pytest.raises(HTTPException) as exc_info:

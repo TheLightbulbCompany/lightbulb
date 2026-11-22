@@ -36,19 +36,14 @@ _TRIAL_STARTED_NAMESPACE = uuid.UUID("6f6c9f2e-2d5b-4a1c-9a3f-3d5c8e1b7a40")
 
 
 async def ensure_workspace_trial_default(auth: AuthContext, workspace_id: str) -> None:
-    """Create the active workspace's unarmed trial once.
+    """Create the caller's tenant's unarmed trial once: an org's, or a signed-in person's own.
 
     The conditional put selects one creator across members and backend instances.
     Existing trial analytics describe row creation; runtime readiness arms its clock.
-
-    Workspace-only, and the id prefix is checked FIRST: this function only ever
-    CREATES, and the product never provisions a new personal workspace, so a
-    ``user_``-prefixed id is a 403 rather than the 409 ``resolve_owner_id``
-    would raise for a caller with no org claim. That makes it impossible to
-    mint a ``trial_local`` row for a personal owner from any door.
+    A ``workspace_id`` other than the caller's tenant is a 403.
     """
-    if not is_org_owner_id(workspace_id) or resolve_owner_id(auth) != workspace_id:
-        raise HTTPException(status_code=403, detail="Workspace does not match the active organization")
+    if resolve_owner_id(auth) != workspace_id:
+        raise HTTPException(status_code=403, detail="Workspace does not match the caller's tenant")
     await _ensure_trial_row(workspace_id, actor_user_id=auth.user_id)
 
 
@@ -71,9 +66,10 @@ async def _ensure_trial_row(workspace_id: str, actor_user_id: str | None = None)
     capture_once_per_owner_per_day(
         owner_id=workspace_id, event="trial_start_requested", properties={}, distinct_id=actor_user_id
     )
+    owner_type = "org" if is_org_owner_id(workspace_id) else "personal"
     try:
         created = await billing_repo.create_trial_local_if_absent(
-            owner_id=workspace_id, owner_type="org", trial_end=None
+            owner_id=workspace_id, owner_type=owner_type, trial_end=None
         )
     except Exception as exc:
         capture_once_per_owner_per_day(
@@ -91,13 +87,13 @@ async def _ensure_trial_row(workspace_id: str, actor_user_id: str | None = None)
         capture_product_event(
             distinct_id=actor_user_id or workspace_id,
             event="trial_started",
-            properties={**source, "owner_type": "org", "workspace_id": workspace_id},
+            properties={**source, "owner_type": owner_type, "workspace_id": workspace_id},
             event_uuid=str(uuid.uuid5(_TRIAL_STARTED_NAMESPACE, f"{workspace_id}:{utc_today()}")),
         )
 
 
 async def provision_new_workspace(org_id: str, created_by: str | None = None) -> None:
-    """Clerk ``organization.created``: start the new workspace's first provision.
+    """Start a new tenant's first provision (the Clerk ``organization.created`` webhook for an org).
 
     Creates the trial row and dispatches. No billing gate: a workspace on the shared pool costs
     nothing until it runs, and every door that spends (chat, orb, phone) has its own gate. A
@@ -105,8 +101,6 @@ async def provision_new_workspace(org_id: str, created_by: str | None = None) ->
     workspace and a retry on a failed one. Anything else RAISES: this webhook is the only thing
     that starts a first provision, so a failure must make Svix redeliver the event.
     """
-    if not is_org_owner_id(org_id):
-        return
     try:
         await _ensure_trial_row(org_id, actor_user_id=created_by)
         row = await container_repo.get_by_owner_id(org_id, consistent=True) or {}
@@ -154,8 +148,9 @@ async def _ensure_owner_workspace(*, owner_id: str, owner_user_id: str) -> None:
     except Exception:  # noqa: BLE001 — partial retries reconcile again
         room_id = None
         logger.exception("ensure_user_ready: default room creation failed for owner=%s", owner_id)
-    if room_id:
-        # The owner's welcome, from the CEO, now that #general exists. Once-only via
+    if room_id and is_org_owner_id(owner_id):
+        # The owner's welcome, from the CEO, now that #general exists (an org's: it is sent from the
+        # team mailbox, which a person's tenant does not have yet). Once-only via
         # send_to_owner's first-contact claim, so a re-run here sends nothing.
         from core.services.welcome_email import send_owner_welcome
 

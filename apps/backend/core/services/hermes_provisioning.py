@@ -720,7 +720,9 @@ async def _ensure_network_member(owner_id: str) -> None:
     field existed would otherwise leave the gate off and hold every member's message).
     Best-effort: a network hiccup never fails a provision. On a fresh provision the roster is
     still empty here; ``write_profiles`` republishes it once the roster is seeded."""
-    if not settings.OWNER_STATE_BUCKET:
+    from core.auth import is_org_owner_id
+
+    if not settings.OWNER_STATE_BUCKET or not is_org_owner_id(owner_id):  # the network's workspace mode is org-only
         return
     from core.services import network_member
 

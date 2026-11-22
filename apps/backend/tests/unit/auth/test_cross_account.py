@@ -8,7 +8,7 @@ calls where a door writes them), carrying MARKER; then B, signed in, makes the c
   * token only: B's call succeeds, and no AWS call it makes names A either (B reads and writes only B's keys).
 `ok` overrides the expected statuses for a door whose answer to B is something else (the reason is beside it);
 `says` names the text that makes a refusal the tenant check rather than a generic one; `org_only` doors refuse a
-person (409 workspace_required) until a person's tenant can provision.
+person (409 workspace_required) for now.
 Each case runs twice (`tenants`): as personal accounts (no `o` claim) and as two orgs.
 
 `test_every_tenant_door_has_a_case` walks the app: a new door with no case fails (no sampling);
@@ -53,7 +53,6 @@ from core.repositories import (
 )
 from core.services import hermes_profiles, messaging, workspace_provisioning
 from core.services.credentials import integration_secret_store
-from core.services.provision_dispatch import dispatch_provision
 from core.temporal import client as temporal_client
 from core.voice import store
 from core.voice.phone import phone_pin
@@ -71,7 +70,7 @@ class Case:
     a_id: bool = False  # path id: B names A's resource
     ok: tuple[int, ...] = ()  # what this door answers B, when not the default
     says: str = ""  # text B's answer must carry: the refusal is the tenant check, not a generic one
-    org_only: bool = False  # provisions, buys or bills: a person with no org gets 409 until Task 2
+    org_only: bool = False  # mints, buys or bills: a person with no org gets 409 for now
     files: bool = False  # a multipart image upload
 
     def __str__(self) -> str:
@@ -694,12 +693,11 @@ CASES = [
     Case("company_slug", "POST", "/api/v1/company/slug/hold", {"slug": "acme-a"}, a_id=True, ok=(409,)),  # taken
     Case("company_slug", "POST", "/api/v1/company/slug/claim", {"slug": "held-a"}, a_id=True, ok=(409,), org_only=True),
     Case("company_slug", "POST", "/api/v1/company/source", {"source": "web"}),
-    # container: tenant = caller; the owner reads status and retries. B's own answers: an org's gate wants credits
-    # (402) and it has no container (404); a person is refused a trial row (403) and passes no provision gate
-    # (402) until user tenants provision (Task 2; test_no_org_caller_cannot_provision pins it).
-    Case("container", "GET", "/api/v1/container/status", ok=(402,), org_only=True),
-    Case("container", "POST", "/api/v1/container/provision", ok=(200, 403)),
-    Case("container", "POST", "/api/v1/container/retry", ok=(403, 404)),
+    # container: tenant = caller, an org or a person alike; the owner reads status, provisions and retries. B's own
+    # answers: B's gate wants credits (402), B's own provision starts (200), B has no container to retry (404).
+    Case("container", "GET", "/api/v1/container/status", ok=(402,)),
+    Case("container", "POST", "/api/v1/container/provision", ok=(200,)),
+    Case("container", "POST", "/api/v1/container/retry", ok=(404,)),
     Case("container", "POST", "/api/v1/browser/viewing", {}, ok=(402,)),
     Case("container", "POST", "/api/v1/browser/input", {"type": "key", "key": "a"}, ok=(409,)),  # no live page
     # connections: tenant = caller; the owner manages connections
@@ -935,12 +933,8 @@ async def test_org_claim_still_wins_interim(tenants):
     assert resolve_owner_id(ctx) == (b.org_id or b.user_id)
 
 
-# Every door that would provision, buy or bill for a person with no org, and what it answers.
+# Every door that would mint, buy or bill for a person with no org, and what it answers.
 REFUSED = [
-    ("GET", "/api/v1/container/status", None, 409),
-    ("POST", "/api/v1/container/provision", None, 403),
-    ("POST", "/api/v1/container/retry", None, 403),
-    ("POST", "/api/v1/debug/provision", None, 200),  # answers "provisioning"; dispatch_provision refuses
     ("POST", "/api/v1/billing/checkout", {"plan": "workspace"}, 409),
     ("POST", "/api/v1/billing/front-desk", {}, 409),
     ("POST", "/api/v1/billing/voice-plan/checkout", VOICE_PLAN, 409),
@@ -975,12 +969,12 @@ REFUSED = [
 
 
 @pytest.mark.parametrize(("method", "path", "body", "status"), REFUSED, ids=[f"{m} {p}" for m, p, _, _ in REFUSED])
-async def test_no_org_caller_reads_own_empty_data_and_cannot_provision(
+async def test_no_org_caller_reads_own_empty_data_and_cannot_mint_buy_or_bill(
     method, path, body, status, ddb, calls, jwks, monkeypatch
 ):
-    """Accepted exposure until user tenants provision (Task 2): a session with no org is the person's tenant on
-    every door. It reads its own, empty data; every door that would provision it, mint it a key or a line, or bill
-    it refuses, and nothing is written or sent for it."""
+    """A session with no org is the person's tenant on every door, and may provision it (see the container cases).
+    It reads its own, empty data; every door that would mint it a key or a line, or bill it, refuses for now, and
+    nothing is written or sent for it."""
     for name in ("LINK_CLIENT_ID", "LINK_CLIENT_SECRET", "LINK_PUBLISHABLE_KEY"):  # the wallet doors exist
         monkeypatch.setattr(settings, name, "test")
     person = Tenant("user_solo", None)
@@ -997,7 +991,6 @@ async def test_no_org_caller_reads_own_empty_data_and_cannot_provision(
     if status == 409:
         assert r.json()["detail"]["code"] == "workspace_required"
     assert not [c for c in calls if c[0] in ("stripe", "http", "fake")]
-    assert await dispatch_provision(person.user_id) is False
     assert await container_repo.get_by_owner_id(person.user_id) is None
     assert await billing_repo.get_by_owner_id(person.user_id) is None
     assert await company_slug_repo.get_by_owner(person.user_id) is None  # no company slug

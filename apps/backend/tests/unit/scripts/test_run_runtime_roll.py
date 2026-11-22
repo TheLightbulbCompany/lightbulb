@@ -68,10 +68,15 @@ def world():
     return SimpleNamespace(ecs=ecs, sts=sts, service=service, definition=definition, task=task, calls=calls)
 
 
-@pytest.mark.parametrize("owner", ["--all", "org_a; echo bad", "org_$(bad)", "user_123", "org_", "org_a/b"])
+@pytest.mark.parametrize("owner", ["--all", "org_a; echo bad", "org_$(bad)", "user_", "org_", "org_a/b", "user_a b"])
 def test_invalid_owner_cannot_become_a_shell_command_or_fleet_roll(owner):
     with pytest.raises(ValueError):
         mod.validate("prod", owner)
+
+
+def test_roll_accepts_user_owner():
+    mod.validate("prod", "user_123")
+    mod.validate("dev", OWNER)
 
 
 def test_only_main_workflow_identity_is_accepted():

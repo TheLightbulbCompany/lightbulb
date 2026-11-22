@@ -46,26 +46,24 @@ async def _seed_owner_workspace(owner_id: str) -> int:
     the runtime work. Returns an exit code from the runner's ABI (0 ok / 10 deterministic /
     11 transient).
 
-    The provisioner is the Clerk org CREATOR (``get_organization().created_by``): always an
-    admin, and a stable per-org choice (the dispatch carries only ``owner_id``). A missing
-    creator is a Clerk blip, so transient. A seed failure is classified like a runtime failure
-    (``classify_provision_error``). Org-only: a non-org owner is refused (deterministic).
+    The provisioner is the person for a user tenant, and for an org the Clerk org CREATOR
+    (``get_organization().created_by``): always an admin, and a stable per-org choice (the
+    dispatch carries only ``owner_id``). A missing creator is a Clerk blip, so transient. A seed
+    failure is classified like a runtime failure (``classify_provision_error``).
     """
     from core.auth import is_org_owner_id
     from core.repositories.container_repo import classify_provision_error
     from core.services import clerk_admin
     from core.services.user_provision import _ensure_workspace_for_org
 
-    if not is_org_owner_id(owner_id):
-        logger.error("seed step 0: owner %s is not a workspace (org) — refusing to provision", owner_id)
-        return EXIT_DETERMINISTIC
-
     try:
-        org = await clerk_admin.get_organization(owner_id)
-        creator_user_id = (org or {}).get("created_by")
-        if not creator_user_id:
-            logger.warning("seed step 0: org %s has no resolvable Clerk creator — deferring (transient)", owner_id)
-            return EXIT_TRANSIENT
+        creator_user_id = owner_id
+        if is_org_owner_id(owner_id):
+            org = await clerk_admin.get_organization(owner_id)
+            creator_user_id = (org or {}).get("created_by")
+            if not creator_user_id:
+                logger.warning("seed step 0: org %s has no resolvable Clerk creator — deferring (transient)", owner_id)
+                return EXIT_TRANSIENT
         await _ensure_workspace_for_org(org_id=owner_id, user_id=creator_user_id, is_admin=True)
     except Exception as exc:  # noqa: BLE001 — classified into the exit-code ABI
         logger.exception("seed step 0 (owner workspace) failed for owner %s", owner_id)
@@ -75,7 +73,6 @@ async def _seed_owner_workspace(owner_id: str) -> int:
 
 
 async def run(owner_id: str) -> int:
-    from core.auth import is_org_owner_id
     from core.observability.logging import bind_log_context
 
     bind_log_context(user_id=owner_id)
@@ -86,8 +83,12 @@ async def run(owner_id: str) -> int:
     # that boot-time change from the reconcile's restart decision (C1: a warm session kept
     # a bearer nothing restarts it off).
     from core.repositories import container_repo
+    from core.services.user_provision import _ensure_trial_row
 
     try:
+        # Every door creates the trial row before it dispatches; this covers one that did not (an
+        # admin or debug door), so the owner key is minted at the trial's daily cap, never the paid one.
+        await _ensure_trial_row(owner_id)
         row = await container_repo.get_by_owner_id(owner_id, consistent=True) or {}
         if not row.get("agentcore_runtime_arn"):
             await hermes_provisioning.prepare_hermes_workspace(owner_id)
@@ -96,13 +97,7 @@ async def run(owner_id: str) -> int:
 
     seed_exit = await _seed_owner_workspace(owner_id)
     if seed_exit == EXIT_DETERMINISTIC:
-        await _mark_error(
-            owner_id,
-            "provision refused: owner is not a workspace (org)"
-            if not is_org_owner_id(owner_id)
-            else "provision seed: owner workspace seed failed (see log)",
-            retryable=False,
-        )
+        await _mark_error(owner_id, "provision seed: owner workspace seed failed (see log)", retryable=False)
     if seed_exit != EXIT_OK:
         # A transient failure writes nothing: the machine retries it, and its MarkFailedExhausted
         # writes the error row if the retries run out (see _record_failure).
@@ -140,22 +135,26 @@ async def _drain_pending_brief(owner_id: str) -> None:
 
 
 async def _seat_workspace_rooms(owner_id: str) -> None:
-    """Step 0 just made the workspace active: seat every current teammate in ``#general``. A member
-    who joined before the room existed was missed by the ``organizationMembership.created`` webhook's
-    seat. Idempotent (a removed member is never re-seated: the AUTOJOIN marker stays). Never fails
-    the provision."""
+    """Step 0 just made the workspace active: seat every current teammate in ``#general`` (the
+    person alone for a user tenant). An org member who joined before the room existed was missed by
+    the ``organizationMembership.created`` webhook's seat. Idempotent (a removed member is never
+    re-seated: the AUTOJOIN marker stays). Never fails the provision."""
+    from core.auth import is_org_owner_id
     from core.observability.metrics import put_metric
     from core.services.clerk_admin import list_organization_members
     from core.services.messaging import join_default_room
 
     try:
-        for member in await list_organization_members(owner_id):
+        people = (
+            [m["user_id"] for m in await list_organization_members(owner_id)]
+            if is_org_owner_id(owner_id)
+            else [owner_id]
+        )
+        for user_id in people:
             try:
-                await join_default_room(owner_id, member["user_id"])
+                await join_default_room(owner_id, user_id)
             except Exception:  # noqa: BLE001
-                logger.exception(
-                    "provision: default room join failed for owner %s user %s", owner_id, member["user_id"]
-                )
+                logger.exception("provision: default room join failed for owner %s user %s", owner_id, user_id)
                 put_metric("messaging.default_room.error")
     except Exception:  # noqa: BLE001 — a roster read failure never fails the provision
         logger.exception("provision: teammate roster read failed for owner %s", owner_id)

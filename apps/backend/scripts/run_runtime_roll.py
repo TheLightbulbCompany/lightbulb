@@ -22,8 +22,8 @@ WAIT_S, POLL_S = 900, 10
 
 
 def validate(environment: str, owner_id: str) -> None:
-    if environment not in {"dev", "prod"} or not re.fullmatch(r"org_[A-Za-z0-9]{1,100}", owner_id):
-        raise ValueError("one dev/prod workspace org ID is required")
+    if environment not in {"dev", "prod"} or not re.fullmatch(r"(org|user)_[A-Za-z0-9]{1,100}", owner_id):
+        raise ValueError("one dev/prod owner ID (org_ or user_) is required")
 
 
 def run_key(environ=os.environ) -> str:

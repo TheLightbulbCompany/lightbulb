@@ -20,7 +20,6 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from core.auth import WORKSPACE_REQUIRED_CODE, WORKSPACE_REQUIRED_MESSAGE, is_org_owner_id
 from core.observability.metrics import put_metric
 from core.observability.product_analytics import capture_once_per_owner_per_day
 from core.repositories import billing_repo
@@ -380,7 +379,6 @@ async def _evaluate_provision_gate_inner(
     and this only answers ``/container/status``. Phone is not judged here: going live needs the
     voice plan (``voice_onboarding.provision_at_go_live`` refuses with ``voice_payment_required``).
 
-    0. The owner must be a workspace (Clerk org).
     1. No billing row: not provisioned yet, so nothing to pay for (the provision writes the trial).
        A row must be live: the free trial counts, as does a paid voice plan.
     2. The spend guards on the provider the runtime will really use (``provider_choice_from_row``):
@@ -389,19 +387,6 @@ async def _evaluate_provision_gate_inner(
     3. That provider's own sign-in: ChatGPT tokens for the connector, a legacy BYO row's provider.
     """
     owner_role = "admin" if is_admin else "member"
-
-    # Layer 0 — workspace. Product APIs 409 a caller with no org claim in resolve_owner_id before
-    # they get here; this is what a server-side door handed a stale user_ id sees.
-    if not is_org_owner_id(owner_id):
-        return Gate(
-            code=WORKSPACE_REQUIRED_CODE,
-            title="Choose a workspace",
-            message=WORKSPACE_REQUIRED_MESSAGE,
-            action_label="Choose workspace",
-            action_href="/onboarding",
-            action_admin_only=False,
-            owner_role=owner_role,
-        )
 
     # Layer 1 — a live subscription (the trial included).
     account = await billing_repo.get_by_owner_id(owner_id)

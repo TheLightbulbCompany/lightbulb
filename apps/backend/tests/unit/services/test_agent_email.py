@@ -96,10 +96,10 @@ def team(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_ensure_team_address_reuses_the_existing_row(monkeypatch, team):
-    monkeypatch.setattr(ae.agent_email_repo, "get_by_address", AsyncMock(return_value={"owner_id": "o"}))
+    monkeypatch.setattr(ae.agent_email_repo, "get_by_address", AsyncMock(return_value={"owner_id": "org_o"}))
     put = AsyncMock()
     monkeypatch.setattr(ae.agent_email_repo, "put", put)
-    assert await ae.ensure_team_address("o", "o@x.y") == (TEAM, "ok")
+    assert await ae.ensure_team_address("org_o", "o@x.y") == (TEAM, "ok")
     put.assert_not_called()
 
 
@@ -107,12 +107,12 @@ async def test_ensure_team_address_reuses_the_existing_row(monkeypatch, team):
 async def test_ensure_team_address_creates_the_one_row(monkeypatch, team):
     monkeypatch.setattr(ae.agent_email_repo, "get_by_address", AsyncMock(return_value=None))
     monkeypatch.setattr(ae.agent_email_repo, "query_by_owner", AsyncMock(return_value=[]))
-    put = AsyncMock(return_value={"owner_id": "o"})
+    put = AsyncMock(return_value={"owner_id": "org_o"})
     monkeypatch.setattr(ae.agent_email_repo, "put", put)
-    assert await ae.ensure_team_address("o", "o@x.y") == (TEAM, "ok")
+    assert await ae.ensure_team_address("org_o", "o@x.y") == (TEAM, "ok")
     assert put.await_args.kwargs == {
         "address": TEAM,
-        "owner_id": "o",
+        "owner_id": "org_o",
         "verified_senders": ["o@x.y"],
         "send_to_anyone": True,
     }
@@ -121,7 +121,7 @@ async def test_ensure_team_address_creates_the_one_row(monkeypatch, team):
 @pytest.mark.asyncio
 async def test_ensure_team_address_refuses_another_owners_row(monkeypatch, team):
     monkeypatch.setattr(ae.agent_email_repo, "get_by_address", AsyncMock(return_value={"owner_id": "other"}))
-    assert await ae.ensure_team_address("o", "o@x.y") == (None, "mint_failed")
+    assert await ae.ensure_team_address("org_o", "o@x.y") == (None, "mint_failed")
 
 
 @pytest.mark.asyncio
@@ -131,8 +131,8 @@ async def test_ensure_team_address_slug_derives_from_workspace_name(monkeypatch,
     monkeypatch.setattr(ae, "workspace_name", AsyncMock(return_value="Renamed By Friday"))
     slug = AsyncMock(return_value="renamed")
     monkeypatch.setattr(ae, "allocate_company_slug", slug)
-    monkeypatch.setattr(ae.agent_email_repo, "get_by_address", AsyncMock(return_value={"owner_id": "o"}))
-    assert await ae.ensure_team_address("o", None) == ("agents@renamed.thelightbulb.company", "ok")
+    monkeypatch.setattr(ae.agent_email_repo, "get_by_address", AsyncMock(return_value={"owner_id": "org_o"}))
+    assert await ae.ensure_team_address("org_o", None) == ("agents@renamed.thelightbulb.company", "ok")
     assert slug.await_args.kwargs["name"] == "Renamed By Friday"
 
 
@@ -140,9 +140,20 @@ async def test_ensure_team_address_slug_derives_from_workspace_name(monkeypatch,
 async def test_ensure_team_address_reasons(monkeypatch, team):
     monkeypatch.setattr(ae.company_slug_repo, "get_by_owner", AsyncMock(return_value=None))
     monkeypatch.setattr(ae, "allocate_company_slug", AsyncMock(return_value=None))
-    assert await ae.ensure_team_address("o", None) == (None, "slug_allocation_failed")
+    assert await ae.ensure_team_address("org_o", None) == (None, "slug_allocation_failed")
     monkeypatch.setattr(ae.settings, "AGENT_EMAIL_DOMAIN", "")
-    assert await ae.ensure_team_address("o", None) == (None, "disabled")
+    assert await ae.ensure_team_address("org_o", None) == (None, "disabled")
+
+
+@pytest.mark.asyncio
+async def test_ensure_team_address_mints_nothing_for_a_person(monkeypatch, team):
+    """A person's tenant has no team address yet: no slug is allocated and no row is written."""
+    slug, put = AsyncMock(return_value="solo"), AsyncMock()
+    monkeypatch.setattr(ae, "allocate_company_slug", slug)
+    monkeypatch.setattr(ae.agent_email_repo, "put", put)
+    assert await ae.ensure_team_address("user_o", "o@x.y") == (None, "disabled")
+    slug.assert_not_awaited()
+    put.assert_not_awaited()
 
 
 @pytest.mark.asyncio

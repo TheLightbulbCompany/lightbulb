@@ -402,8 +402,12 @@ machine (`provision_dispatch.dispatch_provision`) runs `scripts/provision_runner
 `prepare_hermes_workspace` (tokens and boot values), `_seed_owner_workspace` (the workspace row and the six-agent
 roster in `agent_registry`, role-keyed uuid5 ids, so concurrent runs converge), then
 `provision_hermes_runtime`, which writes every roster profile to S3 and records the pool ARN, with no
-`CreateAgentRuntime`. Every step is idempotent; there is no lease. Every owner is a Clerk org; every provisioning
-door refuses a personal (`user_`) owner. Per-owner runtimes are legacy (about 25 remain, being retired by exact
+`CreateAgentRuntime`. Every step is idempotent; there is no lease. An owner is a Clerk org or a single person (a
+`user_` id; founder ruling, 20 Nov 2026: one account is one user, workspaces go). A person is provisioned like an
+org, as their own provisioner, through `GET /container/status`, `POST /container/provision` and
+`POST /container/retry`; every door that mints a credential, number, mailbox, grant or paid thing still calls
+`require_org` until the later tasks of the accounts-without-workspaces plan, and tearing down a person's tenant on
+`user.deleted` is that plan's next task. Per-owner runtimes are legacy (about 25 remain, being retired by exact
 allowlist; their identity seeds are kept until network identity custody has a replacement).
 
 ### Hermes image and rollout
@@ -462,7 +466,8 @@ source of truth for settings, but several modules read `os.getenv` directly. Run
 this file keeps the why, not inventories.
 
 - Auth is Clerk JWT (`core/auth.py`, `get_current_user` → `AuthContext`; JWKS cached 5 minutes, fails closed after
-  15 minutes stale). `resolve_owner_id` returns 409 `workspace_required` for any caller with no org claim.
+  15 minutes stale). `resolve_owner_id` returns the org, else the signed-in person; 409 `workspace_required` only
+  for a non-session token with no org.
 - `owner_lifecycle.py` is a DynamoDB conditional-write lease on the path that writes an owner's credentials. It
   fails closed.
 - New Clerk calls go through `clerk_admin.py`; `routers/billing.py` and `routers/desktop_auth.py` still call

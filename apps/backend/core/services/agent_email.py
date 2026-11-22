@@ -19,6 +19,7 @@ import logging
 import re
 from email.utils import formataddr
 
+from core.auth import is_org_owner_id
 from core.config import settings
 from core.repositories import agent_email_repo, company_slug_repo
 from core.services import agent_registry
@@ -143,10 +144,11 @@ async def ensure_team_address(owner_id: str, owner_email: str | None) -> tuple[s
     (``send_to_anyone``) unless the owner still has legacy per-agent rows: then
     it is born with the strictest of their settings, so closed email or a
     complaint pause never reopens. An existing row is never rewritten, so the
-    owner's settings survive. Never raises.
+    owner's settings survive. Never raises. A person's tenant (``user_``) has no
+    team address yet: "disabled", and no company slug is allocated.
     """
     try:
-        if not _domain():
+        if not _domain() or not is_org_owner_id(owner_id):
             return None, "disabled"
         address = await team_address(owner_id)
         if not address:

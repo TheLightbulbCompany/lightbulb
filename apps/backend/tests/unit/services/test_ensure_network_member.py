@@ -39,3 +39,16 @@ async def test_a_missing_sessions_file_is_written(monkeypatch):
 async def test_a_failure_never_raises(monkeypatch):
     monkeypatch.setattr(network_member, "sessions_exist", AsyncMock(side_effect=RuntimeError("s3")))
     await hermes_provisioning._ensure_network_member("org_x")
+
+
+@pytest.mark.asyncio
+async def test_a_person_joins_no_network(monkeypatch):
+    """The network's workspace mode is org-only: a person's tenant gets no sessions file and no wake token."""
+    exists, publish, write = AsyncMock(), AsyncMock(), AsyncMock()
+    monkeypatch.setattr(network_member, "sessions_exist", exists)
+    monkeypatch.setattr(network_member, "publish_sessions", publish)
+    monkeypatch.setattr(network_member, "write_sessions", write)
+    await hermes_provisioning._ensure_network_member("user_x")
+    exists.assert_not_awaited()
+    publish.assert_not_awaited()
+    write.assert_not_awaited()

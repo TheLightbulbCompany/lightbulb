@@ -199,6 +199,7 @@ async def test_a_full_provision_run_seeds_the_voice_workspace_with_no_outbound_h
     monkeypatch.setattr(welcome_email, "send_owner_welcome", AsyncMock())
     monkeypatch.setattr(onboarding_brief, "reconcile_pending_brief", AsyncMock())
     monkeypatch.setattr(billing_repo, "arm_trial_if_unset", AsyncMock())
+    monkeypatch.setattr("core.services.user_provision._ensure_trial_row", AsyncMock())
 
     assert await provision_runner.run(ORG) == provision_runner.EXIT_OK
 

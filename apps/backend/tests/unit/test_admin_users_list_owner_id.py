@@ -50,7 +50,7 @@ async def test_list_users_dedupes_container_lookup_for_same_org_members():
         }
 
     # Both users are in the same org → both resolve to owner_id "org_abc".
-    async def fake_list_orgs(user_id, *, limit=25):  # noqa: ARG001
+    async def fake_list_orgs(user_id, *, limit=25, strict=False):  # noqa: ARG001
         return [ORG_FIXTURE]
 
     container_mock = AsyncMock(return_value={"status": "running"})
@@ -93,7 +93,7 @@ async def test_list_users_personal_mode_looks_up_container_by_user_id():
             "stubbed": False,
         }
 
-    async def fake_list_orgs(user_id, *, limit=25):  # noqa: ARG001
+    async def fake_list_orgs(user_id, *, limit=25, strict=False):  # noqa: ARG001
         return []
 
     container_mock = AsyncMock(return_value={"status": "running"})
@@ -132,7 +132,7 @@ async def test_list_users_mixed_page_resolves_each_row_correctly():
             "stubbed": False,
         }
 
-    async def fake_list_orgs(user_id, *, limit=25):  # noqa: ARG001
+    async def fake_list_orgs(user_id, *, limit=25, strict=False):  # noqa: ARG001
         if user_id == "user_member":
             return [ORG_FIXTURE]
         return []
@@ -195,7 +195,7 @@ async def test_list_users_falls_back_to_personal_mode_when_clerk_errors_for_one_
             "stubbed": False,
         }
 
-    async def fake_list_orgs(user_id, *, limit=25):  # noqa: ARG001
+    async def fake_list_orgs(user_id, *, limit=25, strict=False):  # noqa: ARG001
         if user_id == "user_flaky":
             raise RuntimeError("clerk 503")
         return [ORG_FIXTURE]
@@ -252,7 +252,7 @@ async def test_list_users_reads_subscription_status_from_billing_not_container()
             "stubbed": False,
         }
 
-    async def fake_list_orgs(user_id, *, limit=25):  # noqa: ARG001
+    async def fake_list_orgs(user_id, *, limit=25, strict=False):  # noqa: ARG001
         return []
 
     # Container row is deliberately WITHOUT plan_tier — which matches reality,
@@ -293,7 +293,7 @@ async def test_list_users_subscription_status_is_none_when_no_billing_row():
             "stubbed": False,
         }
 
-    async def fake_list_orgs(user_id, *, limit=25):  # noqa: ARG001
+    async def fake_list_orgs(user_id, *, limit=25, strict=False):  # noqa: ARG001
         return []
 
     container_mock = AsyncMock(return_value=None)

@@ -618,9 +618,10 @@ class TestPollOrgClaim:
         mock_claim.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_poll_personal_bound_session_does_not_claim(self, async_client):
-        """Personal /poll of a personally-bound session: no org claim (a personal
-        binding never names an org). /poll passes no binding arg."""
+    async def test_oauth_poll_claims_user_tenant(self, async_client, override_auth):
+        """A person with no org is their own tenant: their completed sign-in claims
+        their own tenant's connection, and no other."""
+        override_auth(AuthContext(user_id="user_test_123", human_session=True))
         with (
             patch(
                 "routers.oauth.poll_device_code",
@@ -633,8 +634,8 @@ class TestPollOrgClaim:
         ):
             resp = await async_client.post("/api/v1/oauth/chatgpt/poll")
         assert resp.status_code == 200
-        mock_poll.assert_awaited_once_with(user_id="user_test_123", authorized_owner_id="org_test_456")
-        mock_claim.assert_not_awaited()
+        mock_poll.assert_awaited_once_with(user_id="user_test_123", authorized_owner_id="user_test_123")
+        mock_claim.assert_awaited_once_with("user_test_123", connector_user_id="user_test_123")
 
 
 class TestDisconnectOrgRules:

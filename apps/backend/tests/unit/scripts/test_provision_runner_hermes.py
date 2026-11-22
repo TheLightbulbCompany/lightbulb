@@ -14,7 +14,7 @@ async def _ok(owner_id, **kwargs):
     return provision_runner.EXIT_OK
 
 
-async def _refuses_non_org(owner_id, **kwargs):
+async def _seed_fails(owner_id, **kwargs):
     return provision_runner.EXIT_DETERMINISTIC
 
 
@@ -33,16 +33,17 @@ def runner_env(monkeypatch):
     monkeypatch.setattr(_repo_module, "get_by_owner_id", AsyncMock(return_value=None))
     monkeypatch.setattr("core.services.onboarding_brief.reconcile_pending_brief", AsyncMock())
     monkeypatch.setattr("core.repositories.billing_repo.arm_trial_if_unset", AsyncMock())
+    monkeypatch.setattr("core.services.user_provision._ensure_trial_row", AsyncMock())
     return _repo_module
 
 
 @pytest.mark.asyncio
-async def test_step_0_still_runs_and_still_refuses_a_non_org_owner(monkeypatch, runner_env):
+async def test_a_failed_step_0_records_the_seed_error_and_skips_the_runtime(monkeypatch, runner_env):
     monkeypatch.setattr(provision_runner.hermes_provisioning, "prepare_hermes_workspace", AsyncMock())
     monkeypatch.setattr(provision_runner.hermes_provisioning, "provision_hermes_runtime", _explodes_if_called)
-    monkeypatch.setattr(provision_runner, "_seed_owner_workspace", _refuses_non_org)
+    monkeypatch.setattr(provision_runner, "_seed_owner_workspace", _seed_fails)
     assert await provision_runner.run("user_a") == 10
-    assert "not a workspace" in runner_env.mark_provision_error.await_args.kwargs["last_error"]
+    assert "seed failed" in runner_env.mark_provision_error.await_args.kwargs["last_error"]
 
 
 # --- M4-R33: hook_token must exist BEFORE step 0 seeds the roster (the exact bug) ----------

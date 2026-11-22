@@ -10,7 +10,7 @@ from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
-from core.auth import AuthContext, get_current_user, require_org, resolve_owner_id
+from core.auth import AuthContext, get_current_user, resolve_owner_id
 from core.config import settings
 from core.services import browser_control, browser_extensions, readiness_state
 from core.repositories import container_repo
@@ -65,7 +65,6 @@ async def _assert_provision_allowed(
 async def container_status(
     auth: AuthContext = Depends(get_current_user),
 ):
-    require_org(auth)  # a person has no workspace to report until their tenant can provision
     owner_id = resolve_owner_id(auth)
     # One paperclip-companies read, threaded into both compute_status calls below.
     onboarding = await readiness_state.resolve_onboarding_state(owner_id)

@@ -126,6 +126,18 @@ async def test_schedule_fire_starts_task_deterministically(env):
     assert row["activeRunTaskId"] == row["lastTaskId"] == trigger.ref["taskId"]
 
 
+async def test_a_tenant_owned_automation_fires_with_nobody_behind_it(env):
+    """Proposed from mail or text (its requester was the tenant): the fire says so, so the task's clamp shows it to
+    the workspace instead of to a person id nobody holds. A person's automation, or a Run now, names a person."""
+    await _active(sid="s1", ownerUserId=WS, deliverTo="none")
+    await _active(sid="s2", ownerUserId="user_sam", deliverTo="none")
+    await fire_automation(_sched_input("s1"), _ms("2027-01-04T14:00:00+00:00"))
+    await fire_automation(_sched_input("s2"), _ms("2027-01-04T14:00:00+00:00"))
+    (tenant, _), (person, _) = env.enqueued
+    assert (tenant.actor_user_id, tenant.actor_kind, tenant.ref["start"]["visibility"]) == (WS, "system", "person")
+    assert (person.actor_user_id, person.actor_kind) == ("user_sam", None)
+
+
 async def test_run_overlap_skipped(env):
     await _active()
     assert await repo.claim_run(WS, "s1", "t-running")

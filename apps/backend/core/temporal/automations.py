@@ -386,6 +386,8 @@ async def fire_automation(inp: FireInput, at_ms: int) -> str:
         # Run now carries the person who pressed it; a Schedule or webhook fire has nobody behind it, so the
         # automation's owner is the actor and the task lands in that person's lane (or the deliverTo room).
         actor_user_id=inp.actor_user_id or row["ownerUserId"],
+        # An automation the tenant owns (proposed from mail or text, armed with no person) has nobody behind it
+        actor_kind="system" if not inp.actor_user_id and row["ownerUserId"] == ws else None,
         received_at=now,
         created_at=now,
         updated_at=now,

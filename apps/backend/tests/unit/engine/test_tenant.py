@@ -145,3 +145,15 @@ async def test_person_actor_on_user_tenant_shows_to_person(world, ws):  # noqa: 
     trig = {**_MAIL, "actorUserId": me}
     task = await acts._ensure_task(ws, ts.new_task_id(), trig, "shared", "queued", title="x", visibility="person")
     assert _audience(task) == ("person", [me], None)
+
+
+@pytest.mark.parametrize("ws,viewer", [("org_1", "user_sam"), ("user_solo", "user_solo")])
+async def test_a_tenant_owned_automation_fire_is_visible(world, ws, viewer):  # noqa: F811
+    """A fire of an automation the tenant owns (proposed from mail): its person-visible task goes to the workspace,
+    which the tenant's people can see (not `userIds=[org_…]`, which nobody can)."""
+    from core.services import tasks_access
+
+    fire = {"triggerId": "sched:s1:1", "source": "schedule", "ref": {}, "actorUserId": ws, "actorKind": "system"}
+    task = await acts._ensure_task(ws, ts.new_task_id(), fire, "shared", "queued", title="x", visibility="person")
+    assert _audience(task) == ("workspace", [], None)
+    assert await tasks_access.can_view(task, viewer, member=True)

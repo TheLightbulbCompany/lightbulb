@@ -12,7 +12,7 @@ import logging
 
 from fastapi import APIRouter, WebSocket
 
-from core.engine import api
+from core.engine import engine
 from core.observability.metrics import put_metric
 from core.voice import livekit_huddles
 from core.voice.meetings import meet_bridge
@@ -26,7 +26,7 @@ async def _authorized(room: str, ticket: str) -> bool:
     found = livekit_huddles.verify_meet_ticket(ticket, livekit_huddles.AUDIO_TICKET)
     if not found or found[0] != room:
         return False
-    conv = await api.find_conversation(room)
+    conv = await engine.find_conversation(room)
     meeting = (conv.annotations.get("meeting") if conv else None) or {}
     return (
         bool(meeting.get("recallBotId"))

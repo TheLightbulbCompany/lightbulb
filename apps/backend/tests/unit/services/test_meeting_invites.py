@@ -13,6 +13,7 @@ from core.auth import AuthContext
 from core.repositories import messaging_repo
 from core.services import messaging as engine_messaging
 from core.voice.meetings import meeting_invites
+from core.engine import api as engine_api  # the engine side, in this process on either transport
 from tests.unit.repositories.test_messaging_repo import FRIDAY, OWNER, USER_A, _member, table  # noqa: F401
 
 GOOGLE = "\r\n".join(
@@ -1864,7 +1865,7 @@ async def test_team_mail_for_room_deleted_mid_flight_is_acknowledged(room, bots,
     assert await meeting_invites.handle_team_mail("org_1", _mail(GOOGLE), TEAM) == "meeting_scheduled"
     lines, before = len(_lines(room)), dict(room.state["meta"]["meeting"])
     room.accept.reset_mock()
-    monkeypatch.setattr(meeting_invites.api, "annotate", AsyncMock(side_effect=meeting_invites.api._not_found()))
+    monkeypatch.setattr(meeting_invites.engine, "annotate", AsyncMock(side_effect=engine_api._not_found()))
     assert await meeting_invites.handle_team_mail("org_1", _mail(MOVED), TEAM) == "meeting_stale"
     assert room.state["meta"]["meeting"] == before and len(_lines(room)) == lines
     bots.create.assert_awaited_once()  # the first delivery's bot only
@@ -1905,8 +1906,8 @@ async def test_changed_occurrence_of_a_deleted_series_is_ignored(room, bots, mon
         "recurrence": meeting_invites.parse(SERIES).recurrence,
     }}}  # fmt: skip
     room.get.side_effect = rows.get
-    write = AsyncMock(wraps=meeting_invites.api.annotate)
-    monkeypatch.setattr(meeting_invites.api, "annotate", write)
+    write = AsyncMock(wraps=meeting_invites.engine.annotate)
+    monkeypatch.setattr(meeting_invites.engine, "annotate", write)
     assert await meeting_invites.handle_team_mail("org_1", _mail(ONE_OCCURRENCE), TEAM) == "meeting_ignored"
     write.assert_not_awaited()  # refused on the series' deleted record, before any write is tried
     room.create.assert_not_awaited()

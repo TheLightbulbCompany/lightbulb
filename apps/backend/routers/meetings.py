@@ -16,7 +16,7 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
 
 from core.billing import voice_billing
 from core.config import settings
-from core.engine import api
+from core.engine import engine
 from core.engine.contract import LineIn, Principal
 from core.observability.metrics import put_metric
 from core.repositories import billing_repo
@@ -160,7 +160,7 @@ async def _on_status(
     target = _TARGET[code]
     async with meeting_invites.meeting_lease(room_id):
         # a room deleted mid-call still runs its end (metered, notes, the LiveKit room closed); its writes are refused
-        conv = await api.find_conversation(room_id, include_deleted=True)
+        conv = await engine.find_conversation(room_id, include_deleted=True)
         if not conv:
             return  # a room this environment lacks: another environment's (untagged) bot, never ejected
         owner_id, meeting = conv.tenant_id, conv.annotations.get("meeting") or {}
@@ -370,7 +370,7 @@ async def _speaker(bot_id: str, room_id: str, event: dict) -> None:
     """Relays one event with the roster. The roster lives on META because Meet sends a join once,
     often before the worker is in the room; every event carries it so a late worker catches up."""
     try:
-        conv = await api.find_conversation(room_id)
+        conv = await engine.find_conversation(room_id)
         meeting = (conv.annotations.get("meeting") if conv else None) or {}
         if meeting.get("recallBotId") != bot_id:
             return  # a stale or rebooked bot pushes nothing into the room (a gone room has none)
@@ -423,7 +423,7 @@ async def _chat(bot_id: str, room_id: str, data: dict, nonce: str) -> None:
     except (KeyError, ValueError, TypeError):
         return  # chat without an occurrence timestamp cannot safely execute work
     async with meeting_invites.meeting_lease(room_id):
-        conv = await api.find_conversation(room_id)
+        conv = await engine.find_conversation(room_id)
         meeting = (conv.annotations.get("meeting") if conv else None) or {}
         if (
             not conv
@@ -436,11 +436,11 @@ async def _chat(bot_id: str, room_id: str, data: dict, nonce: str) -> None:
             or at > time.time() + 30
         ):
             return
-        seated = await api.get_conversation(conv.tenant_id, room_id, with_members=True)
+        seated = await engine.get_conversation(conv.tenant_id, room_id, with_members=True)
         member = inviting_member(meeting, seated.members if seated else [])
         if not member:
             return
-        await api.append_line(
+        await engine.append_line(
             LineIn(
                 tenant_id=conv.tenant_id,
                 conversation_id=room_id,
@@ -489,7 +489,9 @@ async def leave(room_id: str, body: RoomBody):
     owner_id = body.ownerId
     try:
         async with meeting_invites.meeting_lease(room_id):
-            conv = await api.get_conversation(owner_id, room_id, include_deleted=True)  # deleted mid-call: still ends
+            conv = await engine.get_conversation(
+                owner_id, room_id, include_deleted=True
+            )  # deleted mid-call: still ends
             if not conv:
                 raise _problem(404, "room_not_found")
             meeting = conv.annotations.get("meeting") or {}

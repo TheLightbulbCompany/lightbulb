@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import logging
 
-from core.engine import api
+from core.engine import engine
 from core.engine.contract import EventIn, Principal
 from core.voice.meetings import meeting_context
 
@@ -36,7 +36,7 @@ async def enqueue(owner_id: str, request_id: str, request: dict) -> bool:
         await meeting_context.authorize(owner_id, {"actorUserId": principal, "ref": ref})
     except meeting_context.NotAuthorized:
         return False
-    return (await api.submit_event(event)).created
+    return (await engine.submit_event(event)).created
 
 
 async def record_task(owner_id: str, task: dict) -> bool:
@@ -55,14 +55,14 @@ async def _record_task(owner_id: str, task: dict) -> bool:
     trigger_id = str(task.get("triggerId") or "")
     if not trigger_id.startswith("meeting-followups:") or task.get("pk") != f"WS#{owner_id}":
         return False
-    trigger = await api.get_trigger(owner_id, trigger_id) or {}
+    trigger = await engine.get_trigger(owner_id, trigger_id) or {}
     completion = (trigger.get("ref") or {}).get("meetingFollowups") or {}
     room_id, occurrence = completion.get("meetingRoomId"), completion.get("occurrence")
     if not room_id or occurrence is None or not trigger.get("actorUserId") or task.get("origin") != "meeting":
         return False
     from core.voice.meetings import meeting_invites
 
-    conv = await api.get_conversation(owner_id, room_id)
+    conv = await engine.get_conversation(owner_id, room_id)
     if not conv or not meeting_context.occurrence_entry(conv.annotations.get("meeting") or {}, occurrence):
         return False
     states = {
@@ -103,7 +103,7 @@ async def _record_task(owner_id: str, task: dict) -> bool:
 async def clarification(owner_id: str, trigger: dict, task_id: str, text: str, options: list[str]) -> tuple[str, dict]:
     """A model-selected question uses the existing authenticated Questions owner, never a plain reply grant."""
     request = await meeting_context.authorize(owner_id, trigger)
-    room = await api.get_conversation(owner_id, request["roomId"])
+    room = await engine.get_conversation(owner_id, request["roomId"])
     entry = meeting_context.occurrence_entry(
         (room.annotations.get("meeting") if room else None) or {}, request["occurrence"]
     )

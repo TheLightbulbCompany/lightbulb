@@ -14,7 +14,7 @@ import uuid
 from datetime import datetime
 
 from core.dynamodb import run_in_thread
-from core.engine import api
+from core.engine import engine
 from core.engine.contract import Principal, StartIn, start_task_id
 from core.observability.metrics import put_metric
 from core.repositories import container_repo
@@ -193,7 +193,7 @@ async def _notes(owner_id: str, room_id: str, meeting: dict, occurrence) -> None
 
             principal = None
             if meeting.get("invitedBy"):
-                conv = await api.get_conversation(owner_id, room_id, with_members=True, include_deleted=True)
+                conv = await engine.get_conversation(owner_id, room_id, with_members=True, include_deleted=True)
                 principal = inviting_member(meeting, conv.members if conv else [])
             trigger_id = f"{NOTES_PREFIX}{room_id}:{occurrence}"
             task_id = start_task_id(trigger_id)
@@ -204,7 +204,7 @@ async def _notes(owner_id: str, room_id: str, meeting: dict, occurrence) -> None
                 "roomId": room_id, "occurrence": occurrence, "targetRoomId": target, "agentId": writer,
                 "taskId": task_id, "meeting": snapshot, **({"principalUserId": principal} if principal else {}),
             })  # fmt: skip
-            await api.start_task(_notes_start(owner_id, trigger_id, target, title, writer, principal, meeting))
+            await engine.start_task(_notes_start(owner_id, trigger_id, target, title, writer, principal, meeting))
             await meeting_invites._patch_meeting(owner_id, room_id, {"notesRunId": task_id}, when=this_occurrence)
             return
     if meeting.get("notesRunId"):
@@ -250,7 +250,7 @@ def _notes_start(
 
 async def _notes_writer(owner_id: str, room_id: str) -> str | None:
     """The agent the notes task runs as: the output room's front agent (Lightbulb). None when it has none."""
-    return await api.get_front_agent(owner_id, room_id)
+    return await engine.get_front_agent(owner_id, room_id)
 
 
 def _transcript_room(request: dict) -> str:
@@ -334,7 +334,7 @@ async def on_task_moved(task: dict, to: str) -> None:
             return  # not this task's, or its notes are kept (the claim is spent only then)
         notes = None
         if to == "idle":
-            tree = await api.get_task(owner_id, task["taskId"], tree=True)
+            tree = await engine.get_task(owner_id, task["taskId"], tree=True)
             done = [
                 a for a in tree.get("attempts") or []
                 if a.get("outcome") == "completed" and (a.get("output") or "").strip()
@@ -466,7 +466,7 @@ def same_action(item: str, task: dict) -> bool:
 async def _meeting_tasks(owner_id: str, room_id: str, since: int, until: int) -> list[dict]:
     """The meeting room's tasks started during this occurrence (open or done): the tasks holding, or that
     held, the room's threads (`list_room_threads`), never a workspace-wide scan."""
-    rows = await api.list_conversation_tasks(owner_id, room_id)
+    rows = await engine.list_conversation_tasks(owner_id, room_id)
 
     def in_call(row: dict) -> bool:
         try:

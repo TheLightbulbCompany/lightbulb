@@ -5,7 +5,7 @@ import asyncio
 import logging
 
 from core.config import settings
-from core.engine import api
+from core.engine import engine
 from core.voice import livekit_huddles
 from core.voice.meetings import meeting_bots, meeting_invites
 
@@ -77,7 +77,7 @@ async def task_moved(task: dict, to: str) -> None:
             return  # completion work belongs to its original notes, never a newly active Meet
         if audience.get("kind") != "room" or not room_id:
             return  # live provider delivery remains room-only
-        conv = await api.get_conversation(owner_id, room_id)
+        conv = await engine.get_conversation(owner_id, room_id)
         if not conv or not conv.annotations.get("meeting"):
             return
         current_changed = False
@@ -122,7 +122,7 @@ async def _result_occurrence(owner_id: str, task: dict, room_id: str, meeting: d
     record of `owner_id`'s room `room_id`."""
     if task.get("origin") != "meeting" or task.get("pk") != f"WS#{owner_id}":
         return None
-    trigger = await api.get_trigger(owner_id, task.get("triggerId")) if task.get("triggerId") else None
+    trigger = await engine.get_trigger(owner_id, task.get("triggerId")) if task.get("triggerId") else None
     ref = (trigger or {}).get("ref") or {}
     if ref.get("roomId") != room_id or ref.get("origin") != "meeting" or ref.get("meetingFollowups"):
         return None
@@ -144,7 +144,7 @@ async def with_link(owner_id: str, room_id: str, task: dict, line: str) -> str:
         return line
     tid, linked = task["taskId"], f"{line} {task_link(task['taskId'])}"
     try:
-        conv = await api.get_conversation(owner_id, room_id)
+        conv = await engine.get_conversation(owner_id, room_id)
         meeting = conv.annotations.get("meeting") if conv else None
     except Exception:  # noqa: BLE001 -- the line must still post
         logger.warning("meet room %s: room not read for the result link task=%s", room_id, tid, exc_info=True)
@@ -194,7 +194,7 @@ async def end_deleted(owner_id: str, room_id: str) -> None:
     (`meeting_bots.leave`), and the Meet's LiveKit room closes; Recall's terminal status then meters the call to that
     moment (`routers.meetings._on_status`). Never raises: the delete already happened."""
     try:
-        conv = await api.get_conversation(owner_id, room_id, include_deleted=True)
+        conv = await engine.get_conversation(owner_id, room_id, include_deleted=True)
         meeting = (conv.annotations.get("meeting") if conv else None) or {}
         if not conv or not conv.deleted or not meeting:
             return

@@ -60,7 +60,9 @@ def env(monkeypatch):
     monkeypatch.setattr(messaging, "_publish_room_metadata", AsyncMock())
     monkeypatch.setattr(messaging, "_room_detail", AsyncMock(side_effect=lambda meta, user_id, member=None: meta))
     fakes["close_huddle"] = AsyncMock()
-    monkeypatch.setattr(session_chat.livekit_huddles, "close_room", fakes["close_huddle"])
+    from core.voice import livekit_huddles  # the archive reaches it through the products' engine hook
+
+    monkeypatch.setattr(livekit_huddles, "close_room", fakes["close_huddle"])
     metrics: list[str] = []
     monkeypatch.setattr(session_chat, "put_metric", lambda name, *a, **k: metrics.append(name))
     fakes["metrics"] = metrics

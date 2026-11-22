@@ -26,7 +26,7 @@ def api(world, monkeypatch):  # noqa: F811
         return {"hook_token": TOKEN} if owner_id == WS else None
 
     monkeypatch.setattr("core.repositories.container_repo.get_by_owner_id", container)
-    from routers import messaging as messaging_router
+    from routers import messaging_internal as messaging_router
 
     app = FastAPI()
     app.include_router(ri.router, prefix="/api/v1/internal/runtime")

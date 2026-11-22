@@ -22,7 +22,7 @@ from dateutil.rrule import DAILY, rruleset, rrulestr
 
 from core.config import settings
 from core.dynamodb import is_cancelled
-from core.engine import api
+from core.engine import engine
 from core.engine.contract import AnnotateIn, EngineError, LineIn, OpenIn, Principal
 from core.observability.metrics import put_metric
 from core.repositories import agent_email_repo, container_repo
@@ -232,7 +232,7 @@ def _when_text(start: datetime) -> str:
 async def stored_meeting(owner_id: str, room_id: str, *, include_deleted: bool = False) -> dict:
     """The meeting record of the owner's room, or {} (no meeting, or the room is gone: deleted, unless
     `include_deleted`)."""
-    conv = await api.get_conversation(owner_id, room_id, include_deleted=include_deleted)
+    conv = await engine.get_conversation(owner_id, room_id, include_deleted=include_deleted)
     return (conv.annotations.get("meeting") if conv else None) or {}
 
 
@@ -247,7 +247,7 @@ async def output_room(owner_id: str, room_id: str) -> str:
     workspace without a default room still sees them (10-09: the founder's notes sat in the hidden
     meeting room, which no sidebar shows); else the meeting's own room (nothing is lost)."""
     default = default_room_id(owner_id)
-    room = await api.get_conversation(owner_id, default)
+    room = await engine.get_conversation(owner_id, default)
     if room and not room.archived:
         return default
     return await _organizer_dm(owner_id, room_id) or room_id
@@ -256,7 +256,7 @@ async def output_room(owner_id: str, room_id: str) -> str:
 async def post_target(owner_id: str, room_id: str, agent_id: str | None, meeting: dict) -> str | None:
     """Where an agent's post in the meeting's hidden room goes: nowhere else while the call is on and the poster is
     the meeting's front agent (its Router answers in its room, where the voice says it); else `output_room`."""
-    if meeting.get("status") == "in_call" and agent_id == await api.get_front_agent(owner_id, room_id):
+    if meeting.get("status") == "in_call" and agent_id == await engine.get_front_agent(owner_id, room_id):
         return None
     return await output_room(owner_id, room_id)
 
@@ -266,16 +266,16 @@ async def _organizer_dm(owner_id: str, room_id: str) -> str | None:
     owner) and the agent that writes its notes (the meeting's front agent, as the notes writer is
     picked). Found or created; None when either is missing or it cannot be opened. A DM
     passed in (a line already resolved here) resolves to itself."""
-    conv = await api.get_conversation(owner_id, room_id, with_members=True, include_deleted=True)
+    conv = await engine.get_conversation(owner_id, room_id, with_members=True, include_deleted=True)
     members = conv.members if conv else []
     creator = next((m["id"] for m in members if m.get("kind") == "human" and m.get("role") == "owner"), None)
     if not creator:
         return None
     # the notes task runs as the meeting's front agent (meeting_notes._notes_writer)
-    if not (writer := await api.get_front_agent(owner_id, room_id)):
+    if not (writer := await engine.get_front_agent(owner_id, room_id)):
         return None
     try:
-        dm = await api.open_conversation(
+        dm = await engine.open_conversation(
             OpenIn(
                 tenant_id=owner_id,
                 client_key=f"lightbulb-meeting-dm|{owner_id}|{creator}",
@@ -299,7 +299,7 @@ async def _post_line(owner_id: str, room_id: str, key: str, text: str) -> str | 
     notice = LineIn(tenant_id=owner_id, conversation_id=room_id, principal=Principal(kind="notice", id="lightbulb"),
                     text=text, idempotency_key=key)  # fmt: skip
     try:
-        return (await api.append_line(notice)).message_id
+        return (await engine.append_line(notice)).message_id
     except EngineError:
         return None  # a member archived or deleted the room since: nothing left to announce
 
@@ -310,7 +310,7 @@ async def _create_room(owner_id: str, room_id: str, invite: Invite, creator: str
     A replay returns quietly; the caller's update path takes it from there. A create that left no room
     raises (the route 503s and SES redelivers). False: a member deleted this meeting's room."""
     try:
-        await api.open_conversation(
+        await engine.open_conversation(
             OpenIn(
                 tenant_id=owner_id,
                 conversation_id=room_id,
@@ -366,7 +366,7 @@ async def _patch_meeting(
     ``stop_if_gone`` and gets None. So None comes only from ``when``, an older ``sequence`` or ``stop_if_gone``.
     Three lost races raise, so SES redelivers. Returns the map as written."""
     for attempt in (1, 2, 3):
-        conv = await api.get_conversation(owner_id, room_id, include_deleted=True)
+        conv = await engine.get_conversation(owner_id, room_id, include_deleted=True)
         stored = (conv.annotations.get("meeting") if conv else None) or {}
         if when is not None and not when(stored):
             return None
@@ -381,7 +381,7 @@ async def _patch_meeting(
         if merged == stored:
             return stored
         try:
-            await api.annotate(
+            await engine.annotate(
                 AnnotateIn(
                     tenant_id=owner_id,
                     conversation_id=room_id,
@@ -516,7 +516,7 @@ async def _sync_bot(owner_id: str, room_id: str, meeting: dict, prior: dict | No
     bot_id = None
     claim = {"meeting": {"ticketNonce": nonce, "botClaimAt": now}}
     try:
-        claimed = await api.annotate(
+        claimed = await engine.annotate(
             AnnotateIn(tenant_id=owner_id, conversation_id=room_id, set=claim, if_absent="ticketNonce")
         )
     except EngineError as exc:
@@ -619,7 +619,7 @@ async def _apply_instance(
     """
     room_id = store.meeting_room_id(owner_id, invite.uid)
     async with meeting_lease(parent_room), meeting_lease(room_id):
-        parent = await api.get_conversation(owner_id, parent_room, include_deleted=True)
+        parent = await engine.get_conversation(owner_id, parent_room, include_deleted=True)
         meeting = (parent.annotations.get("meeting") if parent else None) or {}
         if (
             parent is None
@@ -704,7 +704,7 @@ _ENDED = ("ended", "bot_failed")  # an occurrence is over; only advance() schedu
 
 
 async def _apply(owner_id: str, invite: Invite, room_id: str, creator: str, team: dict, sender: str) -> str | None:
-    room = await api.get_conversation(owner_id, room_id, include_deleted=True)
+    room = await engine.get_conversation(owner_id, room_id, include_deleted=True)
     if room and (room.archived or room.deleted):
         return "meeting_ignored"  # a member closed this meeting's room; a move/cancel must not reopen it
     current = room.annotations.get("meeting") if room else None
@@ -781,7 +781,7 @@ async def _apply(owner_id: str, invite: Invite, room_id: str, creator: str, team
     if current is None:
         if not await _create_room(owner_id, room_id, invite, creator, {**fields, "status": "scheduled"}):
             return "meeting_ignored"  # a member deleted this meeting's room; a move/cancel must not reopen it
-        room = await api.get_conversation(owner_id, room_id)
+        room = await engine.get_conversation(owner_id, room_id)
         if room is None:
             return None  # no room came of it: the CEO reads it as mail
         current = room.annotations.get("meeting")  # ours, or a racing delivery's
@@ -963,7 +963,7 @@ async def _reschedule_locked(owner_id: str, room_id: str, meeting: dict, *, now:
     if written is None:
         return "not_due"  # the room was deleted: no next occurrence, no agents seated, no bot
     try:  # agents hired since the room was made join it; best effort
-        await api.seat_roster(owner_id, room_id)
+        await engine.seat_roster(owner_id, room_id)
     except Exception:  # noqa: BLE001 -- the call still runs with the agents already seated
         logger.warning("meeting room %s: seating new agents failed", room_id, exc_info=True)
     try:
@@ -999,7 +999,7 @@ async def _advance(owner_id: str, room_id: str) -> str:
         return "not_series"  # the common one-off: no lease taken
     try:
         async with meeting_lease(room_id, tries=4):  # an end path may hold it for a moment
-            conv = await api.get_conversation(owner_id, room_id, include_deleted=True)
+            conv = await engine.get_conversation(owner_id, room_id, include_deleted=True)
             meeting = (conv.annotations.get("meeting") if conv else None) or {}
             if not conv or conv.deleted or not meeting.get("recurrence") or meeting.get("status") not in _ENDED:
                 return "not_due"

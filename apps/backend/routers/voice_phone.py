@@ -35,7 +35,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from core.dynamodb import get_item, messaging_table, owner_pk, run_in_thread, utc_now_iso
-from core.engine import api
+from core.engine import engine
 from core.engine.contract import EngineError, LineIn, OpenIn, Principal
 from core.engine.contract import QuestionRef as AnswerRef, StartIn as TaskIn
 from core.billing import voice_billing, voice_plan
@@ -91,12 +91,12 @@ CALL_TOKEN_HEADER = "X-Lightbulb-Call-Token"
 
 async def _require_call_token(request: Request, x_lightbulb_call_token: Annotated[str, Header()] = "") -> str | None:
     """Every per-call route needs the token `start_call` returned for that call, not just the worker secret (M4). The
-    worker names the call only by its id, so the call is found by id alone (`api.find_conversation`) and the token
+    worker names the call only by its id, so the call is found by id alone (`engine.find_conversation`) and the token
     stored on it authenticates it; its tenant is the call's owner for the rest of the request (`_Owner`)."""
     call_id = request.path_params.get("call_id")
     if call_id is None:
         return None
-    conv = await api.find_conversation(call_id)
+    conv = await engine.find_conversation(call_id)
     expected = str((conv.annotations.get("callToken") if conv else None) or "")
     if not expected or not hmac.compare_digest(x_lightbulb_call_token.encode(), expected.encode()):
         raise HTTPException(status_code=401, detail={"code": "invalid_call_token"})
@@ -228,7 +228,7 @@ async def start_call(body: StartIn) -> dict:
     )  # B, C, none, failed: the number may be spoofed
     seen = await _seen(owner_id, caller) if verified else None  # no name or memory by a spoofable number
     call_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"lightbulb-call:{body.livekitRoom}"))
-    existing = await api.get_conversation(owner_id, call_id)  # a replayed start: its token and caps, counted once
+    existing = await engine.get_conversation(owner_id, call_id)  # a replayed start: its token and caps, counted once
     stored = existing.annotations if existing else {}
     token = stored.get("callToken") or secrets.token_urlsafe(32)
     slot = stored.get("liveSlot") or (None if existing else await _live_slot(owner_id, body.calledNumber, call_id))
@@ -285,7 +285,7 @@ async def start_call(body: StartIn) -> dict:
         "unknown": [],
         **({"limited": limited} if limited else {}),
     }
-    room = await api.open_conversation(
+    room = await engine.open_conversation(
         OpenIn(
             tenant_id=owner_id,
             conversation_id=call_id,
@@ -315,7 +315,7 @@ async def start_call(body: StartIn) -> dict:
     # so the answer is always the persisted META's, never this request's candidate.
     token = str(room.annotations.get("callToken") or "")
     if front:  # lever 2 (router-latency-2026-11-08.md): the Router's session is warm before the caller's first line
-        api.warm(owner_id, [front])
+        engine.warm(owner_id, [front])
     allow, mode = cfg["allow"], call_mode(cfg, call)
     paused = mode != "live"
     return {
@@ -361,12 +361,12 @@ class PinIn(BaseModel):
 
 async def _cursor(ws: str, room_id: str) -> int:
     """The room's first `/events` cursor: its newest seq, so the voice says only what comes after."""
-    return (await api.read_lines(ws, room_id, None))["after"]
+    return (await engine.read_lines(ws, room_id, None))["after"]
 
 
 async def owner_dm(ws: str, member: str) -> str:
     """The member's DM with the assistant, where the orb talks (found or created, as /voice/lightbulb opens it)."""
-    room = await api.open_conversation(
+    room = await engine.open_conversation(
         OpenIn(
             tenant_id=ws,
             client_key=f"lightbulb-owner-dm|{ws}|{member}",
@@ -406,7 +406,7 @@ async def _owner_turn(call_id: str, ws: str, call: dict, body: "TurnIn") -> dict
     """An owner-mode line: the member's own message in their DM, exactly as the orb posts it (voice_owner.turn), so
     the DM's Router decides it with the member as the principal. A line that answers the Worker question the voice
     just said answers it through the card's own path and wakes nobody (an approval stays card-only)."""
-    line = await api.append_line(
+    line = await engine.append_line(
         LineIn(
             tenant_id=ws,
             conversation_id=call["dmRoomId"],
@@ -424,7 +424,7 @@ async def _owner_turn(call_id: str, ws: str, call: dict, body: "TurnIn") -> dict
 async def _owner_seated(call_id: str, ws: str, call: dict) -> bool:
     """The owner-mode member is still a member seated in their DM (voice_owner._owner's check), re-read on every
     owner-mode turn and poll. Not any more: owner mode ends and the call is a caller's again."""
-    dm = await api.get_conversation(ws, call["dmRoomId"], with_members=True)
+    dm = await engine.get_conversation(ws, call["dmRoomId"], with_members=True)
     if dm and rooms._voice_requester(dm.members, ws, call["ownerModeUserId"]):
         return True
     await _patch_call(
@@ -824,7 +824,7 @@ async def callers_own_words(ws: str, call_id: str, text: str) -> bool:
     message that is all paraphrase gets refused (the thread is told to write it in the caller's words)."""
     word = re.compile(r"[a-z0-9]+")  # digits count: a message that is a number or a time is still the caller's
 
-    rows = await api.read_history(ws, call_id, 50)
+    rows = await engine.read_history(ws, call_id, 50)
     said = " ".join(r.get("text") or "" for r in rows if (r.get("author") or {}).get("id") == f"caller:{call_id}")
     words, heard = set(word.findall(text.lower())) - _STOP, set(word.findall(said.lower()))
     return len(words & heard) * 2 >= len(words)  # nothing to check ("call me") is not an invented answer
@@ -895,8 +895,8 @@ async def _start_task(
         raise _problem(403, "no_requester")
     run_id = hashlib.sha256(f"{call_id}:{title.strip().lower()}".encode()).hexdigest()[:32]
     brief = f"{CONTACT_NOTE}\nCaller: {call.get('caller') or 'unknown'}\n\n{brief}"
-    out = await api.http(
-        api.start_task(
+    out = await engine.http(
+        engine.start_task(
             TaskIn(
                 tenant_id=ws,
                 principal=Principal(kind="member", id=requester),
@@ -969,7 +969,7 @@ async def caller_turn(call_id: str, body: TurnIn, ws: _Owner) -> dict:
     if call_mode(await agent_config(ws), call) != "live":
         raise _problem(403, "not_allowed")  # a paused line only takes messages (/message)
     who = f"Caller {call.get('callerName') or call.get('caller') or ''}".strip()
-    line = await api.append_line(
+    line = await engine.append_line(
         LineIn(
             tenant_id=ws,
             conversation_id=call_id,
@@ -1000,10 +1000,10 @@ async def call_events(call_id: str, body: CallEventsIn, ws: _Owner) -> dict:
     _, call = await _call(ws, call_id)
     if call.get("ownerMode"):  # the member's DM, as the orb's /events: the cursor is the DM's (owner_pin's after)
         if await _owner_seated(call_id, ws, call):
-            return await api.read_lines(ws, call["dmRoomId"], body.after)
+            return await engine.read_lines(ws, call["dmRoomId"], body.after)
         # removed mid-call: nothing from the DM; the worker goes back to the call room's cursor and the caller prompt
         return {"messages": [], "after": await _cursor(ws, call_id), "ownerModeEnded": True}
-    out = await api.read_lines(ws, call_id, body.after)
+    out = await engine.read_lines(ws, call_id, body.after)
     if out["messages"]:
         await _caller_words(ws, out["messages"])
     claimed = [m for m in out["messages"] if BOOKING_NOW.search(_plain(m["text"]))]

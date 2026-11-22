@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import uuid
 from collections.abc import Awaitable
 from typing import Any, TypeVar
@@ -289,7 +290,8 @@ async def annotate(req: AnnotateIn) -> bool:
     """Write a product's own fields on its conversation's record (those of `PRODUCT_META_FIELDS` the record's writer
     keeps; any other key is refused, never dropped); the engine stores them and never reads them. With
     `expected_revision`, a writer since the caller's read cancels it (botocore's `TransactionCanceledException`, as
-    `patch_room_meta` raises it, so the caller's merge loop retries). With `if_absent`, False when the key is there."""
+    `patch_room_meta` raises it, so the caller's merge loop retries). With `if_absent`, False when the key is there
+    with another value: the same value again (a retried claim) is the caller's own, True."""
     if fields := sorted(set(req.set) - (PRODUCT_META_FIELDS & set(messaging_repo.ROOM_META_FIELDS))):
         raise _problem(400, "not_product_field", fields=fields)
     await _owned(req.tenant_id, req.conversation_id)
@@ -300,9 +302,11 @@ async def annotate(req: AnnotateIn) -> bool:
     if set(req.set) != {"meeting"} or not isinstance(claim, dict) or req.if_absent not in claim:
         raise _problem(400, "bad_claim")
     also = {k: v for k, v in claim.items() if k != req.if_absent}
-    return await messaging_repo.set_meeting_field_if_absent(
-        req.conversation_id, req.if_absent, claim[req.if_absent], also
-    )
+    if await messaging_repo.set_meeting_field_if_absent(req.conversation_id, req.if_absent, claim[req.if_absent], also):
+        return True
+    # The key is already there: the caller's claim when it holds the value sent (a replay of a claim that landed).
+    stored = (await messaging_repo.get_room(req.conversation_id) or {}).get("meeting") or {}
+    return stored.get(req.if_absent) == claim[req.if_absent]
 
 
 # --- append_line ---------------------------------------------------------------------------------------------------
@@ -935,13 +939,18 @@ def warm(tenant_id: str, agent_ids: list[str], conversation_id: str | None = Non
 _TENANT_WORKFLOW_PREFIXES = ("task", "learn", "gwatch", "fire", "hook")
 
 
+#: A tenant id `delete_tenant` acts on: a Clerk organisation or user id, nothing else (its WorkflowId prefix scan and
+#: partition delete are keyed on it).
+_TENANT_ID = re.compile(r"(?:org|user)_[A-Za-z0-9]{1,64}")
+
+
 async def delete_tenant(tenant_id: str) -> dict[str, int]:
     """Stop and delete the tenant's engine state, for a terminal wipe: every automation's Temporal Schedule is
     deleted, every running workflow it names terminated, every open attempt's own task session stopped, then its
     tasks partition (META included) and agent-id pointers. Idempotent: what is already gone is skipped; a task
     session that does not confirm its stop raises and keeps the partition. Returns what it did, counted."""
-    if not tenant_id or any(c in tenant_id for c in "'\"\\"):
-        raise ValueError("bad tenant id")
+    if not _TENANT_ID.fullmatch(tenant_id or ""):  # before any workflow query or delete names it
+        raise _problem(400, "bad_tenant")
     client = temporal_client.get_client()
     names = " OR ".join(f"WorkflowId STARTS_WITH '{p}:{tenant_id}:'" for p in _TENANT_WORKFLOW_PREFIXES)
 

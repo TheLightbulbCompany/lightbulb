@@ -44,12 +44,14 @@ from routers import (
     debug,
     desktop_auth,
     devices,
+    engine_callbacks,
     hooks,
     huddles,
     meet_audio,
     meet_bot,
     meetings,
     messaging,
+    messaging_internal,
     meta_webhook,
     metronome_webhook,
     oauth,
@@ -501,6 +503,9 @@ app.include_router(ses_inbound.router, prefix="/api/v1/webhooks", tags=["webhook
 
 # Browser/mobile canonical messaging and the guarded HTTP runtime bridge.
 app.include_router(messaging.router, prefix="/api/v1", tags=["messaging"])
+app.include_router(messaging_internal.router, prefix="/api/v1", tags=["messaging"])  # the runtime's callbacks
+# The engine service's calls back into Lightbulb Phone and Meetings (ENGINE_TRANSPORT=http; service bearer).
+app.include_router(engine_callbacks.router, prefix="/api/v1/internal/engine", tags=["engine"])
 app.include_router(runtime_rpc.router, prefix="/api/v1/runtime", tags=["messaging"])
 
 # Recall's per-person Meet audio: the bv- raw-WS door (/api/v1/gateway/*), the only raw-WS path that edge forwards.

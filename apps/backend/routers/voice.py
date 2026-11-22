@@ -29,7 +29,7 @@ from boto3.dynamodb.conditions import Key
 from core.auth import AuthContext, get_current_user, require_org, require_org_admin, resolve_owner_id
 from core.dynamodb import get_item, messaging_table, owner_pk, query_all, run_in_thread, utc_now_iso
 from core.billing import voice_billing, voice_plan
-from core.engine import api
+from core.engine import engine
 from core.engine.contract import ConversationOut
 from core.repositories import billing_repo
 from core.services import agent_registry
@@ -118,7 +118,7 @@ def _items(conv: ConversationOut) -> list[dict]:
 @router.get("/voice/timeline")
 async def timeline(auth: AuthContext = Depends(get_current_user)) -> dict:
     ws = resolve_owner_id(auth)
-    items = [i for c in await api.list_conversations(ws, ["call", "channel"], TIMELINE_ROOMS) for i in _items(c)]
+    items = [i for c in await engine.list_conversations(ws, ["call", "channel"], TIMELINE_ROOMS) for i in _items(c)]
     return {"items": sorted(items, key=lambda i: i["at"], reverse=True)}
 
 
@@ -132,7 +132,7 @@ async def month_seconds(ws: str, tz_name: str | None) -> int:
         return counted
     start = voice_billing.month_start(tz_name)
     total, since = 0, start.timestamp()
-    for c in await api.list_conversations(ws, ["call", "channel"], TIMELINE_ROOMS):
+    for c in await engine.list_conversations(ws, ["call", "channel"], TIMELINE_ROOMS):
         if c.kind == "call":
             call = c.annotations.get("call") or {}
             if _epoch_ms(call.get("startedAt") or c.created_at) >= since * 1000:
@@ -239,7 +239,7 @@ class AgentConfigIn(BaseModel):
 @router.get("/voice/agent")
 async def get_agent(auth: AuthContext = Depends(get_current_user)) -> dict:
     ws = resolve_owner_id(auth)
-    current = await api.get_front_agent(ws)
+    current = await engine.get_front_agent(ws)
     issue = None if current else "Choose an active front-door agent. Your saved selection is unavailable."
     return {
         "config": await store.get_voice_agent(ws),

@@ -15,10 +15,10 @@ from typing import Any
 from botocore.exceptions import ClientError
 
 from core.constants import SYSTEM_ACTOR_ID
+from core.engine.hooks import EngineEvent
 from core.observability.metrics import put_metric
 from core.repositories import messaging_repo
 from core.services import local_sessions, messaging
-from core.voice import livekit_huddles
 from core.services.messaging import ApiProblem
 
 logger = logging.getLogger(__name__)
@@ -89,7 +89,10 @@ async def _set_archived(meta: dict, archived: bool) -> dict:
                 return meta  # another writer installed it
             continue
         if archived:
-            await livekit_huddles.close_room(meta["roomId"])  # an archived chat holds no huddle; never raises
+            # an archived chat holds no huddle: the products hear it as any archive (never raises)
+            await messaging._tell_products(
+                EngineEvent(type="conversation.archived", tenant_id=meta["ownerId"], conversation_id=meta["roomId"])
+            )
         await messaging._publish_room_metadata(meta)
         return meta
     return meta  # pragma: no cover -- the loop returns or raises

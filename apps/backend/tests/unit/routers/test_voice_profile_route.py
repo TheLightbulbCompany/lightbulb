@@ -14,7 +14,7 @@ from core.voice import store  # noqa: E402
 from core.services import hermes_profiles, messaging
 from core.voice import livekit_huddles  # noqa: E402
 from core.services.agent_registry import RegistryUnavailable  # noqa: E402
-from routers import messaging as messaging_router  # noqa: E402
+from routers import messaging_internal as messaging_router  # noqa: E402
 
 OWNER = "org_1"
 AGENT = "11111111-1111-4111-8111-111111111111"

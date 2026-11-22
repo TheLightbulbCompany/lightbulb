@@ -87,6 +87,26 @@ def _engine_hooks():
 
 
 @pytest.fixture(autouse=True)
+def _engine_over_http(monkeypatch):
+    """Run with ENGINE_TRANSPORT=http: products reach the engine through `engine_main.app` in this process, over the
+    wire's bearer and encoding (`core.engine.client`), so a product suite exercises the HTTP contract."""
+    from core.config import settings
+
+    if settings.ENGINE_TRANSPORT != "http":
+        return
+    import engine_main
+    from core.engine import transport
+    from core.voice import engine_hooks
+
+    engine_hooks.register()  # importing engine_main registered the HTTP hooks; this process keeps the products'
+    base = "http://engine.test"
+    monkeypatch.setattr(settings, "ENGINE_URL", base)
+    monkeypatch.setattr(settings, "ENGINE_SERVICE_TOKEN", "engine-test-token")
+    client = AsyncClient(transport=ASGITransport(app=engine_main.app), base_url=base)
+    monkeypatch.setitem(transport._clients, base, client)
+
+
+@pytest.fixture(autouse=True)
 def _no_lifespan_background_workers(request, monkeypatch):
     """Every TestClient enters the app lifespan, which starts the background sweepers. Outside
     a moto context those reached real AWS with the dummy credentials (UnrecognizedClientException

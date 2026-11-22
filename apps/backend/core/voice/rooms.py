@@ -8,7 +8,7 @@ import logging
 
 from core.billing import voice_billing
 from core.config import settings
-from core.engine import api
+from core.engine import engine
 from core.engine.contract import ConversationOut
 from core.repositories import billing_repo
 from core.voice.voice_calls import _problem
@@ -27,7 +27,7 @@ def _fire(coro) -> None:
 
 async def room_agents(owner_id: str, room_id: str) -> list[dict]:
     """Every agent member. Listen modes are a chat-traffic setting; Live ignores them (owner ruling 2026-10-02)."""
-    conv = await api.get_conversation(owner_id, room_id, with_members=True)
+    conv = await engine.get_conversation(owner_id, room_id, with_members=True)
     return [
         {"id": m["id"], "name": m.get("displayName") or "Agent"}
         for m in (conv.members if conv else [])
@@ -40,7 +40,7 @@ async def _room_team(
 ) -> tuple[ConversationOut, list[dict]]:
     """The room's agents, any listen mode. Any room kind; a DM with an agent is a one-agent team.
     need_team=False (Live join) returns an empty team for a people-only room instead of 409."""
-    conv = await api.http(api.get_conversation(owner_id, room_id, member=user_id))
+    conv = await engine.http(engine.get_conversation(owner_id, room_id, member=user_id))
     if conv is None:  # a shared-channel guest: the team is another workspace's agents
         raise _problem(404, code="room_not_found")
     if conv.archived:
@@ -63,7 +63,7 @@ def _voice_requester(members: list[dict], owner_id: str, speaker_id: str) -> str
 
 def prewake_owner(owner_id: str, team: list[dict] | None = None, room_id: str | None = None) -> None:
     """Fire-and-forget wake of the workspace runtime and of every agent of `team` (`core.engine.api.warm`)."""
-    api.warm(owner_id, [member["id"] for member in team or ()], room_id)
+    engine.warm(owner_id, [member["id"] for member in team or ()], room_id)
 
 
 def live_configured() -> bool:

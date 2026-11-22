@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from core.auth import AuthContext, get_current_user, require_org, resolve_owner_id
 from core.config import settings
-from core.engine import api
+from core.engine import engine
 from core.observability.metrics import put_metric
 from core.repositories import container_repo
 from core.services import clerk_admin
@@ -73,7 +73,7 @@ async def join(room_id: str, auth: Annotated[AuthContext, Depends(get_current_us
     try:
         async with lease:
             if meeting:
-                meeting = ((await api.get_conversation(owner_id, room_id)) or conv).annotations.get("meeting")
+                meeting = ((await engine.get_conversation(owner_id, room_id)) or conv).annotations.get("meeting")
             if (meeting or {}).get("status") == "in_call":
                 raise in_call
             return await _join(room_id, owner_id, auth.user_id, team, owner_mode=conv.kind == "dm")
@@ -136,7 +136,7 @@ async def _display_name(user_id: str) -> str:
 async def huddle(room_id: str, auth: Annotated[AuthContext, Depends(get_current_user)]):
     room_id = _room_id(room_id)
     owner_id = resolve_owner_id(auth)
-    if await api.http(api.get_conversation(owner_id, room_id, member=auth.user_id)) is None:
+    if await engine.http(engine.get_conversation(owner_id, room_id, member=auth.user_id)) is None:
         raise _problem(404, "room_not_found")  # join's gate: a shared-channel guest sees no huddle
     # False: a people-only room; the web hides Lightbulb's visualizer and status.
     lightbulb = bool(await rooms.room_agents(owner_id, room_id))
@@ -167,7 +167,7 @@ async def transcript(room_id: str, body: TranscriptBody):
     )
     logger.info("live transcript room=%s huddle=%s owner=%s\n%s", room_id, body.huddleId, body.ownerId, rendered)
     put_metric("voice.huddle.transcript_lines", len(body.lines))
-    conv = await api.get_conversation(body.ownerId, room_id, include_deleted=True)  # a meeting's end, deleted or not
+    conv = await engine.get_conversation(body.ownerId, room_id, include_deleted=True)  # a meeting's end, deleted or not
     if conv and conv.annotations.get("meeting"):
         lines = [x.model_dump(exclude={"ready"}) for x in body.lines]
         await meeting_notes.on_transcript(body.ownerId, room_id, lines, body.final)

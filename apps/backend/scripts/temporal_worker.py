@@ -50,9 +50,12 @@ async def run(queue: str | None = None) -> int:
     from temporalio.worker import Worker
 
     from core.temporal.client import connect, set_client
-    from core.voice import engine_hooks
 
-    engine_hooks.register()  # the activities ask the products through core.engine.hooks
+    if settings.ENGINE_TRANSPORT == "http":  # the activities ask the products through core.engine.hooks
+        from core.engine import http_hooks as engine_hooks
+    else:
+        from core.voice import engine_hooks
+    engine_hooks.register()
 
     if watchdog:
         from core.services.watchdog import WATCHDOG_ACTIVITIES as activities

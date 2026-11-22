@@ -15,7 +15,7 @@ from livekit.protocol import models as lk_models
 
 from core.config import settings
 from core.observability.metrics import put_metric
-from core.engine import api as engine
+from core.engine import engine
 
 logger = logging.getLogger(__name__)
 AGENT_IDENTITY = "agent-ceo"

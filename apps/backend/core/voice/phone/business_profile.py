@@ -212,9 +212,9 @@ async def caller_of(ws: str, trigger: dict | None) -> str | None:
     ref = (trigger or {}).get("ref") or {}
     if ref.get("origin") != "phone_contact" or not ref.get("callId"):
         return None
-    from core.engine import api
+    from core.engine import engine
 
-    conv = await api.get_conversation(ws, ref["callId"])
+    conv = await engine.get_conversation(ws, ref["callId"])
     call = (conv.annotations.get("call") if conv else None) or {}
     # Only an A-attested number lists "This caller's upcoming bookings": a spoofed one would read the victim's.
     return call.get("caller") or None if conv and conv.kind == "call" and call.get("callerVerified") is True else None

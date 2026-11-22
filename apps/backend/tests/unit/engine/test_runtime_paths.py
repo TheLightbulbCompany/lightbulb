@@ -62,14 +62,25 @@ def _templates() -> set[str]:
     return found
 
 
-@pytest.fixture(scope="module")
+#: Every distinct callback path template the bridge and the plugin hold. A new or removed caller changes it: route the
+#: new path (or drop the gone one), then set the count.
+CALLBACK_TEMPLATES = 38
+
+
+@pytest.fixture
 def apps():
+    """The two route tables. Importing `engine_main` registers the HTTP hooks process-wide; the hooks registered before
+    are put back, so no later test in this worker calls the products over HTTP."""
+    from core.engine import hooks
+
+    before = hooks._registered
     import engine_main
     import main
-    from core.voice import engine_hooks
 
-    engine_hooks.register()  # importing engine_main registered the HTTP hooks; this test process keeps the products'
-    return engine_main.app, main.app
+    try:
+        yield engine_main.app, main.app
+    finally:
+        hooks._registered = before
 
 
 def test_engine_patterns_fit_one_alb_rule():
@@ -80,7 +91,7 @@ def test_engine_patterns_fit_one_alb_rule():
 def test_every_runtime_callback_is_routed(apps):
     engine, backend = apps
     templates = _templates()
-    assert len(templates) > 20, f"the grep found too few callbacks under {SOURCES}: {sorted(templates)}"
+    assert len(templates) == CALLBACK_TEMPLATES, f"callbacks under {SOURCES} changed: {sorted(templates)}"
     wrong, seen = [], set()
     for template in sorted(templates):
         if template.endswith("{path}"):  # a helper's base: its callers name the rest

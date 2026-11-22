@@ -1926,6 +1926,29 @@ describe("ServiceStack: engine service, dark (engine-service plan Task 9)", () =
     expect(rules[0].CidrIp).toBeUndefined();
   });
 
+  test.each([["dev", SERVICE_TEMPLATE_DEV, null], ["prod", PROD, [2, 4]]] as const)(
+    "the engine scales 2-4 on CPU in prod only (%s)",
+    (env, template, range) => {
+      const engineTargets = Object.entries(template.findResources("AWS::ApplicationAutoScaling::ScalableTarget")).filter(
+        ([, r]: [string, any]) => JSON.stringify(r.Properties.ResourceId).includes("EngineService"),
+      ) as [string, any][];
+      if (range === null) {
+        expect(engineTargets).toEqual([]);
+        return;
+      }
+      expect(engineTargets).toHaveLength(1);
+      const [id, target] = engineTargets[0];
+      expect([target.Properties.MinCapacity, target.Properties.MaxCapacity]).toEqual(range);
+      template.hasResourceProperties("AWS::ApplicationAutoScaling::ScalingPolicy", {
+        ScalingTargetId: { Ref: id },
+        TargetTrackingScalingPolicyConfiguration: Match.objectLike({
+          PredefinedMetricSpecification: { PredefinedMetricType: "ECSServiceAverageCPUUtilization" },
+          TargetValue: 60,
+        }),
+      });
+    },
+  );
+
   test.each([["dev", SERVICE_TEMPLATE_DEV], ["prod", PROD]] as const)("ENGINE_TRANSPORT is http in both envs (%s)", (env, template) => {
     const names = ["backend", "temporal-worker", "temporal-watchdog", "engine"];
     for (const name of names) {

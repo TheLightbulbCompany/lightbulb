@@ -40,6 +40,10 @@ ENGINE_ATTEMPT_S, ENGINE_BUDGET_S = 6.0, 8.0
 #: the shortest Temporal activity that calls a hook (`workflows._SHORT`, 30 s start-to-close), so an activity never
 #: times out with a hook call still running.
 HOOK_ATTEMPT_S, HOOK_BUDGET_S = 8.0, 12.0
+#: The engine's call to a product tool for an agent (`tool` hook, from the runtime's tool routes): one attempt of 18 s,
+#: under the runtime plugin's 20 s wait, with room for the tool's own calls back to the engine (8 s each, at most two in
+#: a row). Never sent twice: a tool acts.
+TOOL_ATTEMPT_S = TOOL_BUDGET_S = 18.0
 #: A gateway's answer that says the call never ran on the other side: retried for a read only (a 504 may have run).
 _READ_RETRY_STATUS = frozenset({502, 503})
 #: The connection was never made: nothing reached the other side, so any call may go again.

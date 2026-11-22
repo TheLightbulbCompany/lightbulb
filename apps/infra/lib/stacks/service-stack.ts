@@ -2616,6 +2616,12 @@ export class ServiceStack extends cdk.Stack {
       enableExecuteCommand: true,
     });
     engineService.attachToApplicationTargetGroup(props.engineTargetGroup);
+    // Prod scales 2-4 on CPU, as the backend does: the engine carries every live voice turn. Dev stays one Spot task.
+    if (env === "prod") {
+      engineService
+        .autoScaleTaskCount({ minCapacity: 2, maxCapacity: 4 })
+        .scaleOnCpuUtilization("Cpu", { targetUtilizationPercent: 60 });
+    }
     // The :8082 listener's only ingress: backend-image processes (backend, Temporal workers, Lambdas).
     new ec2.CfnSecurityGroupIngress(this, "AlbEngineFromService", {
       groupId: props.albSecurityGroup.securityGroupId,

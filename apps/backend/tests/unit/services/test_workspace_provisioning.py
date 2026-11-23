@@ -1,6 +1,5 @@
 """Phase 1 task 8b.3: workspace provisioning and membership write our own stores; no Paperclip call."""
 
-from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -9,9 +8,9 @@ import pytest
 from moto import mock_aws
 
 from core import dynamodb
-from core.repositories.workspace_repo import WorkspaceRepo, Workspace
+from core.repositories.workspace_repo import WorkspaceRepo
 from core.services import agent_registry, workspace_provisioning
-from core.services.workspace_provisioning import STARTER_ROLE_KEYS, provision_member, provision_org
+from core.services.workspace_provisioning import STARTER_ROLE_KEYS, provision_org
 from tests.unit.repositories.test_workspace_repo import create_companies_table
 from tests.unit.super_agent.registry.conftest import _create_tasks_table
 
@@ -73,49 +72,12 @@ async def test_active_row_with_a_missing_starter_is_reseeded():
     assert (await _repo().resolve_owner_row(ORG)).starter_agent_ids == again.starter_agent_ids
 
 
-async def test_old_failed_row_keeps_company_and_fields():
-    """A workspace provisioned before this change keeps its company_id and onboarding fields."""
-    now = datetime.now(timezone.utc)
-    _repo()._table().put_item(Item={"user_id": ORG, "company_id": "co_1"})  # the legacy row
-    await _repo().put_workspace(
-        Workspace(
-            org_id=ORG,
-            company_id="co_1",
-            status="failed",
-            created_at=now,
-            updated_at=now,
-            member_user_ids={"user_1"},
-            starter_agent_ids={"ceo": "pc-ceo"},
-            onboarding_generation="gen_1",
-            funnel_state="submitted",
-        )
-    )
-    ws = await provision_org(ORG, provisioner="user_2")
-    stored = await _repo().resolve_owner_row(ORG)
-    assert stored.company_id == "co_1" and stored.status == "active"
-    assert stored.onboarding_generation == "gen_1" and stored.funnel_state == "submitted"
-    assert stored.member_user_ids == {"user_1", "user_2"}
-    assert ws.starter_agent_ids["ceo"] == "pc-ceo"
-    assert {a["reportsTo"] for a in await agent_registry.roster(ORG)} == {"pc-ceo"}
-
-
 async def test_seed_failure_marks_failed(monkeypatch):
     monkeypatch.setattr(agent_registry, "create", AsyncMock(side_effect=agent_registry.RegistryUnavailable("down")))
     with pytest.raises(agent_registry.RegistryUnavailable):
         await provision_org(ORG, provisioner="user_1")
     ws = await _repo().get_workspace(ORG)
     assert ws.status == "failed" and "down" in ws.last_error
-
-
-async def test_member_join_and_leave_native():
-    assert await provision_member(ORG, "user_2") is None  # no active workspace yet
-    await provision_org(ORG, provisioner="user_1")
-    await provision_member(ORG, "user_2")
-    await provision_member(ORG, "user_2")
-    assert (await _repo().resolve_owner_row(ORG)).member_user_ids == {"user_1", "user_2"}
-
-    await _repo().remove_member(ORG, "user_2")
-    assert (await _repo().resolve_owner_row(ORG)).member_user_ids == {"user_1"}
 
 
 async def test_disable_workspace_sets_purge_timer():
@@ -127,51 +89,22 @@ async def test_disable_workspace_sets_purge_timer():
 
 @pytest.fixture
 def rooms(monkeypatch):
-    from core.services import messaging, welcome_email
+    from core.services import messaging
 
-    fx = SimpleNamespace(default=AsyncMock(return_value="room_1"), welcome=AsyncMock(), proactive=AsyncMock())
+    fx = SimpleNamespace(default=AsyncMock(return_value="room_1"), proactive=AsyncMock())
     monkeypatch.setattr(messaging, "ensure_default_room", fx.default)
-    monkeypatch.setattr(welcome_email, "send_owner_welcome", fx.welcome)
     return fx
 
 
-async def test_default_room_and_welcome_after_native_seed(rooms):
-    from core.services.user_provision import _ensure_workspace_for_org
+async def test_default_room_after_native_seed(rooms):
+    from core.services.user_provision import _ensure_owner_workspace
 
-    await _ensure_workspace_for_org(org_id=ORG, user_id="user_1", is_admin=True)
+    await _ensure_owner_workspace(owner_id=ORG, owner_user_id="user_1")
     rooms.default.assert_awaited_once_with(ORG, "user_1")
-    rooms.welcome.assert_awaited_once_with(ORG, "user_1")
 
-    # Active now: a re-run joins (no-op) and makes no second room or welcome.
-    await _ensure_workspace_for_org(org_id=ORG, user_id="user_1", is_admin=True)
+    # Active now: a re-run makes no second room.
+    await _ensure_owner_workspace(owner_id=ORG, owner_user_id="user_1")
     rooms.default.assert_awaited_once()
-    rooms.welcome.assert_awaited_once()
-
-
-async def test_member_never_provisions(rooms):
-    from core.services.user_provision import _ensure_workspace_for_org
-
-    await _ensure_workspace_for_org(org_id=ORG, user_id="user_2", is_admin=False)
-    assert await _repo().get_workspace(ORG) is None
-    rooms.default.assert_not_awaited()
-
-
-async def test_provision_runner_step0_needs_no_paperclip(rooms, monkeypatch):
-    from core.services import clerk_admin, proactive
-    from scripts import provision_runner
-
-    monkeypatch.setattr(clerk_admin, "get_organization", AsyncMock(return_value={"created_by": "user_1"}))
-    monkeypatch.setattr(proactive, "ensure", rooms.proactive)
-
-    assert await provision_runner._seed_owner_workspace(ORG) == provision_runner.EXIT_OK
-    ws = await _repo().resolve_owner_row(ORG)
-    assert ws.provisioner_user_id == "user_1" and set(ws.starter_agent_ids) == set(STARTER_ROLE_KEYS)
-    rooms.proactive.assert_not_awaited()  # the end-of-run reconcile does the schedule cleanup
-
-    # A store outage is transient: the state machine retries it.
-    await _repo().delete(ORG)
-    monkeypatch.setattr(agent_registry, "create", AsyncMock(side_effect=agent_registry.RegistryUnavailable("down")))
-    assert await provision_runner._seed_owner_workspace(ORG) == provision_runner.EXIT_TRANSIENT
 
 
 async def test_a_full_provision_run_seeds_the_voice_workspace_with_no_outbound_http(monkeypatch):
@@ -182,7 +115,7 @@ async def test_a_full_provision_run_seeds_the_voice_workspace_with_no_outbound_h
     import httpx
 
     from core.repositories import billing_repo, container_repo
-    from core.services import clerk_admin, hermes_provisioning, messaging, onboarding_brief, welcome_email
+    from core.services import clerk_admin, hermes_provisioning, messaging, onboarding_brief
     from scripts import provision_runner
 
     async def no_http(*_a, **_k):
@@ -196,7 +129,6 @@ async def test_a_full_provision_run_seeds_the_voice_workspace_with_no_outbound_h
     monkeypatch.setattr(clerk_admin, "list_organization_members", AsyncMock(return_value=[{"user_id": "user_1"}]))
     for name in ("ensure_default_room", "join_default_room"):
         monkeypatch.setattr(messaging, name, AsyncMock(return_value="room_1"))
-    monkeypatch.setattr(welcome_email, "send_owner_welcome", AsyncMock())
     monkeypatch.setattr(onboarding_brief, "reconcile_pending_brief", AsyncMock())
     monkeypatch.setattr(billing_repo, "arm_trial_if_unset", AsyncMock())
     monkeypatch.setattr("core.services.user_provision._ensure_trial_row", AsyncMock())

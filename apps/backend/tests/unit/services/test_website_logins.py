@@ -271,3 +271,7 @@ async def test_a_login_ask_carries_a_hint_when_the_sites_connector_is_connected(
 
 def test_the_suffix_list_never_fetches():
     assert store._PSL.suffix_list_urls == ()  # the bundled snapshot only
+
+
+def member(user=USER_A):
+    return AuthContext(user_id=user)

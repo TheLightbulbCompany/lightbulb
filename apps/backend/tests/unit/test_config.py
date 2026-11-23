@@ -28,13 +28,6 @@ def test_gog_keyring_password_env_var_loaded():
     assert settings.GOG_KEYRING_PASSWORD == "s3cr3t-keyring-pw"
 
 
-def test_workspace_price_settings_have_expected_defaults():
-    s = Settings()
-    assert s.STRIPE_WORKSPACE_PRICE_ID == ""
-    assert s.WORKSPACE_PRICE_USD == 50
-    assert s.ULTRA_PRICE_USD == 150
-
-
 def test_apex_domain_collapses_subdomains():
     """The cookie scope, the same-site return-URL allowlist and the SES parent
     identity all key on the registrable apex, not on a brand literal."""

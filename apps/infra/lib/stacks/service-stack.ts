@@ -1657,31 +1657,6 @@ export class ServiceStack extends cdk.Stack {
           ? `https://${rootDomain},https://www.${rootDomain},https://admin.${rootDomain}`
           : `https://dev.${rootDomain},https://admin.dev.${rootDomain},http://localhost:3000`,
       CLERK_AZP_MODE: "audit",
-      // Stripe flat-fee Price ID is environment-specific: prod is created in
-      // Stripe live mode, dev in test mode, and they MUST NOT cross-pollinate
-      // (a test-mode Price would silently create test subscriptions in prod).
-      // Read per-env from the runner's secrets at synth time.
-      STRIPE_WORKSPACE_PRICE_ID:
-        env === "prod"
-          ? (process.env.STRIPE_WORKSPACE_PRICE_ID_PROD ?? "")
-          : (process.env.STRIPE_WORKSPACE_PRICE_ID_DEV ?? ""),
-      STRIPE_BASE_PRICE_ID:
-        env === "prod"
-          ? (process.env.STRIPE_BASE_PRICE_ID_PROD ?? "")
-          : (process.env.STRIPE_BASE_PRICE_ID_DEV ?? ""),
-      // Stripe Ultra Price ID — same env-specific live/test split as
-      // STRIPE_WORKSPACE_PRICE_ID above (a test-mode Price would silently create
-      // test subscriptions in prod). Read per-env from the runner's secrets
-      // at synth time. Consumed by the Ultra-tier checkout call site.
-      STRIPE_ULTRA_PRICE_ID:
-        env === "prod"
-          ? (process.env.STRIPE_ULTRA_PRICE_ID_PROD ?? "")
-          : (process.env.STRIPE_ULTRA_PRICE_ID_DEV ?? ""),
-      // Front desk add-on Price, same live/test split. Empty fails closed.
-      STRIPE_FRONT_DESK_PRICE_ID:
-        env === "prod"
-          ? (process.env.STRIPE_FRONT_DESK_PRICE_ID_PROD ?? "")
-          : (process.env.STRIPE_FRONT_DESK_PRICE_ID_DEV ?? ""),
       FRONTEND_URL:
         env === "prod" ? `https://${rootDomain}` : `https://dev.${rootDomain}`,
       // Public-facing base URL of THIS API. Used by /hooks/credentials

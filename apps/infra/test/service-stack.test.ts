@@ -439,18 +439,6 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
     });
   });
 
-  test("backend task definition carries STRIPE_WORKSPACE_PRICE_ID", () => {
-    template.hasResourceProperties("AWS::ECS::TaskDefinition", {
-      ContainerDefinitions: Match.arrayWith([
-        Match.objectLike({
-          Environment: Match.arrayWith([
-            Match.objectLike({ Name: "STRIPE_WORKSPACE_PRICE_ID" }),
-          ]),
-        }),
-      ]),
-    });
-  });
-
   test("backend task definition carries STRIPE_SPARK_PRICE_ID", () => {
     template.hasResourceProperties("AWS::ECS::TaskDefinition", {
       ContainerDefinitions: Match.arrayWith([
@@ -463,16 +451,16 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
     });
   });
 
-  test("backend task definition carries STRIPE_FRONT_DESK_PRICE_ID", () => {
-    template.hasResourceProperties("AWS::ECS::TaskDefinition", {
-      ContainerDefinitions: Match.arrayWith([
-        Match.objectLike({
-          Environment: Match.arrayWith([
-            Match.objectLike({ Name: "STRIPE_FRONT_DESK_PRICE_ID" }),
-          ]),
-        }),
-      ]),
-    });
+  test("the retired Workspace, Base, Ultra and Front desk price ids no longer reach the task env", () => {
+    const taskDefs = JSON.stringify(template.findResources("AWS::ECS::TaskDefinition"));
+    for (const removed of [
+      "STRIPE_WORKSPACE_PRICE_ID",
+      "STRIPE_BASE_PRICE_ID",
+      "STRIPE_ULTRA_PRICE_ID",
+      "STRIPE_FRONT_DESK_PRICE_ID",
+    ]) {
+      expect(taskDefs).not.toContain(removed);
+    }
   });
 
   test("no Stripe rail flag or removed company-Stripe/top-up setting reaches the task env", () => {

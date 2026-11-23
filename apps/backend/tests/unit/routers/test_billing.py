@@ -34,7 +34,6 @@ def dedup_table_and_settings(monkeypatch):
             BillingMode="PAY_PER_REQUEST",
         )
         monkeypatch.setenv("WEBHOOK_DEDUP_TABLE", "test-webhook-event-dedup")
-        monkeypatch.setattr("core.config.settings.STRIPE_WORKSPACE_PRICE_ID", "price_workspace_test")
         yield
 
 
@@ -73,24 +72,6 @@ class TestGetBillingAccount:
         assert data["lifetime_spend"] == 12.0
         assert data["subscription_status"] == "active"
         assert data["trial_end"] is None
-
-    @pytest.mark.asyncio
-    @patch("routers.billing.get_usage_summary")
-    @patch("routers.billing.billing_repo")
-    async def test_account_reports_front_desk_flag(self, mock_repo, mock_get_summary, async_client, monkeypatch):
-        from core.config import settings
-
-        monkeypatch.setattr(settings, "STRIPE_FRONT_DESK_PRICE_ID", "price_fd")
-        mock_get_summary.return_value = {"total_spend": 0, "lifetime_spend": 0}
-        row = {"owner_id": "user_test_123", "subscription_status": "active"}
-        mock_repo.get_by_owner_id = AsyncMock(return_value={**row, "front_desk": True})
-        data = (await async_client.get("/api/v1/billing/account")).json()
-        assert data["front_desk"] is True
-        assert data["front_desk_price_usd"] == 250
-        monkeypatch.setattr(settings, "STRIPE_FRONT_DESK_PRICE_ID", "")
-        assert (await async_client.get("/api/v1/billing/account")).json()["front_desk_price_usd"] is None
-        mock_repo.get_by_owner_id = AsyncMock(return_value=row)
-        assert (await async_client.get("/api/v1/billing/account")).json()["front_desk"] is False
 
     @pytest.mark.asyncio
     @patch("routers.billing.get_usage_summary")
@@ -176,11 +157,6 @@ class TestGetBillingAccount:
 
 
 class TestStripeWebhook:
-    @pytest.fixture(autouse=True)
-    def _no_front_desk_sync(self, monkeypatch):
-        """The Front desk line sync reaches Stripe and DynamoDB; these tests are not about it."""
-        monkeypatch.setattr("core.services.text_lines.sync_front_desk", AsyncMock(return_value="absent"))
-
     @pytest.mark.asyncio
     @patch("core.services.stripe_webhook_handlers.billing_repo")
     @patch("routers.billing.stripe")
@@ -259,147 +235,6 @@ class TestStripeWebhook:
         assert "trial.will_end_3day" in metric_names
 
     @pytest.mark.asyncio
-    @patch("core.services.stripe_webhook_handlers.billing_repo")
-    @patch("routers.billing.stripe")
-    async def test_subscription_updated_persists_status_and_trial_end(
-        self, mock_stripe, mock_repo, async_client, dedup_table_and_settings
-    ):
-        """customer.subscription.updated must call set_subscription with
-        status + trial_end so the frontend trial banner stays fresh."""
-        mock_stripe.Webhook.construct_event.return_value = {
-            "id": "evt_update_x",
-            "type": "customer.subscription.updated",
-            "data": {
-                "object": {
-                    "id": "sub_update_x",
-                    "customer": "cus_update_x",
-                    "status": "trialing",
-                    "trial_end": 1700000000,
-                    "items": {
-                        "data": [
-                            {
-                                "id": "si_workspace",
-                                "price": {
-                                    "id": "price_workspace_test",
-                                    "recurring": {"interval": "month"},
-                                },
-                            }
-                        ]
-                    },
-                }
-            },
-        }
-        mock_repo.list_by_stripe_customer_id = AsyncMock(
-            return_value=[
-                {
-                    "owner_id": "user_update_x",
-                    "stripe_customer_id": "cus_update_x",
-                }
-            ]
-        )
-        mock_repo.set_subscription = AsyncMock()
-
-        response = await async_client.post(
-            "/api/v1/billing/webhooks/stripe",
-            content=b'{"test": true}',
-            headers={"stripe-signature": "test_sig", "content-type": "application/json"},
-        )
-
-        assert response.status_code == 200
-        mock_repo.set_subscription.assert_awaited_once()
-        kwargs = mock_repo.set_subscription.await_args.kwargs
-        assert kwargs.get("owner_id") == "user_update_x"
-        assert kwargs.get("subscription_id") == "sub_update_x"
-        assert kwargs.get("status") == "trialing"
-        assert kwargs.get("trial_end") == 1700000000
-
-    @pytest.mark.asyncio
-    @patch("core.services.stripe_webhook_handlers.billing_repo")
-    @patch("routers.billing.stripe")
-    async def test_subscription_created_persists_status_and_provider_choice(
-        self, mock_stripe, mock_repo, async_client, dedup_table_and_settings
-    ):
-        """customer.subscription.created (the FIRST event for a new trial)
-        must persist subscription_status + trial_end + provider_choice — same
-        as customer.subscription.updated. Without this branch, users finishing
-        Stripe Checkout are stuck on the provider picker because is_subscribed
-        stays False.
-
-        provider_choice is persisted on the *billing_accounts* row keyed
-        by ``account["owner_id"]``. The webhook is an idempotent backup
-        for /trial-checkout's synchronous write.
-        """
-        mock_stripe.Webhook.construct_event.return_value = {
-            "id": "evt_created_x",
-            "type": "customer.subscription.created",
-            "data": {
-                "object": {
-                    "id": "sub_created_x",
-                    "customer": "cus_created_x",
-                    "status": "trialing",
-                    "trial_end": 1700000000,
-                    "metadata": {
-                        "provider_choice": "chatgpt_oauth",
-                        "clerk_user_id": "user_clerk_x",
-                    },
-                    "items": {
-                        "data": [
-                            {
-                                "id": "si_workspace",
-                                "price": {
-                                    "id": "price_workspace_test",
-                                    "recurring": {"interval": "month"},
-                                },
-                            }
-                        ]
-                    },
-                }
-            },
-        }
-        mock_repo.list_by_stripe_customer_id = AsyncMock(
-            return_value=[
-                {
-                    "owner_id": "org_x",
-                    "owner_type": "org",
-                    "stripe_customer_id": "cus_created_x",
-                }
-            ]
-        )
-        mock_repo.get_by_owner_id = AsyncMock(
-            return_value={
-                "owner_id": "org_x",
-                "owner_type": "org",
-                "stripe_customer_id": "cus_created_x",
-            }
-        )
-        mock_repo.set_subscription = AsyncMock()
-        mock_repo.set_provider_choice = AsyncMock()
-
-        response = await async_client.post(
-            "/api/v1/billing/webhooks/stripe",
-            content=b'{"test": true}',
-            headers={"stripe-signature": "test_sig", "content-type": "application/json"},
-        )
-
-        assert response.status_code == 200
-        mock_repo.set_subscription.assert_awaited_once()
-        kwargs = mock_repo.set_subscription.await_args.kwargs
-        assert kwargs["owner_id"] == "org_x"
-        assert kwargs["subscription_id"] == "sub_created_x"
-        assert kwargs["status"] == "trialing"
-        assert kwargs["trial_end"] == 1700000000
-        # Webhook backup writes provider_choice to billing_repo, keyed on
-        # account["owner_id"] (NOT clerk_user_id, NOT user_repo). Metadata is
-        # unauthenticated, so connector_user_id is None despite the
-        # clerk_user_id present in metadata.
-        mock_repo.set_provider_choice.assert_awaited_once_with(
-            "org_x",
-            provider_choice="chatgpt_oauth",
-            byo_provider=None,
-            connector_user_id=None,
-        )
-
-    @pytest.mark.asyncio
     @patch("routers.billing.stripe")
     async def test_webhook_invalid_signature(self, mock_stripe, async_client):
         mock_stripe.Webhook.construct_event.side_effect = Exception("bad sig")
@@ -411,128 +246,12 @@ class TestStripeWebhook:
         )
         assert response.status_code == 400
 
-    @pytest.mark.asyncio
-    @patch("core.services.stripe_webhook_handlers.billing_repo")
-    @patch("routers.billing.stripe")
-    async def test_subscription_updated_resolves_owner_via_metadata(
-        self, mock_stripe, mock_repo, async_client, dedup_table_and_settings
-    ):
-        """When subscription.metadata.owner_id is set, owner resolution must
-        prefer it over the stripe_customer_id GSI — that's what makes
-        email-shared customers (one human, multiple billing rows) safe."""
-        mock_stripe.Webhook.construct_event.return_value = {
-            "id": "evt_meta_owner",
-            "type": "customer.subscription.updated",
-            "data": {
-                "object": {
-                    "id": "sub_meta",
-                    "customer": "cus_shared",
-                    "status": "active",
-                    "metadata": {"owner_id": "org_xyz"},
-                    "items": {
-                        "data": [
-                            {
-                                "id": "si_workspace",
-                                "price": {
-                                    "id": "price_workspace_test",
-                                    "recurring": {"interval": "month"},
-                                },
-                            }
-                        ]
-                    },
-                }
-            },
-        }
-        mock_repo.get_by_owner_id = AsyncMock(return_value={"owner_id": "org_xyz", "stripe_customer_id": "cus_shared"})
-        # Even if the customer GSI would return a different (wrong) row,
-        # metadata.owner_id wins. Assert the GSI lookup was never reached.
-        mock_repo.list_by_stripe_customer_id = AsyncMock(
-            return_value=[
-                {"owner_id": "wrong_personal", "stripe_customer_id": "cus_shared"},
-                {"owner_id": "org_xyz", "stripe_customer_id": "cus_shared"},
-            ]
-        )
-        mock_repo.set_subscription = AsyncMock()
-
-        response = await async_client.post(
-            "/api/v1/billing/webhooks/stripe",
-            content=b'{"test": true}',
-            headers={"stripe-signature": "test_sig", "content-type": "application/json"},
-        )
-
-        assert response.status_code == 200
-        mock_repo.list_by_stripe_customer_id.assert_not_called()
-        mock_repo.set_subscription.assert_awaited_once()
-        assert mock_repo.set_subscription.await_args.kwargs["owner_id"] == "org_xyz"
-
-    @pytest.mark.asyncio
-    @patch("core.services.stripe_webhook_handlers.billing_repo")
-    @patch("routers.billing.stripe")
-    async def test_subscription_updated_disambiguates_shared_customer_by_sub_id(
-        self, mock_stripe, mock_repo, async_client, dedup_table_and_settings
-    ):
-        """Legacy subscriptions (no metadata.owner_id) on a now-shared
-        Stripe customer must be disambiguated by stripe_subscription_id,
-        not silently picked from the GSI's first hit."""
-        mock_stripe.Webhook.construct_event.return_value = {
-            "id": "evt_legacy_shared",
-            "type": "customer.subscription.updated",
-            "data": {
-                "object": {
-                    "id": "sub_legacy_org",
-                    "customer": "cus_shared",
-                    "status": "active",
-                    "items": {
-                        "data": [
-                            {
-                                "id": "si_workspace",
-                                "price": {
-                                    "id": "price_workspace_test",
-                                    "recurring": {"interval": "month"},
-                                },
-                            }
-                        ]
-                    },
-                }
-            },
-        }
-        mock_repo.get_by_owner_id = AsyncMock(return_value=None)
-        mock_repo.list_by_stripe_customer_id = AsyncMock(
-            return_value=[
-                {
-                    "owner_id": "personal_user",
-                    "stripe_customer_id": "cus_shared",
-                    "stripe_subscription_id": "sub_legacy_personal",
-                },
-                {
-                    "owner_id": "org_legacy",
-                    "stripe_customer_id": "cus_shared",
-                    "stripe_subscription_id": "sub_legacy_org",
-                },
-            ]
-        )
-        mock_repo.set_subscription = AsyncMock()
-
-        response = await async_client.post(
-            "/api/v1/billing/webhooks/stripe",
-            content=b'{"test": true}',
-            headers={"stripe-signature": "test_sig", "content-type": "application/json"},
-        )
-
-        assert response.status_code == 200
-        mock_repo.set_subscription.assert_awaited_once()
-        assert mock_repo.set_subscription.await_args.kwargs["owner_id"] == "org_legacy"
-
 
 @pytest.mark.asyncio
-async def test_public_prices_need_no_sign_in_and_match_checkout(async_client, monkeypatch):
-    from core.config import settings
-
-    monkeypatch.setattr(settings, "STRIPE_FRONT_DESK_PRICE_ID", "price_fd")
+async def test_public_prices_need_no_sign_in(async_client):
     response = await async_client.get("/api/v1/billing/prices")
     assert response.status_code == 200
     assert response.json() == {
-        "front_desk_price_usd": settings.FRONT_DESK_PRICE_USD,
         "voice_plan_monthly_usd": None,
         "voice_included_minutes": None,
         "voice_overage_usd_per_minute": None,
@@ -563,21 +282,3 @@ def test_checkout_acceptance_pins_the_billed_constants():
     assert get_args(f["acceptMonthlyUsd"].annotation) == (voice_billing.MONTHLY_USD,)
     assert get_args(f["acceptIncludedMinutes"].annotation) == (voice_billing.INCLUDED_MINUTES,)
     assert get_args(f["acceptOverageUsdPerMinute"].annotation) == (voice_billing.OVERAGE_USD_PER_MINUTE,)
-
-
-@pytest.mark.asyncio
-async def test_prices_include_front_desk(async_client, monkeypatch):
-    from core.config import settings
-
-    monkeypatch.setattr(settings, "STRIPE_FRONT_DESK_PRICE_ID", "price_fd")
-    response = await async_client.get("/api/v1/billing/prices")
-    assert response.json()["front_desk_price_usd"] == 250
-
-
-@pytest.mark.asyncio
-async def test_public_prices_have_no_front_desk_price_while_unconfigured(async_client, monkeypatch):
-    from core.config import settings
-
-    monkeypatch.setattr(settings, "STRIPE_FRONT_DESK_PRICE_ID", "")
-    response = await async_client.get("/api/v1/billing/prices")
-    assert response.json()["front_desk_price_usd"] is None

@@ -19,8 +19,7 @@ from core.config import settings
 from core.billing import voice_billing, voice_plan, voice_plan_checkout
 from core.observability.metrics import put_metric
 from core.repositories import billing_repo
-from core.repositories.workspace_repo import customer_ops_agent_id
-from core.services import apple_iap, billing_service, openrouter_keys, os_billing, photon, text_lines, trial_cap
+from core.services import apple_iap, openrouter_keys, os_billing, trial_cap
 from core.services.billing_service import BillingService
 from core.services.chat_gate import budget_block_reason
 from core.services.stripe_webhook_handlers import STRIPE_WEBHOOK_HANDLERS
@@ -102,14 +101,6 @@ async def _get_billing_account(auth: AuthContext) -> dict | None:
     return await billing_repo.get_by_owner_id(resolve_owner_id(auth))
 
 
-async def _ensure_person_trial(auth: AuthContext) -> None:
-    """Before a checkout, the person's tenant gets its trial row (create-if-absent, unarmed, as the provisioning doors
-    write it), so a Stripe customer joins the trial instead of replacing it."""
-    from core.services.user_provision import _ensure_trial_row
-
-    await _ensure_trial_row(resolve_owner_id(auth), actor_user_id=auth.user_id)
-
-
 # _resolve_owner_account was relocated to core/services/stripe_webhook_handlers.py
 # as the public `resolve_owner_account` along with the dispatch-table refactor of
 # handle_stripe_webhook (Tier 3A simplify audit). It had no callers outside the
@@ -144,11 +135,6 @@ async def get_trial_recap(auth: AuthContext = Depends(get_current_user)):
     return {"show": True, **await trial_recap.recap(owner_id, int(trial_end))}
 
 
-def _front_desk_price_usd() -> int | None:
-    """None while the Stripe price is unconfigured: nothing may advertise what checkout cannot bill."""
-    return settings.FRONT_DESK_PRICE_USD if settings.STRIPE_FRONT_DESK_PRICE_ID else None
-
-
 @router.get(
     "/prices",
     summary="The public plan price",
@@ -168,7 +154,6 @@ async def get_public_prices(response: Response):
         "voice_plan_monthly_usd": voice_billing.MONTHLY_USD if voice else None,
         "voice_included_minutes": voice_billing.INCLUDED_MINUTES if voice else None,
         "voice_overage_usd_per_minute": voice_billing.OVERAGE_USD_PER_MINUTE if voice else None,
-        "front_desk_price_usd": _front_desk_price_usd(),
     }
 
 
@@ -223,11 +208,6 @@ async def get_billing_account(
         # A trial (or no row) has no plan: the "standard" default is only for PAID rows written
         # before the plan field existed. Reporting a trial as "standard" read as a paid Workspace.
         plan=(account.get("plan") or "standard") if account and subscription_status != "trial_local" else None,
-        workspace_price_usd=settings.WORKSPACE_PRICE_USD,
-        base_price_usd=settings.BASE_PRICE_USD,
-        ultra_price_usd=settings.ULTRA_PRICE_USD,
-        front_desk=bool(account.get("front_desk")) if account else False,
-        front_desk_price_usd=_front_desk_price_usd(),
         managed_markup=settings.OPENROUTER_MARKUP or None,
         subscription_source=(account.get("subscription_source") if account else None),
         apple_iap_product_ids=list(apple_iap.SELLING_PRODUCTS) if settings.APPLE_IAP_SELLING else [],
@@ -253,7 +233,6 @@ def _future_epoch(value) -> int | None:
 async def create_portal(
     auth: AuthContext = Depends(get_current_user),
 ):
-
     account = await _get_billing_account(auth)
     if not account:
         raise HTTPException(status_code=404, detail="Billing account not found")
@@ -261,132 +240,6 @@ async def create_portal(
     billing_service = BillingService()
     url = await billing_service.create_portal_session(account)
     return PortalResponse(portal_url=url)
-
-
-# ---------------------------------------------------------------------------
-# Workspace subscription checkout.
-# ---------------------------------------------------------------------------
-
-
-class CheckoutRequest(BaseModel):
-    # One plan (T06): Base and Ultra are retired and no longer sold. Existing
-    # rows on them keep billing until moved; the webhook still reads their prices.
-    plan: Literal["workspace"] = "workspace"
-    return_to: Literal["web", "app"] = "web"
-    # Required to change the plan of a live subscription; without it the
-    # response is ``confirm_required`` with the cost and nothing is changed.
-    confirm: bool = False
-    # Where a web Checkout returns (fixed paths, billing_service._CHECKOUT_RETURNS):
-    # the two onboarding values resume the selected provider setup after the plan is active.
-    then: Literal["chatgpt", "chatgpt_onboarding", "managed_onboarding"] | None = None
-
-
-@router.post(
-    "/checkout",
-    summary="Start or change a workspace subscription",
-    operation_id="create_workspace_checkout",
-)
-async def create_workspace_checkout(
-    body: CheckoutRequest,
-    auth: AuthContext = Depends(get_current_user),
-):
-    """The only subscription Checkout entry point for an active workspace."""
-    owner_id = resolve_owner_id(auth)
-    await _ensure_person_trial(auth)
-    account = await _get_billing_account(auth)
-    if apple_iap.apple_is_live(account):
-        # Billed through the App Store; a web checkout would start a second subscription.
-        raise HTTPException(status_code=409, detail="apple_managed")
-    if not account or not account.get("stripe_customer_id"):
-        try:
-            await BillingService().create_customer_for_owner(
-                owner_id=owner_id,
-                email=auth.email,
-            )
-        except Exception as e:  # noqa: BLE001
-            logger.warning("workspace checkout customer creation failed owner_id=%s: %s", owner_id, e)
-            raise HTTPException(status_code=502, detail="Could not reach billing provider") from e
-
-    from core.services.billing_service import BillingServiceError, create_workspace_checkout as create_checkout
-
-    try:
-        result = await create_checkout(
-            owner_id=owner_id,
-            clerk_user_id=auth.user_id,
-            plan=body.plan,
-            return_to=body.return_to,
-            confirm=body.confirm,
-            then=body.then,
-        )
-    except BillingServiceError as e:
-        if str(e) == "checkout_in_progress":
-            raise HTTPException(status_code=409, detail="checkout_in_progress") from e
-        raise HTTPException(status_code=400, detail=str(e)) from e
-
-    return result
-
-
-class FrontDeskRequest(BaseModel):
-    return_to: Literal["web", "app"] = "web"
-
-
-@router.post(
-    "/front-desk",
-    summary="Add the Front desk add-on, or start Checkout for Team plus the add-on",
-    operation_id="create_front_desk",
-)
-async def create_front_desk(
-    body: FrontDeskRequest,
-    auth: AuthContext = Depends(get_current_user),
-):
-    """The line itself is provisioned by the Stripe webhook, never by this click."""
-    owner_id = resolve_owner_id(auth)
-    await _ensure_person_trial(auth)
-    account = await _get_billing_account(auth)
-    if apple_iap.apple_is_live(account):
-        raise HTTPException(status_code=409, detail="apple_managed")
-
-    # The add-on needs the Customer Operations agent; refuse before any billing call.
-    if not await customer_ops_agent_id(owner_id):
-        raise HTTPException(status_code=409, detail="no_front_desk_agent")
-
-    if apple_iap.stripe_is_live(account):
-        outcome = await billing_service.add_front_desk_item(owner_id)
-        if outcome == "already":
-            # The subscription has the add-on but the line may not: a failed purchase leaves no event to retry.
-            try:
-                await text_lines.ensure_line(owner_id)
-            except (billing_service.BillingServiceError, photon.PhotonError) as e:
-                logger.warning("front desk line request failed owner_id=%s: %s", owner_id, e)
-                raise HTTPException(status_code=502, detail="line_provision_failed") from e
-        if outcome in ("added", "already"):
-            return {"status": outcome}
-        raise HTTPException(status_code=400, detail=outcome)
-
-    if not account or not account.get("stripe_customer_id"):
-        try:
-            await BillingService().create_customer_for_owner(
-                owner_id=owner_id,
-                email=auth.email,
-            )
-        except Exception as e:  # noqa: BLE001
-            logger.warning("front desk customer creation failed owner_id=%s: %s", owner_id, e)
-            raise HTTPException(status_code=502, detail="Could not reach billing provider") from e
-
-    try:
-        result = await billing_service.create_workspace_checkout(
-            owner_id=owner_id,
-            clerk_user_id=auth.user_id,
-            plan="workspace",
-            return_to=body.return_to,
-            front_desk=True,
-        )
-    except billing_service.BillingServiceError as e:
-        if str(e) == "checkout_in_progress":
-            raise HTTPException(status_code=409, detail="checkout_in_progress") from e
-        raise HTTPException(status_code=400, detail=str(e)) from e
-
-    return {"status": "checkout", "url": result["checkout_url"]}
 
 
 # ---------------------------------------------------------------------------

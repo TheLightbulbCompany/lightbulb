@@ -194,7 +194,7 @@ async def seed_voice(a, b, mp, calls) -> dict:
 
 
 async def seed_billing(a, b, mp, calls) -> dict:
-    for name in ("STRIPE_WORKSPACE_PRICE_ID", "STRIPE_FRONT_DESK_PRICE_ID", "STRIPE_VOICE_PLAN_PRICE_ID"):
+    for name in ("STRIPE_VOICE_PLAN_PRICE_ID",):
         mp.setattr(settings, name, f"price_{name}")
     for name in ("METRONOME_VOICE_ENROLLMENT_ENABLED", "METRONOME_API_KEY", "METRONOME_VOICE_RATE_CARD_ID"):
         mp.setattr(settings, name, True if name.endswith("ENABLED") else "test")
@@ -522,8 +522,6 @@ CASES = [
     Case("billing", "GET", "/api/v1/billing/trial-recap"),
     Case("billing", "GET", "/api/v1/billing/credits/balance"),
     Case("billing", "POST", "/api/v1/billing/portal"),
-    Case("billing", "POST", "/api/v1/billing/checkout", {"plan": "workspace"}),
-    Case("billing", "POST", "/api/v1/billing/front-desk", {}),
     Case("billing", "GET", "/api/v1/billing/voice-plan"),
     Case("billing", "POST", "/api/v1/billing/voice-plan/checkout", VOICE_PLAN),
     Case("billing", "DELETE", "/api/v1/billing/voice-plan", query={"expectedOwnerId": "{b_tenant}"}),
@@ -1200,18 +1198,6 @@ async def test_person_provisions_posts_and_dispatches_only_on_their_own_tenant(d
                       {**text, "clientMessageId": str(uuid.uuid4()), "threadRootMessageId": None})  # fmt: skip
     assert read.status_code in (403, 404) and post.status_code in (403, 404), (read.text[:200], post.text[:200])
     assert snapshot(ddb, person.user_id, room["roomId"]) == before
-
-
-async def test_person_workspace_checkout_bills_no_seats(ddb, calls, jwks, monkeypatch):
-    """A person's tenant is one human: the Team checkout carries no seat item."""
-    await seed_billing(Tenant("user_a", None), Tenant("user_b", None), monkeypatch, calls)
-    person = Tenant("user_solo", None)
-    calls.clear()
-    assert (await call(person, "POST", "/api/v1/billing/checkout", {"plan": "workspace"})).status_code == 200
-    (session,) = _stripe_posts(calls, "/v1/checkout/sessions")
-    assert "price_seat" not in session.values() and session["metadata[workspace_id]"] == person.user_id
-    row = await billing_repo.get_by_owner_id(person.user_id, consistent_read=True)
-    assert row["subscription_status"] == "trial_local"
 
 
 @pytest.mark.parametrize("paid", [False, True])

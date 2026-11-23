@@ -670,8 +670,6 @@ def real(monkeypatch, fake):
     reconcile = AsyncMock(return_value=True)
     monkeypatch.setattr("core.services.provision_dispatch.dispatch_reconcile", reconcile)
     monkeypatch.setattr("core.services.owner_facts.write_owner_facts", AsyncMock())
-    monkeypatch.setattr("core.services.text_lines.sync_front_desk", AsyncMock(return_value="absent"))
-    monkeypatch.setattr(settings, "STRIPE_WORKSPACE_PRICE_ID", "price_workspace_test")
     resolve = AsyncMock(wraps=stripe_webhook_handlers.resolve_owner_account)
     monkeypatch.setattr(stripe_webhook_handlers, "resolve_owner_account", resolve)
 
@@ -715,40 +713,6 @@ async def test_a_spark_customers_invoice_and_refund_pass_the_real_handlers_untou
     assert ddb.billing.scan()["Items"] == []
     assert "cancel" not in fake.kinds() and sub_fields(ddb)["os_subscription_status"] == "active"
     real.reconcile.assert_not_awaited()
-
-
-async def test_an_existing_plan_event_still_runs_the_real_workspace_handler(ddb, clock, real, fake):
-    await account()
-    users_before = ddb.users.scan()["Items"]
-    ddb.billing.put_item(
-        Item={
-            "owner_id": "org_x",
-            "owner_type": "org",
-            "stripe_customer_id": "cus_ws",
-            "stripe_subscription_id": "sub_ws",
-            "subscription_status": "active",
-            "plan": "standard",
-        }
-    )
-    sub = {
-        "id": "sub_ws",
-        "customer": "cus_ws",
-        "status": "past_due",
-        "metadata": {"workspace_id": "org_x"},
-        "items": {
-            "data": [{"id": "si_1", "price": {"id": "price_workspace_test", "recurring": {"interval": "month"}}}]
-        },
-    }
-    r = await real.send({"id": "evt_r4", "type": "customer.subscription.updated", "data": {"object": sub}})
-    assert r.status_code == 200
-    row = ddb.billing.get_item(Key={"owner_id": "org_x"})["Item"]
-    assert (row["subscription_status"], row["stripe_subscription_id"]) == ("past_due", "sub_ws")
-    real.resolve.assert_awaited()
-    assert ddb.users.scan()["Items"] == users_before
-    assert fake.calls == []  # no Spark Stripe call on a workspace event
-
-
-# --- one payable Checkout Session per person ---------------------------------------------------------------
 
 
 def stored_session(ddb):

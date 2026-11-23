@@ -39,7 +39,7 @@
 .lm .tile.nova.lit{background:#26344F;box-shadow:0 0 0 3px var(--bulb)}
 
 /* the narrator: live captions */
-.lm #bar{position:fixed;left:50%;bottom:22px;transform:translateX(-50%);z-index:40;width:min(820px,calc(100vw - 32px));min-height:84px;display:flex;align-items:center;gap:18px;padding:14px 22px 14px 16px;border-radius:20px;background:rgba(15,26,43,.96);color:var(--ground);box-shadow:0 18px 40px -18px rgba(15,26,43,.55);transition:opacity .3s}
+.lm #bar{position:fixed;left:50%;bottom:22px;transform:translateX(-50%);z-index:40;width:min(820px,calc(100vw - 32px));min-height:84px;display:flex;align-items:center;gap:18px;padding:14px 22px 14px 16px;border-radius:20px;background:rgba(15,26,43,.96);color:var(--ground);box-shadow:0 18px 40px -18px rgba(15,26,43,.55);transition:opacity .3s;pointer-events:none}
 .lm #bar.off{opacity:0}
 .lm #bar .orb{flex:none;width:52px;height:52px;border-radius:50%;background:radial-gradient(circle at 40% 35%,#7C869A,#3E4A62 70%);transition:background .3s,box-shadow .3s}
 .lm #bar.lit .orb{background:radial-gradient(circle at 40% 35%,#fff6cf,var(--bulb) 55%,var(--bulb-deep));box-shadow:0 0 0 7px rgba(240,195,78,.2),0 0 46px 14px rgba(240,195,78,.45)}

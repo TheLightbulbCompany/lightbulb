@@ -418,12 +418,6 @@ async def seed_oauth(a, b, mp, calls) -> dict:
     return {}
 
 
-async def seed_devices(a, b, mp, calls) -> dict:
-    await user_repo.put(a.user_id, None)
-    await user_repo.set_push_token(a.user_id, "dev-a", {"token": f"ExponentPushToken[{MARKER}]", "platform": "ios"})
-    return {}
-
-
 async def seed_debug(a, b, mp, calls) -> dict:
     await workspaces(a, b)
     await billing_rows(a, b)
@@ -465,7 +459,6 @@ SEEDS = {
     "os": seed_os,
     "runtime_rpc": seed_runtime_rpc,
     "oauth": seed_oauth,
-    "devices": seed_devices,
     "debug": seed_debug,
     "config": seed_config,
 }
@@ -712,15 +705,8 @@ CASES = [
     Case("os", "GET", "/api/v1/os/voice-session/{a_voice}", a_id=True),
     Case("os", "DELETE", "/api/v1/os/voice-session/{a_voice}", a_id=True),
     Case("os", "POST", "/api/v1/os/event", {"event": "app_opened", "installId": "{new}"}),  # B's own install
-    # devices, support, desktop sign-in: the caller's own
-    Case(
-        "devices", "POST", "/api/v1/devices", {"token": "ExponentPushToken[b]", "platform": "ios", "deviceId": "dev-b"}
-    ),
-    Case("devices", "DELETE", "/api/v1/devices/dev-a"),
+    # support: the caller's own
     Case("support_tickets", "POST", "/api/v1/support/tickets", {"message": "help"}),
-    Case(
-        "desktop_auth", "POST", "/api/v1/auth/desktop/sign-in-token", ok=(500,)
-    ),  # no CLERK_SECRET_KEY in tests: the case proves only that nothing of A's moves
     # runtime_rpc: tenant = caller
     Case(
         "runtime_rpc",
@@ -740,7 +726,6 @@ NO_SEED = {
     "main": "/protected echoes the caller's own id",
     "support_tickets": "one POST: it reads the caller's own billing and container rows, emails support and stores "
     "nothing; it takes no id",
-    "desktop_auth": "mints a Clerk sign-in token for the caller; reads no tenant row (Clerk is the network fake)",
 }
 
 

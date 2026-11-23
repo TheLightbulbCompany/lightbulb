@@ -105,7 +105,5 @@ def test_billing_account_response_plan_defaults_to_none():
         is_subscribed=False,
         current_spend=0.0,
         lifetime_spend=0.0,
-        workspace_price_usd=50,
-        ultra_price_usd=150,
     )
     assert resp.plan is None

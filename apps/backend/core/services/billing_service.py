@@ -165,12 +165,11 @@ def price_lock_until(now_s: int) -> str:
 
 
 async def mark_founding_team(owner_id: str) -> dict:
-    """Admin: mark a workspace as a founding team (two-year price lock).
+    """Admin: tag a workspace as a founding team (two-year price lock).
 
-    Its next Checkout carries ``price_lock_until`` in subscription metadata; a
-    subscription that is already live is stamped now. An existing lock is kept,
-    never moved. Any future price change must skip a subscription whose lock
-    has not passed.
+    No checkout writes ``price_lock_until`` any more: this only tags the row, and stamps a
+    subscription that is already live. An existing lock is kept, never moved. Any future price
+    change must skip a subscription whose lock has not passed.
     """
     account = await billing_repo.get_by_owner_id(owner_id)
     if not account:

@@ -6,8 +6,8 @@ Three outcomes, so `apply_effect` never sends twice:
 - `ExecutorRefused`: it definitely did not happen (policy, not ready, not connected) — safe to tell the Worker;
 - `ExecutorUnknown`: it may have happened (an error after the request left) — the Effect becomes `unknown`, shown
   plainly, never retried.
-The executors reuse the existing doors and their own gates: `agent_mail_send.send` (caps, recipient rules),
-GitHub's merge API with the owner's stored token.
+The merge executor uses GitHub's merge API with the owner's stored token. `mail.send` stays registered only so a
+stale effect refuses plainly: agent mail is retired.
 """
 
 from __future__ import annotations
@@ -16,7 +16,6 @@ from collections.abc import Awaitable, Callable
 
 import httpx
 
-from core.services import agent_mail_send
 from core.services.credentials import integration_secret_store
 
 GITHUB_API = "https://api.github.com"
@@ -40,21 +39,8 @@ class ExecutorUnknown(Exception):
 
 
 async def mail_send(owner_id: str, operands: dict, answered_by: str) -> str:
-    """`agent_mail_send.send` never raises: "sent", "error" (may be after SES accepted), or a refusal code."""
-    result = await agent_mail_send.send(
-        owner_id=owner_id,
-        agent_id=operands["agentId"],
-        subject=operands.get("subject") or "",
-        body_text=operands.get("body") or "",
-        to=operands.get("to"),
-        reply_key=operands.get("replyKey"),
-        purpose="task",
-    )
-    if result == "sent":
-        return "mail:sent"
-    if result == "error":
-        raise ExecutorUnknown("mail send error")
-    raise ExecutorRefused(result)
+    """Agent-sent mail is retired: refuse, never send."""
+    raise ExecutorRefused("mail_retired")
 
 
 async def pr_merge(owner_id: str, operands: dict, answered_by: str) -> str:

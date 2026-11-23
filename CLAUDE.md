@@ -125,7 +125,7 @@ match. Keep the id-qualified form in the deploy-role trust policies.
 Names from deleted systems that still carry load. Prove nothing reads a resource before you delete it.
 
 - **`paperclip-companies` table**: the canonical workspace identity row.
-- **`PAPERCLIP_SERVICE_TOKEN_KEY`**: signs session shares, digests and Needs-you links.
+- **`PAPERCLIP_SERVICE_TOKEN_KEY`**: signs the Spark billing links, local-session grants and meeting-context tokens (`service_token._signing_key`).
 - **The bridge's `/internal/paperclip/v1/runs` route** (`apps/infra/hermes/bridge/server.py`): creates, polls
   and stops a real Hermes turn.
 - **`ECS_SUBNETS`, `ECS_SECURITY_GROUP_ID`**: the AgentCore `networkModeConfig` that

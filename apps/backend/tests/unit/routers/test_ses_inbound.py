@@ -34,21 +34,14 @@ attributes on that module — mirrors ``tests/unit/routers/test_agent_mail.py``'
 patch-target convention for the sibling Resend webhook.
 """
 
-from datetime import datetime, timezone
 from unittest.mock import AsyncMock, call
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from core.services import trial_cap
-from core.services.agent_mail_inbound import stranger_key
 from core.services.webhook_dedup import WebhookDedupResult
 from routers import ses_inbound
-
-# The autouse fixture below replaces ``_ceo`` for every test; the one test of ``_ceo`` itself
-# needs the real function.
-_REAL_CEO = ses_inbound._ceo
 
 SECRET = "ses-test-secret"
 DOMAIN = "agents.isol8.co"
@@ -66,7 +59,6 @@ def _team_mailbox(monkeypatch):
     says otherwise; its mail is the CEO's (``AGENT_ID`` here) unless it answers
     an agent's own sent mail. A missing row cannot be created by default (terminally)."""
     monkeypatch.setattr(ses_inbound, "is_team_address", AsyncMock(return_value=(OWNER_ID, "acme-robotics")))
-    monkeypatch.setattr(ses_inbound, "_ceo", AsyncMock(return_value=AGENT_ID))
     monkeypatch.setattr(ses_inbound, "_owner_email", AsyncMock(return_value="owner@example.com"))
     monkeypatch.setattr(ses_inbound, "ensure_team_address", AsyncMock(return_value=(None, "disabled")))
 
@@ -88,12 +80,6 @@ def _dedup_recorded(monkeypatch):
         ses_inbound,
         "record_event_or_skip",
         AsyncMock(return_value=WebhookDedupResult.RECORDED),
-    )
-    monkeypatch.setattr(ses_inbound, "find_by_message_id", AsyncMock(return_value=None))
-    monkeypatch.setattr(
-        ses_inbound,
-        "put_message",
-        AsyncMock(return_value={"address": RECIPIENT, "received_key": "2026#m"}),
     )
 
 
@@ -131,27 +117,21 @@ def _post(client, body, secret=SECRET):
 def test_disabled_when_secret_unset(client, monkeypatch):
     monkeypatch.setattr(ses_inbound.settings, "SES_INBOUND_SECRET", "")
     monkeypatch.setattr(ses_inbound.settings, "AGENT_EMAIL_DOMAIN", DOMAIN)
-    deliver_mock = AsyncMock()
-    monkeypatch.setattr(ses_inbound, "deliver_to_agent", deliver_mock)
 
     resp = _post(client, _body())
 
     assert resp.status_code == 200
     assert resp.json()["status"] == "disabled"
-    deliver_mock.assert_not_called()
 
 
 def test_disabled_when_domain_unset(client, monkeypatch):
     monkeypatch.setattr(ses_inbound.settings, "SES_INBOUND_SECRET", SECRET)
     monkeypatch.setattr(ses_inbound.settings, "AGENT_EMAIL_DOMAIN", "")
-    deliver_mock = AsyncMock()
-    monkeypatch.setattr(ses_inbound, "deliver_to_agent", deliver_mock)
 
     resp = _post(client, _body())
 
     assert resp.status_code == 200
     assert resp.json()["status"] == "disabled"
-    deliver_mock.assert_not_called()
 
 
 def test_missing_secret_header_returns_401(client, monkeypatch):
@@ -179,8 +159,6 @@ def test_duplicate_message_id_returns_duplicate(client, monkeypatch):
         "record_event_or_skip",
         AsyncMock(return_value=WebhookDedupResult.ALREADY_SEEN),
     )
-    deliver_mock = AsyncMock()
-    monkeypatch.setattr(ses_inbound, "deliver_to_agent", deliver_mock)
     get_mock = AsyncMock()
     monkeypatch.setattr(ses_inbound, "get_by_address", get_mock)
 
@@ -188,11 +166,10 @@ def test_duplicate_message_id_returns_duplicate(client, monkeypatch):
 
     assert resp.status_code == 200
     assert resp.json()["status"] == "duplicate"
-    deliver_mock.assert_not_called()
     get_mock.assert_not_awaited()
 
 
-def test_empty_message_id_skips_dedup_and_delivers(client, monkeypatch):
+def test_empty_message_id_skips_dedup(client, monkeypatch):
     """message_id is required in practice, but a Lambda payload that arrives
     with an empty one must skip dedup (there's no key to record) rather than
     treating it as an error and dropping the mail."""
@@ -200,20 +177,12 @@ def test_empty_message_id_skips_dedup_and_delivers(client, monkeypatch):
     dedup_mock = AsyncMock()
     monkeypatch.setattr(ses_inbound, "record_event_or_skip", dedup_mock)
     monkeypatch.setattr(ses_inbound, "get_by_address", AsyncMock(return_value=_row()))
-    monkeypatch.setattr(ses_inbound, "find_by_message_id", AsyncMock(return_value=None))
-    monkeypatch.setattr(
-        ses_inbound, "put_message", AsyncMock(return_value={"address": RECIPIENT, "received_key": "2026#m"})
-    )
-    monkeypatch.setattr(ses_inbound, "trial_block_reason", AsyncMock(return_value=None))
-    deliver_mock = AsyncMock(return_value="delivered")
-    monkeypatch.setattr(ses_inbound, "deliver_to_agent", deliver_mock)
 
     resp = _post(client, _body(message_id=""))
 
     assert resp.status_code == 200
-    assert resp.json()["status"] == "delivered"
+    assert resp.json()["status"] == "dropped_not_an_invite"
     dedup_mock.assert_not_awaited()
-    deliver_mock.assert_awaited_once()
 
 
 def test_unknown_recipient_is_dropped(client, monkeypatch):
@@ -222,39 +191,11 @@ def test_unknown_recipient_is_dropped(client, monkeypatch):
     _dedup_recorded(monkeypatch)
     monkeypatch.setattr(ses_inbound, "is_team_address", AsyncMock(return_value=None))
     monkeypatch.setattr(ses_inbound, "get_by_address", AsyncMock(return_value=_row()))
-    deliver_mock = AsyncMock()
-    monkeypatch.setattr(ses_inbound, "deliver_to_agent", deliver_mock)
 
     resp = _post(client, _body())
 
     assert resp.status_code == 200
     assert resp.json()["status"] == "dropped_unknown_recipient"
-    deliver_mock.assert_not_called()
-
-
-def test_unlisted_sender_is_stored_not_woken(client, monkeypatch):
-    _enable(monkeypatch)
-    _dedup_recorded(monkeypatch)
-    monkeypatch.setattr(ses_inbound, "get_by_address", AsyncMock(return_value=_row(verified_senders=["owner@x.y"])))
-    deliver = AsyncMock(return_value="delivered")
-    monkeypatch.setattr(ses_inbound, "deliver_to_agent", deliver)
-    r = _post(client, _body())  # SENDER is not owner@x.y
-    assert r.status_code == 200 and r.json()["status"] == "stored_not_woken"
-    ses_inbound.put_message.assert_awaited_once()
-    deliver.assert_not_awaited()
-    ses_inbound.agent_email.mail_changed.assert_awaited_once_with(_row()["owner_id"])  # the Mail panel re-reads
-
-
-def test_domain_allowlist_entry_wakes(client, monkeypatch):
-    _enable(monkeypatch)
-    _dedup_recorded(monkeypatch)
-    monkeypatch.setattr(ses_inbound, "get_by_address", AsyncMock(return_value=_row(verified_senders=["@example.com"])))
-    monkeypatch.setattr(ses_inbound, "trial_block_reason", AsyncMock(return_value=None))
-    deliver = AsyncMock(return_value="delivered")
-    monkeypatch.setattr(ses_inbound, "deliver_to_agent", deliver)
-    r = _post(client, _body())
-    assert r.json()["status"] == "delivered"
-    assert "Reply-Key: " in deliver.call_args.kwargs["message"]
 
 
 def test_spam_is_dropped_before_store(client, monkeypatch):
@@ -263,173 +204,6 @@ def test_spam_is_dropped_before_store(client, monkeypatch):
     monkeypatch.setattr(ses_inbound, "get_by_address", AsyncMock(return_value=_row()))
     r = _post(client, _body(verdicts={"spam": "FAIL"}))
     assert r.json()["status"] == "dropped_spam_or_virus"
-    ses_inbound.put_message.assert_not_awaited()
-    ses_inbound.agent_email.mail_changed.assert_not_awaited()
-
-
-def test_over_cap_reports_capped_notified_when_autoreply_succeeds(client, monkeypatch):
-    """Over cap is ANSWERED, not dropped in silence -- the sender allowlist
-    above already proved this is the owner, so replying is safe here."""
-    _enable(monkeypatch)
-    _dedup_recorded(monkeypatch)
-    monkeypatch.setattr(ses_inbound, "get_by_address", AsyncMock(return_value=_row()))
-    monkeypatch.setattr(ses_inbound, "trial_block_reason", AsyncMock(return_value=trial_cap.DAILY_CAP))
-    monkeypatch.setattr(ses_inbound, "send_cap_autoreply", AsyncMock(return_value=True))
-    deliver_mock = AsyncMock()
-    monkeypatch.setattr(ses_inbound, "deliver_to_agent", deliver_mock)
-
-    resp = _post(client, _body())
-
-    assert resp.status_code == 200
-    assert resp.json()["status"] == "capped_notified"
-    deliver_mock.assert_not_called()
-
-
-@pytest.fixture
-def capped_owner(monkeypatch):
-    """A verified sender emailing an over-cap owner -- eligible for an autoreply."""
-    _enable(monkeypatch)
-    _dedup_recorded(monkeypatch)
-    row = {
-        "owner_id": OWNER_ID,
-        "address": "agents@acme.isol8.co",
-        "verified_senders": ["owner@example.com"],
-    }
-    monkeypatch.setattr(ses_inbound, "get_by_address", AsyncMock(return_value=row))
-    monkeypatch.setattr(ses_inbound, "trial_block_reason", AsyncMock(return_value=trial_cap.DAILY_CAP))
-    return row
-
-
-def _capped_body(**overrides):
-    overrides.setdefault("from", "Owner <owner@example.com>")
-    return _body(**overrides)
-
-
-def test_over_cap_sends_an_autoreply_and_reports_capped_notified(client, monkeypatch, capped_owner):
-    calls = []
-
-    async def _autoreply(*, owner_id, agent_id, reason, from_addr, to, in_reply_to, subject):
-        calls.append({"owner_id": owner_id, "agent_id": agent_id, "reason": reason, "from": from_addr, "to": to})
-        return True
-
-    monkeypatch.setattr(ses_inbound, "send_cap_autoreply", _autoreply)
-
-    resp = _post(client, _capped_body())
-
-    assert resp.status_code == 200
-    assert resp.json()["status"] == "capped_notified"
-    assert len(calls) == 1
-    # Sent FROM the agent's own address, TO the owner who wrote in.
-    assert calls[0]["from"] == "agents@acme.isol8.co"
-    assert calls[0]["agent_id"] == AGENT_ID
-    assert calls[0]["to"] == "owner@example.com"
-
-
-def test_over_cap_autoreply_threads_on_message_id_header_not_ses_id(client, monkeypatch, capped_owner):
-    """`in_reply_to` must be the RFC-5322 `Message-ID` header the sender's own
-    mail client threads on -- NOT SES's internal `message_id`, which matches
-    nothing in any mail client. SES's id and the mail header are set to
-    different values here so this test fails if someone reverts to the SES id."""
-    calls = []
-
-    async def _autoreply(*, owner_id, agent_id, reason, from_addr, to, in_reply_to, subject):
-        calls.append(in_reply_to)
-        return True
-
-    monkeypatch.setattr(ses_inbound, "send_cap_autoreply", _autoreply)
-
-    resp = _post(
-        client,
-        _capped_body(
-            message_id="ses-internal-id-999",
-            headers={"Auto-Submitted": "no", "Message-ID": "<real-thread@owner-mailbox>"},
-        ),
-    )
-
-    assert resp.json()["status"] == "capped_notified"
-    assert calls == ["<real-thread@owner-mailbox>"]
-
-
-def test_over_cap_still_reports_dropped_when_the_autoreply_fails(client, monkeypatch, capped_owner):
-    async def _autoreply(**kwargs):
-        return False
-
-    monkeypatch.setattr(ses_inbound, "send_cap_autoreply", _autoreply)
-
-    resp = _post(client, _capped_body())
-
-    assert resp.status_code == 200
-    assert resp.json()["status"] == "dropped_over_cap"
-
-
-def test_over_cap_never_delivers_to_the_agent(client, monkeypatch, capped_owner):
-    deliver_mock = AsyncMock()
-    monkeypatch.setattr(ses_inbound, "deliver_to_agent", deliver_mock)
-
-    async def _autoreply(**kwargs):
-        return True
-
-    monkeypatch.setattr(ses_inbound, "send_cap_autoreply", _autoreply)
-
-    _post(client, _capped_body())
-
-    deliver_mock.assert_not_called()
-
-
-def test_over_cap_and_dmarc_fail_drops_before_the_autoreply_can_send(client, monkeypatch, capped_owner):
-    """Pins ordering: the cap check must run AFTER the anti-spoof gate. `From`
-    is a bare header parse with no DKIM/SPF binding, so the sender allowlist
-    alone doesn't prove this wasn't spoofed -- if the cap check ran first, a
-    spoofed sender for an over-cap owner would still trigger a real outbound
-    email. Fails if the cap-check block is moved back above this gate."""
-    autoreply_mock = AsyncMock()
-    monkeypatch.setattr(ses_inbound, "send_cap_autoreply", autoreply_mock)
-
-    resp = _post(
-        client,
-        _capped_body(verdicts={"spf": "PASS", "dkim": "PASS", "dmarc": "FAIL", "spam": "PASS", "virus": "PASS"}),
-    )
-
-    assert resp.status_code == 200
-    assert resp.json()["status"] == "dropped_failed_authentication"
-    autoreply_mock.assert_not_called()
-
-
-def test_over_cap_and_auto_submitted_drops_before_the_autoreply_can_send(client, monkeypatch, capped_owner):
-    """Pins ordering: the cap check must run AFTER the auto-submitted loop
-    guard, or an out-of-office autoresponder from the owner's own mail
-    infrastructure would trigger a real outbound reply -- a mail loop. Fails
-    if the cap-check block is moved back above this guard."""
-    autoreply_mock = AsyncMock()
-    monkeypatch.setattr(ses_inbound, "send_cap_autoreply", autoreply_mock)
-
-    resp = _post(
-        client,
-        _capped_body(headers={"Auto-Submitted": "auto-replied", "Message-ID": "<orig@x>"}),
-    )
-
-    assert resp.status_code == 200
-    assert resp.json()["status"] == "dropped_auto_submitted"
-    autoreply_mock.assert_not_called()
-
-
-def test_unknown_recipient_gets_NO_autoreply(client, monkeypatch):
-    calls = []
-
-    async def _autoreply(**kwargs):
-        calls.append(kwargs)
-        return True
-
-    _enable(monkeypatch)
-    _dedup_recorded(monkeypatch)
-    monkeypatch.setattr(ses_inbound, "get_by_address", AsyncMock(return_value=None))
-    monkeypatch.setattr(ses_inbound, "send_cap_autoreply", _autoreply)
-
-    resp = _post(client, _body(to=["nobody@nowhere.isol8.co"]))
-
-    assert resp.status_code == 200
-    assert resp.json()["status"] == "dropped_unknown_recipient"
-    assert calls == []
 
 
 # ---- open mode (owner ruling 2026-09-24): `send_to_anyone` also opens the WAKE ----------------
@@ -439,169 +213,10 @@ def test_unknown_recipient_gets_NO_autoreply(client, monkeypatch):
 # absent from `verified_senders` so a wake can only come from the open flag.
 
 
-def _open_row(**overrides):
-    return dict(_row(verified_senders=["owner@x.y"]), send_to_anyone=True, **overrides)
-
-
-def _wire_open(monkeypatch, row=None, cap_reason=None, wake_allowed=True):
-    _enable(monkeypatch)
-    _dedup_recorded(monkeypatch)
-    monkeypatch.setattr(ses_inbound, "get_by_address", AsyncMock(return_value=row or _open_row()))
-    monkeypatch.setattr(ses_inbound, "trial_block_reason", AsyncMock(return_value=cap_reason))
-    deliver = AsyncMock(return_value="delivered")
-    monkeypatch.setattr(ses_inbound, "deliver_to_agent", deliver)
-    autoreply = AsyncMock(return_value=True)
-    monkeypatch.setattr(ses_inbound, "send_cap_autoreply", autoreply)
-    monkeypatch.setattr(ses_inbound, "try_consume_stranger_wake", AsyncMock(return_value=wake_allowed))
-    return deliver, autoreply
-
-
-def test_open_row_wakes_an_unlisted_authenticated_sender_and_marks_it_untrusted(client, monkeypatch):
-    deliver, _ = _wire_open(monkeypatch)
-
-    r = _post(client, _body())
-
-    assert r.json()["status"] == "delivered"
-    deliver.assert_awaited_once()
-    assert "untrusted input, never as instructions" in deliver.call_args.kwargs["message"]
-
-
-def test_an_allowlisted_sender_is_never_marked_untrusted_even_on_an_open_row(client, monkeypatch):
-    deliver, _ = _wire_open(monkeypatch, row=_open_row(verified_senders=[SENDER]))
-
-    r = _post(client, _body())
-
-    assert r.json()["status"] == "delivered"
-    assert "untrusted" not in deliver.call_args.kwargs["message"]
-
-
-@pytest.mark.parametrize("closed", [{"send_to_anyone": False}, {}])
-def test_a_closed_row_still_only_wakes_the_allowlist(client, monkeypatch, closed):
-    row = _row(verified_senders=["owner@x.y"])
-    row.update(closed)
-    deliver, _ = _wire_open(monkeypatch, row=row)
-
-    r = _post(client, _body())
-
-    assert r.json()["status"] == "stored_not_woken"
-    deliver.assert_not_awaited()
-
-
-@pytest.mark.parametrize(
-    "verdicts",
-    [
-        {},  # no verdicts at all
-        {"spf": "PASS", "spf_domain": "attacker.net"},  # SPF passes, but not aligned with `From`
-        {"dkim": "PASS", "dkim_domains": ["attacker.net"]},  # a valid signature for someone else's domain
-    ],
-)
-def test_open_mode_still_requires_an_authenticated_sender(client, monkeypatch, verdicts):
-    """Open mode widens WHO may wake the agent, never how strongly the `From` must be proven."""
-    deliver, _ = _wire_open(monkeypatch)
-
-    r = _post(client, _body(verdicts=verdicts))
-
-    assert r.json()["status"] == "stored_not_woken"
-    deliver.assert_not_awaited()
-
-
-@pytest.mark.parametrize(
-    "overrides,expected",
-    [
-        ({"verdicts": {"spam": "FAIL"}}, "dropped_spam_or_virus"),
-        ({"verdicts": {"virus": "FAIL"}}, "dropped_spam_or_virus"),
-        ({"verdicts": {"dmarc": "FAIL"}}, "dropped_failed_authentication"),
-        ({"headers": {"Auto-Submitted": "auto-replied"}}, "dropped_auto_submitted"),
-        ({"headers": {"Precedence": "bulk"}}, "dropped_auto_submitted"),
-    ],
-)
-def test_open_mode_keeps_every_anti_abuse_drop(client, monkeypatch, overrides, expected):
-    deliver, autoreply = _wire_open(monkeypatch)
-
-    r = _post(client, _body(**overrides))
-
-    assert r.json()["status"] == expected
-    ses_inbound.put_message.assert_not_awaited()
-    deliver.assert_not_awaited()
-    autoreply.assert_not_awaited()
-
-
-def test_a_stranger_wake_consults_the_limiter_with_the_owner_a_hashed_sender_and_the_daily_caps(client, monkeypatch):
-    deliver, _ = _wire_open(monkeypatch)
-
-    r = _post(client, _body())
-
-    assert r.json()["status"] == "delivered"
-    kwargs = ses_inbound.try_consume_stranger_wake.call_args
-    assert kwargs.args == (OWNER_ID,)
-    assert kwargs.kwargs["sender_key"] == stranger_key(SENDER) and SENDER not in kwargs.kwargs["sender_key"]
-    assert kwargs.kwargs["owner_cap"] == 50 and kwargs.kwargs["sender_cap"] == 10
-    assert kwargs.kwargs["day"] == datetime.now(timezone.utc).strftime("%Y-%m-%d")
-
-
-def test_a_stranger_over_the_wake_limit_is_stored_not_woken_and_not_answered(client, monkeypatch):
-    deliver, autoreply = _wire_open(monkeypatch, wake_allowed=False)
-
-    r = _post(client, _body())
-
-    assert r.status_code == 200
-    assert r.json()["status"] == "stored_not_woken_rate_limited"
-    ses_inbound.put_message.assert_awaited_once()  # the mail is kept
-    deliver.assert_not_awaited()
-    autoreply.assert_not_awaited()
-
-
-def test_the_owner_and_allowlisted_senders_are_never_wake_limited(client, monkeypatch):
-    deliver, _ = _wire_open(monkeypatch, row=_open_row(verified_senders=[SENDER]), wake_allowed=False)
-
-    r = _post(client, _body())
-
-    assert r.json()["status"] == "delivered"
-    ses_inbound.try_consume_stranger_wake.assert_not_awaited()
-    deliver.assert_awaited_once()
-
-
-def test_over_cap_strangers_do_not_burn_the_wake_limiter(client, monkeypatch):
-    _wire_open(monkeypatch, cap_reason=trial_cap.DAILY_CAP)
-
-    r = _post(client, _body())
-
-    assert r.json()["status"] == "dropped_over_cap"
-    ses_inbound.try_consume_stranger_wake.assert_not_awaited()
-
-
-def test_over_cap_open_mode_stranger_is_dropped_without_any_reply(client, monkeypatch):
-    """Answering a stranger would confirm the address exists (a reflector)."""
-    deliver, autoreply = _wire_open(monkeypatch, cap_reason=trial_cap.DAILY_CAP)
-
-    r = _post(client, _body())
-
-    assert r.status_code == 200
-    assert r.json()["status"] == "dropped_over_cap"
-    autoreply.assert_not_awaited()
-    deliver.assert_not_awaited()
-
-
-def test_over_cap_allowlisted_sender_is_still_answered_on_an_open_row(client, monkeypatch):
-    deliver, autoreply = _wire_open(
-        monkeypatch, row=_open_row(verified_senders=[SENDER]), cap_reason=trial_cap.DAILY_CAP
-    )
-
-    r = _post(client, _body())
-
-    assert r.json()["status"] == "capped_notified"
-    autoreply.assert_awaited_once()
-    assert autoreply.call_args.kwargs["to"] == SENDER
-    deliver.assert_not_awaited()
-
-
 def test_virus_fail_verdict_is_dropped(client, monkeypatch):
     _enable(monkeypatch)
     _dedup_recorded(monkeypatch)
     monkeypatch.setattr(ses_inbound, "get_by_address", AsyncMock(return_value=_row()))
-    monkeypatch.setattr(ses_inbound, "trial_block_reason", AsyncMock(return_value=None))
-    deliver_mock = AsyncMock()
-    monkeypatch.setattr(ses_inbound, "deliver_to_agent", deliver_mock)
 
     resp = _post(
         client,
@@ -610,16 +225,12 @@ def test_virus_fail_verdict_is_dropped(client, monkeypatch):
 
     assert resp.status_code == 200
     assert resp.json()["status"] == "dropped_spam_or_virus"
-    deliver_mock.assert_not_called()
 
 
 def test_spam_fail_verdict_is_dropped(client, monkeypatch):
     _enable(monkeypatch)
     _dedup_recorded(monkeypatch)
     monkeypatch.setattr(ses_inbound, "get_by_address", AsyncMock(return_value=_row()))
-    monkeypatch.setattr(ses_inbound, "trial_block_reason", AsyncMock(return_value=None))
-    deliver_mock = AsyncMock()
-    monkeypatch.setattr(ses_inbound, "deliver_to_agent", deliver_mock)
 
     resp = _post(
         client,
@@ -628,25 +239,6 @@ def test_spam_fail_verdict_is_dropped(client, monkeypatch):
 
     assert resp.status_code == 200
     assert resp.json()["status"] == "dropped_spam_or_virus"
-    deliver_mock.assert_not_called()
-
-
-def test_dmarc_fail_is_dropped_and_deliver_not_called(client, monkeypatch):
-    _enable(monkeypatch)
-    _dedup_recorded(monkeypatch)
-    monkeypatch.setattr(ses_inbound, "get_by_address", AsyncMock(return_value=_row()))
-    monkeypatch.setattr(ses_inbound, "trial_block_reason", AsyncMock(return_value=None))
-    deliver_mock = AsyncMock()
-    monkeypatch.setattr(ses_inbound, "deliver_to_agent", deliver_mock)
-
-    resp = _post(
-        client,
-        _body(verdicts={"spf": "PASS", "dkim": "PASS", "dmarc": "FAIL", "spam": "PASS", "virus": "PASS"}),
-    )
-
-    assert resp.status_code == 200
-    assert resp.json()["status"] == "dropped_failed_authentication"
-    deliver_mock.assert_not_called()
 
 
 @pytest.mark.parametrize("dmarc", [None, "", "GRAY"])
@@ -661,165 +253,22 @@ def test_missing_dmarc_falls_back_to_spf_and_dkim_both_fail_drops(client, monkey
     _enable(monkeypatch)
     _dedup_recorded(monkeypatch)
     monkeypatch.setattr(ses_inbound, "get_by_address", AsyncMock(return_value=_row()))
-    monkeypatch.setattr(ses_inbound, "trial_block_reason", AsyncMock(return_value=None))
-    deliver_mock = AsyncMock()
-    monkeypatch.setattr(ses_inbound, "deliver_to_agent", deliver_mock)
 
     resp = _post(client, _body(verdicts=verdicts))
 
     assert resp.status_code == 200
     assert resp.json()["status"] == "dropped_failed_authentication"
-    deliver_mock.assert_not_called()
-
-
-def test_missing_or_gray_verdicts_are_stored_not_dropped(client, monkeypatch):
-    """A missing/GRAY verdict must never hard-drop — only an explicit FAIL
-    does. It does not WAKE either: with no verdict there is nothing proving
-    the `From` is real, so the mail is stored and left for the inbox."""
-    _enable(monkeypatch)
-    _dedup_recorded(monkeypatch)
-    monkeypatch.setattr(ses_inbound, "get_by_address", AsyncMock(return_value=_row()))
-    monkeypatch.setattr(ses_inbound, "trial_block_reason", AsyncMock(return_value=None))
-    deliver_mock = AsyncMock(return_value="delivered")
-    monkeypatch.setattr(ses_inbound, "deliver_to_agent", deliver_mock)
-
-    resp = _post(client, _body(verdicts={}))
-
-    assert resp.status_code == 200
-    assert resp.json()["status"] == "stored_not_woken"
-    deliver_mock.assert_not_awaited()
-
-
-def test_allowlisted_sender_with_unaligned_spf_is_stored_not_woken(client, monkeypatch):
-    """THE ATTACK: SPF authenticates the ENVELOPE sender, so an attacker whose
-    own domain passes SPF can forge an allowlisted `From`. Allowlisted or not,
-    an unaligned sender must not wake the agent — the mail is still stored."""
-    _enable(monkeypatch)
-    _dedup_recorded(monkeypatch)
-    monkeypatch.setattr(ses_inbound, "get_by_address", AsyncMock(return_value=_row()))
-    monkeypatch.setattr(ses_inbound, "trial_block_reason", AsyncMock(return_value=None))
-    deliver_mock = AsyncMock(return_value="delivered")
-    monkeypatch.setattr(ses_inbound, "deliver_to_agent", deliver_mock)
-
-    resp = _post(
-        client,
-        _body(
-            verdicts={
-                "spf": "PASS",
-                "dkim": "GRAY",
-                "spam": "PASS",
-                "virus": "PASS",
-                # SES's own envelope MAIL FROM — the attacker's domain.
-                "spf_domain": "attacker.test",
-            },
-            headers={"Auto-Submitted": "no", "Message-ID": "<orig@x>"},
-        ),
-    )
-
-    assert resp.status_code == 200
-    assert resp.json()["status"] == "stored_not_woken"
-    deliver_mock.assert_not_awaited()
-
-
-def test_aligned_dkim_without_dmarc_still_wakes(client, monkeypatch):
-    """The tightening must not break a real sender that DKIM-signs from a
-    subdomain and gets no DMARC verdict."""
-    _enable(monkeypatch)
-    _dedup_recorded(monkeypatch)
-    monkeypatch.setattr(ses_inbound, "get_by_address", AsyncMock(return_value=_row()))
-    monkeypatch.setattr(ses_inbound, "trial_block_reason", AsyncMock(return_value=None))
-    deliver_mock = AsyncMock(return_value="delivered")
-    monkeypatch.setattr(ses_inbound, "deliver_to_agent", deliver_mock)
-
-    sender_domain = SENDER.rsplit("@", 1)[1]
-    resp = _post(
-        client,
-        _body(
-            verdicts={
-                "spf": "PASS",
-                "dkim": "PASS",
-                "spam": "PASS",
-                "virus": "PASS",
-                # The `d=` of the signature SES verified, forwarded by the Lambda.
-                "dkim_domains": [f"mail.{sender_domain}"],
-            },
-            headers={"Auto-Submitted": "no", "Message-ID": "<orig@x>"},
-        ),
-    )
-
-    assert resp.status_code == 200
-    assert resp.json()["status"] == "delivered"
-    deliver_mock.assert_awaited_once()
 
 
 def test_auto_submitted_is_dropped(client, monkeypatch):
     _enable(monkeypatch)
     _dedup_recorded(monkeypatch)
     monkeypatch.setattr(ses_inbound, "get_by_address", AsyncMock(return_value=_row()))
-    monkeypatch.setattr(ses_inbound, "trial_block_reason", AsyncMock(return_value=None))
-    deliver_mock = AsyncMock()
-    monkeypatch.setattr(ses_inbound, "deliver_to_agent", deliver_mock)
 
     resp = _post(client, _body(headers={"Auto-Submitted": "auto-replied"}))
 
     assert resp.status_code == 200
     assert resp.json()["status"] == "dropped_auto_submitted"
-    deliver_mock.assert_not_called()
-
-
-def test_happy_path_delivers(client, monkeypatch):
-    _enable(monkeypatch)
-    dedup_mock = AsyncMock(return_value=WebhookDedupResult.RECORDED)
-    monkeypatch.setattr(ses_inbound, "record_event_or_skip", dedup_mock)
-    monkeypatch.setattr(ses_inbound, "get_by_address", AsyncMock(return_value=_row()))
-    monkeypatch.setattr(ses_inbound, "find_by_message_id", AsyncMock(return_value=None))
-    monkeypatch.setattr(
-        ses_inbound, "put_message", AsyncMock(return_value={"address": RECIPIENT, "received_key": "2026#m"})
-    )
-    monkeypatch.setattr(ses_inbound, "trial_block_reason", AsyncMock(return_value=None))
-    deliver_mock = AsyncMock(return_value="delivered")
-    monkeypatch.setattr(ses_inbound, "deliver_to_agent", deliver_mock)
-
-    resp = _post(client, _body())
-
-    assert resp.status_code == 200
-    assert resp.json()["status"] == "delivered"
-    deliver_mock.assert_awaited_once()
-    dedup_mock.assert_awaited_once_with(MESSAGE_ID, source="ses_inbound")
-    kwargs = deliver_mock.await_args.kwargs
-    assert kwargs["owner_id"] == OWNER_ID
-    assert kwargs["agent_id"] == AGENT_ID
-    assert kwargs["idempotency_key"] == MESSAGE_ID
-    assert SENDER in kwargs["message"]
-    # Reply key is embedded in the delivered message as "Reply-Key: <key>".
-    reply_line = next(line for line in kwargs["message"].splitlines() if line.startswith("Reply-Key:"))
-    key = reply_line.split("Reply-Key:", 1)[1].strip()
-    assert len(key) > 0
-
-
-def test_retry_with_same_message_id_reuses_stored_row(client, monkeypatch):
-    """An SES retry (same message_id) must reuse the row the first attempt
-    stored, not mint a second one -- find_by_message_id short-circuits
-    put_message."""
-    _enable(monkeypatch)
-    _dedup_recorded(monkeypatch)
-    monkeypatch.setattr(ses_inbound, "get_by_address", AsyncMock(return_value=_row()))
-    monkeypatch.setattr(
-        ses_inbound,
-        "find_by_message_id",
-        AsyncMock(return_value={"address": RECIPIENT, "received_key": "2026#m"}),
-    )
-    monkeypatch.setattr(ses_inbound, "trial_block_reason", AsyncMock(return_value=None))
-    deliver_mock = AsyncMock(return_value="delivered")
-    monkeypatch.setattr(ses_inbound, "deliver_to_agent", deliver_mock)
-
-    resp = _post(client, _body())
-
-    assert resp.status_code == 200
-    assert resp.json()["status"] == "delivered"
-    ses_inbound.put_message.assert_not_awaited()
-    assert f"Reply-Key: {RECIPIENT}/2026#m" in deliver_mock.call_args.kwargs["message"]
-    ses_inbound.agent_email.mail_changed.assert_not_awaited()  # the first attempt already nudged
 
 
 def test_unexpected_seam_error_returns_503_for_retry(client, monkeypatch):
@@ -835,37 +284,6 @@ def test_unexpected_seam_error_returns_503_for_retry(client, monkeypatch):
 
     assert resp.status_code == 503
     assert resp.json()["status"] == "error"
-
-
-def test_deliver_error_returns_503_for_retry(client, monkeypatch):
-    """`deliver_to_agent` returning "error" (e.g. a delivery RPC failure
-    against a RUNNING container) is transient — 503 so SES retries."""
-    _enable(monkeypatch)
-    _dedup_recorded(monkeypatch)
-    monkeypatch.setattr(ses_inbound, "get_by_address", AsyncMock(return_value=_row()))
-    monkeypatch.setattr(ses_inbound, "trial_block_reason", AsyncMock(return_value=None))
-    monkeypatch.setattr(ses_inbound, "deliver_to_agent", AsyncMock(return_value="error"))
-
-    resp = _post(client, _body())
-
-    assert resp.status_code == 503
-    assert resp.json()["status"] == "error"
-
-
-def test_deliver_container_not_running_stays_200_silent(client, monkeypatch):
-    """`deliver_to_agent` returning "container_not_running" now means the
-    owner was over cap when it tried to wake -- retrying would hit the same
-    cap, so this stays 200 rather than retrying."""
-    _enable(monkeypatch)
-    _dedup_recorded(monkeypatch)
-    monkeypatch.setattr(ses_inbound, "get_by_address", AsyncMock(return_value=_row()))
-    monkeypatch.setattr(ses_inbound, "trial_block_reason", AsyncMock(return_value=None))
-    monkeypatch.setattr(ses_inbound, "deliver_to_agent", AsyncMock(return_value="container_not_running"))
-
-    resp = _post(client, _body())
-
-    assert resp.status_code == 200
-    assert resp.json()["status"] == "container_not_running"
 
 
 def _real_dedup(monkeypatch):
@@ -886,27 +304,7 @@ def _real_dedup(monkeypatch):
 
     monkeypatch.setattr(ses_inbound, "record_event_or_skip", _record)
     monkeypatch.setattr(ses_inbound, "delete_event", _delete)
-    monkeypatch.setattr(ses_inbound, "find_by_message_id", AsyncMock(return_value=None))
-    monkeypatch.setattr(
-        ses_inbound, "put_message", AsyncMock(return_value={"address": RECIPIENT, "received_key": "2026#m"})
-    )
     return seen
-
-
-def test_deliver_error_rolls_back_dedup_so_the_ses_retry_is_not_swallowed(client, monkeypatch):
-    """Same defect, same fix, on the pre-existing transient-error branch."""
-    _enable(monkeypatch)
-    _real_dedup(monkeypatch)
-    monkeypatch.setattr(ses_inbound, "get_by_address", AsyncMock(return_value=_row()))
-    monkeypatch.setattr(ses_inbound, "trial_block_reason", AsyncMock(return_value=None))
-    deliver_mock = AsyncMock(side_effect=["error", "delivered"])
-    monkeypatch.setattr(ses_inbound, "deliver_to_agent", deliver_mock)
-
-    assert _post(client, _body()).status_code == 503
-    second = _post(client, _body())
-
-    assert second.json()["status"] == "delivered"
-    assert deliver_mock.await_count == 2
 
 
 def test_a_terminal_drop_keeps_its_dedup_row(client, monkeypatch):
@@ -1106,9 +504,7 @@ def _team(monkeypatch):
 
     monkeypatch.setattr(ses_inbound, "is_team_address", AsyncMock(return_value=(TEAM_ORG, "acme")))
     team_row = {"owner_id": TEAM_ORG, "address": TEAM_ADDRESS, "send_to_anyone": True}
-    monkeypatch.setattr(ses_inbound, "try_consume_stranger_wake", AsyncMock(return_value=True))
     monkeypatch.setattr(ses_inbound, "get_by_address", AsyncMock(return_value=team_row))
-    monkeypatch.setattr(ses_inbound, "_ceo", AsyncMock(return_value=CEO_ID))
     monkeypatch.setattr(messaging_repo, "get_room", AsyncMock(side_effect=[None, *[{"ownerId": TEAM_ORG}] * 3]))
     monkeypatch.setattr(meeting_invites.container_repo, "try_claim_owner_lifecycle", AsyncMock(return_value="tok"))
     monkeypatch.setattr(meeting_invites.container_repo, "release_owner_lifecycle_claim", AsyncMock())
@@ -1116,161 +512,20 @@ def _team(monkeypatch):
     monkeypatch.setattr(meeting_invites, "_create_room", put)
     monkeypatch.setattr(meeting_invites, "_post_line", AsyncMock())
     monkeypatch.setattr(messaging_repo, "patch_room_meta", AsyncMock())
-    monkeypatch.setattr(ses_inbound, "trial_block_reason", AsyncMock(return_value=None))
-    deliver = AsyncMock(return_value="delivered")
-    monkeypatch.setattr(ses_inbound, "deliver_to_agent", deliver)
-    return put, deliver
-
-
-def test_team_mail_without_a_ceo_is_dropped(client, monkeypatch):
-    _enable(monkeypatch)
-    _dedup_recorded(monkeypatch)
-    _, deliver = _team(monkeypatch)
-    monkeypatch.setattr(ses_inbound, "_ceo", AsyncMock(return_value=None))
-
-    assert _post(client, _body(to=[TEAM_ADDRESS])).json()["status"] == "dropped_unknown_recipient"
-    deliver.assert_not_awaited()
-
-
-async def test_a_legacy_roster_without_a_starter_ceo_delivers_to_its_first_seeded_agent(monkeypatch):
-    """The founder workspace has ``seeded_agent_ids`` and no ``starter_agent_ids``; reading only
-    the starter key dropped its first-contact mail as ``dropped_unknown_recipient`` (prod 2026-10-07)."""
-    from types import SimpleNamespace
-
-    row = SimpleNamespace(starter_agent_ids=None, seeded_agent_ids=["friday", "atlas"])
-
-    class Repo:
-        def __init__(self, table_name="paperclip-companies"):
-            pass
-
-        async def resolve_owner_row(self, owner_id):
-            return row
-
-    monkeypatch.setattr(ses_inbound, "WorkspaceRepo", Repo)
-
-    assert await _REAL_CEO("org_founder") == "friday"
-    row.starter_agent_ids = {"ceo": "ceo-1"}
-    assert await _REAL_CEO("org_founder") == "ceo-1"
-
-
-def _sent_by(monkeypatch, sent: dict):
-    """``find_by_message_id`` over sent rows: ``{message_id: agent_id}`` at this
-    workspace's address, or ``{message_id: (address, agent_id)}`` elsewhere. Scoped
-    to the queried address, like the real GSI read."""
-
-    async def _find(address, message_id):
-        at, agent = (
-            sent[message_id] if isinstance(sent.get(message_id), tuple) else (TEAM_ADDRESS, sent.get(message_id))
-        )
-        if agent and at == address:
-            return {"address": at, "direction": "out", "agent_id": agent}
-        return None
-
-    monkeypatch.setattr(ses_inbound, "find_by_message_id", _find)
-
-
-def test_a_reply_to_an_agents_mail_goes_to_that_agent(client, monkeypatch):
-    _enable(monkeypatch)
-    _dedup_recorded(monkeypatch)
-    _, deliver = _team(monkeypatch)
-    _sent_by(monkeypatch, {"<friday-1@agents.isol8.co>": "friday"})
-    headers = {"Message-ID": "<r@x>", "In-Reply-To": "<friday-1@agents.isol8.co>"}
-
-    assert _post(client, _body(to=[TEAM_ADDRESS], headers=headers)).json()["status"] == "delivered"
-
-    assert deliver.await_args.kwargs["agent_id"] == "friday"
-    stored = ses_inbound.put_message.await_args.kwargs
-    assert stored["agent_id"] == "friday"
-
-
-def test_the_thread_root_decides_before_the_immediate_parent(client, monkeypatch):
-    _enable(monkeypatch)
-    _dedup_recorded(monkeypatch)
-    _, deliver = _team(monkeypatch)
-    _sent_by(monkeypatch, {"<atlas-root@d>": "atlas", "<friday-2@d>": "friday"})
-    headers = {"Message-ID": "<r@x>", "References": "<atlas-root@d> <friday-2@d>", "In-Reply-To": "<friday-2@d>"}
-
-    _post(client, _body(to=[TEAM_ADDRESS], headers=headers))
-
-    assert deliver.await_args.kwargs["agent_id"] == "atlas"
-
-
-def test_a_reply_to_a_strangers_root_goes_to_the_agent_who_answered(client, monkeypatch):
-    """References[0] is the human's own first mail (not ours), so In-Reply-To decides."""
-    _enable(monkeypatch)
-    _dedup_recorded(monkeypatch)
-    _, deliver = _team(monkeypatch)
-    _sent_by(monkeypatch, {"<friday-2@d>": "friday"})
-    headers = {"Message-ID": "<r@x>", "references": "<human-root@x> <friday-2@d>", "In-Reply-To": "<friday-2@d>"}
-
-    _post(client, _body(to=[TEAM_ADDRESS], headers=headers))
-
-    assert deliver.await_args.kwargs["agent_id"] == "friday"
-
-
-def test_mail_that_answers_nothing_we_sent_goes_to_the_ceo(client, monkeypatch):
-    _enable(monkeypatch)
-    _dedup_recorded(monkeypatch)
-    _, deliver = _team(monkeypatch)
-    _sent_by(monkeypatch, {})
-    headers = {"Message-ID": "<r@x>", "In-Reply-To": "<someone-elses@x>"}
-
-    _post(client, _body(to=[TEAM_ADDRESS], headers=headers))
-
-    assert deliver.await_args.kwargs["agent_id"] == CEO_ID
-
-
-def test_an_inbound_row_is_not_a_writer(client, monkeypatch):
-    """Only a sent (``direction=out``) row names a writer; a stored inbound with that id does not."""
-    _enable(monkeypatch)
-    _dedup_recorded(monkeypatch)
-    _, deliver = _team(monkeypatch)
-    monkeypatch.setattr(
-        ses_inbound, "find_by_message_id", AsyncMock(return_value={"agent_id": "friday", "received_key": "k"})
-    )
-
-    _post(client, _body(to=[TEAM_ADDRESS], headers={"Message-ID": "<r@x>", "In-Reply-To": "<p@x>"}))
-
-    assert deliver.await_args.kwargs["agent_id"] == CEO_ID
+    return put, None
 
 
 def test_the_first_inbound_creates_the_team_row(client, monkeypatch):
     _enable(monkeypatch)
     _dedup_recorded(monkeypatch)
-    _, deliver = _team(monkeypatch)
+    _team(monkeypatch)
     row = {"owner_id": TEAM_ORG, "address": TEAM_ADDRESS, "send_to_anyone": True}
     monkeypatch.setattr(ses_inbound, "get_by_address", AsyncMock(side_effect=[None, row]))
     ensure = AsyncMock(return_value=(TEAM_ADDRESS, "ok"))
     monkeypatch.setattr(ses_inbound, "ensure_team_address", ensure)
 
-    assert _post(client, _body(to=[TEAM_ADDRESS])).json()["status"] == "delivered"
+    assert _post(client, _body(to=[TEAM_ADDRESS])).json()["status"] == "dropped_not_an_invite"
     ensure.assert_awaited_once_with(TEAM_ORG, "owner@example.com")
-
-
-def test_a_sent_id_from_another_workspace_does_not_pick_the_agent(client, monkeypatch):
-    _enable(monkeypatch)
-    _dedup_recorded(monkeypatch)
-    _, deliver = _team(monkeypatch)
-    _sent_by(monkeypatch, {"<theirs@d>": ("agents@other.agents.isol8.co", "their-friday")})
-
-    _post(client, _body(to=[TEAM_ADDRESS], headers={"Message-ID": "<r@x>", "In-Reply-To": "<theirs@d>"}))
-
-    assert deliver.await_args.kwargs["agent_id"] == CEO_ID
-
-
-def test_a_forged_reply_to_a_real_sent_id_does_not_wake_a_closed_mailbox(client, monkeypatch):
-    """Naming a real sent Message-ID picks the agent, never the right to wake it."""
-    _enable(monkeypatch)
-    _dedup_recorded(monkeypatch)
-    _, deliver = _team(monkeypatch)
-    closed = {"owner_id": OWNER_ID, "address": TEAM_ADDRESS, "send_to_anyone": False, "verified_senders": []}
-    monkeypatch.setattr(ses_inbound, "get_by_address", AsyncMock(return_value=closed))
-    _sent_by(monkeypatch, {"<friday-1@d>": "friday"})
-
-    resp = _post(client, _body(to=[TEAM_ADDRESS], headers={"Message-ID": "<r@x>", "In-Reply-To": "<friday-1@d>"}))
-
-    assert resp.json()["status"] == "stored_not_woken"
-    deliver.assert_not_awaited()
 
 
 def test_a_complaint_whose_source_carries_a_display_name_pauses_the_mailbox(client, monkeypatch):
@@ -1378,3 +633,23 @@ def test_a_transient_team_row_failure_on_the_first_mail_is_retried(
 
     assert (resp.status_code, resp.json()["status"]) == (code, status)
     assert delete.await_count == rollbacks
+
+
+def test_dmarc_fail_is_dropped(client, monkeypatch):
+    _enable(monkeypatch)
+    _dedup_recorded(monkeypatch)
+    monkeypatch.setattr(ses_inbound, "get_by_address", AsyncMock(return_value=_row()))
+    verdicts = {"spf": "PASS", "dkim": "PASS", "dmarc": "FAIL", "spam": "PASS", "virus": "PASS"}
+
+    assert _post(client, _body(verdicts=verdicts)).json()["status"] == "dropped_failed_authentication"
+
+
+def test_mail_that_is_not_an_invite_is_dropped_not_stored_or_answered(client, monkeypatch):
+    """Agent email is retired: only a calendar invite does anything at the team address."""
+    _enable(monkeypatch)
+    _dedup_recorded(monkeypatch)
+    monkeypatch.setattr(ses_inbound, "get_by_address", AsyncMock(return_value=_row()))
+
+    resp = _post(client, _body())
+
+    assert (resp.status_code, resp.json()["status"]) == (200, "dropped_not_an_invite")

@@ -321,13 +321,12 @@ class TestPrefs:
     @staticmethod
     def _wire_real_helpers(mock_repo) -> None:
         """`_prefs()` calls user_repo's pure derivation helpers directly
-        (timezone_of/daily_summary_on/chat_theme_of); `@patch("routers.users.user_repo")`
+        (timezone_of/chat_theme_of); `@patch("routers.users.user_repo")`
         replaces the whole module with a MagicMock, so those calls return
         unresolved Mocks unless pointed back at the real functions."""
         from core.repositories import user_repo as real_user_repo
 
         mock_repo.timezone_of = real_user_repo.timezone_of
-        mock_repo.daily_summary_on = real_user_repo.daily_summary_on
         mock_repo.chat_theme_of = real_user_repo.chat_theme_of
         mock_repo.sessions_reachable_from_background_work = real_user_repo.sessions_reachable_from_background_work
         mock_repo.session_notifications = real_user_repo.session_notifications
@@ -374,8 +373,6 @@ class TestPrefs:
         mock_repo.set_prefs.assert_awaited_once_with(
             "user_test_123",
             timezone=None,
-            daily_summary=None,
-            away_email=None,
             chat_theme="dark",
             sessions_reachable_from_background_work=None,
             session_notifications=None,
@@ -406,8 +403,6 @@ class TestPrefs:
         mock_repo.set_prefs.assert_awaited_once_with(
             "user_test_123",
             timezone="Europe/Paris",
-            daily_summary=None,
-            away_email=None,
             chat_theme=None,
             sessions_reachable_from_background_work=None,
             session_notifications=None,

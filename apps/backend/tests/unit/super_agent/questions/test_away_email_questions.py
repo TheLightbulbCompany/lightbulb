@@ -99,3 +99,13 @@ async def test_away_email_dropped_for_a_non_answerer(world):
     await _open()
     assert await away.check_one(_row("user_priya"), NOW) is False
     world.send.assert_not_awaited()
+
+
+async def test_away_email_dropped_when_answered(world):
+    await _open()
+    await questions_repo.record_answer(
+        WS, TASK, "q-1", option_id="deny", trigger_id=None, by=WS, client_answer_id="c", expected_version=None
+    )
+    assert await away.check_one(_row(), NOW) is False
+    world.send.assert_not_awaited()
+    world.finish.assert_awaited_once_with(f"AWAY#{WS}", f"Q#{TASK}#q-1")

@@ -30,30 +30,6 @@ class CreateKeysResponse(BaseModel):
     public_key: str = Field(..., description="X25519 public key (32 bytes hex)")
 
 
-class DeviceRegisterRequest(BaseModel):
-    """Body for POST /api/v1/devices — one device's Expo push token."""
-
-    token: str = Field(..., description="Expo push token, ExponentPushToken[...]")
-    platform: Literal["ios", "android"] = Field(default="ios", description="Device platform")
-    deviceId: str = Field(..., min_length=1, description="Stable per-install device id")
-    timezone: str | None = Field(
-        default=None,
-        max_length=64,
-        description="The device's IANA timezone (e.g. Europe/Paris). Stored on the user; an unknown zone is ignored.",
-    )
-
-    @field_validator("token")
-    @classmethod
-    def _looks_like_expo_token(cls, v: str) -> str:
-        if not (v.startswith("ExponentPushToken[") or v.startswith("ExpoPushToken[")):
-            raise ValueError("not an Expo push token")
-        return v
-
-
-class DeviceRegisterResponse(BaseModel):
-    status: str = Field(..., description="'registered'")
-
-
 NotifyLevel = Literal["off", "badge", "banner"]
 
 

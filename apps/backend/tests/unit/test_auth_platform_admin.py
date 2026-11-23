@@ -24,7 +24,7 @@ def test_listed_user_id_passes():
 
 @pytest.mark.parametrize(
     "email",
-    ["x+clerk_test@thelightbulb.company", "someone@isol8.co", "prasiddha@gmail.com", None],
+    ["x+clerk_test@thelightbulb.company", "someone@isol8.co", "person@example.com", None],
 )
 def test_team_email_without_listed_id_is_refused(email):
     with pytest.raises(HTTPException) as exc:
@@ -43,7 +43,7 @@ def test_empty_allowlist_admits_nobody(monkeypatch):
 def test_internal_email_tagging():
     """Analytics-only tagging; the retired @isol8.co domain no longer counts."""
     assert is_internal_email("SOMEONE@THELIGHTBULB.COMPANY")
-    assert is_internal_email("prasiddha@gmail.com")
+    assert not is_internal_email("person@example.com")  # a personal mailbox is not tagged
     assert not is_internal_email("someone@isol8.co")
     assert not is_internal_email("attacker@evil-thelightbulb.company.example")
     assert not is_internal_email(None)

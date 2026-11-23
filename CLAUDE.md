@@ -466,7 +466,7 @@ this file keeps the why, not inventories.
   token that is not a first-party Clerk session.
 - `owner_lifecycle.py` is a DynamoDB conditional-write lease on the path that writes an owner's credentials. It
   fails closed.
-- New Clerk calls go through `clerk_admin.py`; `routers/billing.py` and `routers/desktop_auth.py` still call
+- New Clerk calls go through `clerk_admin.py`; `routers/billing.py` still calls
   `api.clerk.com` inline.
 - Credentials for connectors are materialized into a profile only through `core/services/credentials/hermes_cli.py`
   `project`.
@@ -570,15 +570,15 @@ mail), `HERMES_SHARED_RUNTIME_ARN`, `VOICE_BUY_NUMBERS`, `VOICE_INBOUND_TRUNK_ID
 ## No Mac app here
 
 Business products are web only (founder, 19 Nov 2026). The Tauri app that lived at `apps/desktop/` is deleted;
-Eve, a separate app outside this repo, is the only Mac app. It reuses the native sign-in bridge that stays here:
-`/auth/desktop-callback` calls `POST /auth/desktop/sign-in-token` (`routers/desktop_auth.py`) and hands the ticket
-to `flickmeon://auth`.
+Spark (Eve), a separate app outside this repo, is the only Mac app. It signs in with Clerk's native SDK; the
+`/auth/desktop-callback` page and `POST /auth/desktop/sign-in-token` bridge for the old Tauri app are deleted.
 
 ## iPhone app
 
 The Expo iPhone app (`apps/mobile/`) was removed from the repo on 2026-11-20 and lives in git history. App Store
 record 6788944100 with bundle id `co.isol8.mobile` still exists and is untouched. Installed copies keep running
-against the unchanged backend (push, Apple IAP, app-return pages) but get no more over-the-air updates.
+against the backend (Apple IAP, app-return pages) but get no more over-the-air updates. The `/devices` push-token
+routes are deleted, so an installed copy can no longer register for push.
 
 ## Knowledge graph (graphify)
 

@@ -1090,11 +1090,11 @@ describe("ServiceStack — Clerk azp (SEC-8) per-env wiring", () => {
   test.each([
     [
       "dev",
-      `https://dev.${ROOT_DOMAIN},https://admin.dev.${ROOT_DOMAIN},https://dev.company.${ROOT_DOMAIN},http://localhost:3000`,
+      `https://dev.${ROOT_DOMAIN},https://admin.dev.${ROOT_DOMAIN},http://localhost:3000`,
     ],
     [
       "prod",
-      `https://${ROOT_DOMAIN},https://www.${ROOT_DOMAIN},https://admin.${ROOT_DOMAIN},https://company.${ROOT_DOMAIN}`,
+      `https://${ROOT_DOMAIN},https://www.${ROOT_DOMAIN},https://admin.${ROOT_DOMAIN}`,
     ],
   ] as const)("%s backend gets azp allowlist in audit mode", (envName, parties) => {
     const template = envName === "dev" ? SERVICE_TEMPLATE_DEV : buildServiceStack("prod");

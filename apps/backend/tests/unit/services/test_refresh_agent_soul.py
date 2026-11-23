@@ -10,7 +10,7 @@ from core.services import hermes_profiles, messaging
 from core.voice import livekit_huddles
 from core.services.hermes_provisioning import refresh_agent_soul
 
-OWNER = "org_1"
+OWNER = "user_1"
 AGENT = "11111111-1111-4111-8111-111111111111"
 R_LIVE = "22222222-2222-4222-8222-222222222222"
 R_QUIET = "33333333-3333-4333-8333-333333333333"
@@ -58,8 +58,8 @@ def world(monkeypatch):
     )
     send_frames = AsyncMock()
     monkeypatch.setattr(livekit_huddles, "send_frames", send_frames)
-    people = AsyncMock(return_value=[{"user_id": "user_1", "first_name": "Aden", "last_name": "Lee"}])
-    monkeypatch.setattr("core.services.clerk_admin.list_organization_members", people)
+    people = AsyncMock(return_value={"user_id": "user_1", "first_name": "Aden", "last_name": "Lee"})
+    monkeypatch.setattr("core.services.clerk_admin.get_user", people)
     return SimpleNamespace(
         files=files,
         roster=roster,
@@ -97,7 +97,7 @@ async def test_rename_rewrites_the_name_line_relabels_members_and_tells_the_open
 
 
 async def test_a_new_name_a_person_answers_to_collides(world):
-    world.people.return_value = [{"user_id": "user_2", "first_name": "Nova", "last_name": "Smith"}]
+    world.people.return_value = {"user_id": "user_1", "first_name": "Nova", "last_name": "Smith"}
     await refresh_agent_soul(OWNER, AGENT, by="user_1")
     assert _notices(world.send_frames)[0][1]["collides"] is True
 

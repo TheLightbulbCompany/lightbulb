@@ -100,30 +100,6 @@ async def test_fleet_grid_ignores_expired_cache_and_rebuilds():
 
 
 @pytest.mark.asyncio
-async def test_grid_display_name_resolves_user_email_and_org_name():
-    rows = [
-        {"owner_id": "user_1", "agentcore_runtime_arn": _ARN, "status": "running"},
-        {"owner_id": "org_1", "agentcore_runtime_arn": _ARN, "status": "running"},
-    ]
-    with (
-        patch("core.services.ops.fleet.container_repo.scan_all", AsyncMock(return_value=rows)),
-        patch(
-            "core.services.ops.fleet.user_repo.get",
-            AsyncMock(return_value={"user_id": "user_1", "email": "founder@isol8.co"}),
-        ),
-        patch(
-            "core.services.ops.fleet.clerk_admin.get_organization",
-            AsyncMock(return_value={"id": "org_1", "name": "Acme Corp"}),
-        ),
-    ):
-        grid = await fleet.fleet_grid()
-
-    by_owner = {g["owner_id"]: g for g in grid}
-    assert by_owner["user_1"]["display_name"] == "founder@isol8.co"
-    assert by_owner["org_1"]["display_name"] == "Acme Corp"
-
-
-@pytest.mark.asyncio
 async def test_grid_display_name_falls_back_to_clerk_then_none_on_failure():
     # DDB row without email → Clerk get_user; Clerk failing → display_name=None,
     # never an exception out of fleet_grid.

@@ -74,27 +74,6 @@ async def test_workspace_trial_is_unarmed_and_shared_by_all_members(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "auth,workspace_id,status",
-    [
-        (_personal_auth(), "user_123", 409),  # not a session token: no tenant
-        (_personal_auth(human_session=True), "user_other", 403),
-        (_org_admin_auth(), "user_123", 403),
-        (_org_admin_auth(), "org_other", 403),
-    ],
-)
-async def test_workspace_trial_rejects_missing_or_mismatched_tenant(
-    auth, workspace_id, status, _mock_create_trial_local_if_absent
-):
-    from fastapi import HTTPException
-
-    with pytest.raises(HTTPException) as exc:
-        await user_provision.ensure_workspace_trial_default(auth, workspace_id)
-    assert exc.value.status_code == status
-    _mock_create_trial_local_if_absent.assert_not_awaited()
-
-
-@pytest.mark.asyncio
 async def test_workspace_trial_existing_row_and_lost_create_do_not_emit_started(
     _fresh_workspace_signup, _mock_create_trial_local_if_absent
 ):

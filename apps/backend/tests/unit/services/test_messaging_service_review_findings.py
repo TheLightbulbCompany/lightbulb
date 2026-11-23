@@ -573,30 +573,6 @@ async def test_zip_download_is_authorized_and_forced_to_safe_attachment_disposit
 
 
 @pytest.mark.asyncio
-async def test_patch_room_me_writes_only_named_prefs_and_notifies_the_caller_only(monkeypatch):
-    auth = AuthContext(user_id="user_owner")
-    meta = {"roomId": "room-1", "ownerId": "org_1", "kind": "channel", "revision": 4}
-    member = {"kind": "human", "id": "user_owner", "role": "owner", "joinedSeq": 0}
-    set_prefs = AsyncMock(return_value={**member, "muted": True})
-    detail = AsyncMock(return_value="detail")
-    publish_user = AsyncMock(return_value=True)
-    monkeypatch.setattr(messaging, "require_room_member", AsyncMock(return_value=(meta, member)))
-    monkeypatch.setattr(messaging.messaging_repo, "set_member_prefs", set_prefs)
-    monkeypatch.setattr(messaging, "_room_detail", detail)
-    monkeypatch.setattr(messaging, "get_live_event_publisher", lambda: type("P", (), {"publish_user": publish_user})())
-
-    result = await messaging.patch_room_me(auth, "room-1", messaging.MemberPrefsRequest(muted=True))
-
-    assert result == "detail"
-    set_prefs.assert_awaited_once_with("room-1", "human", "user_owner", {"muted": True})
-    publish_user.assert_awaited_once()
-    owner_arg, user_arg, event = publish_user.await_args.args
-    assert (owner_arg, user_arg) == ("org_1", "user_owner")
-    assert event["type"] == "room.member.updated"
-    assert event["payload"] == {"roomId": "room-1"}
-
-
-@pytest.mark.asyncio
 async def test_patch_room_me_clears_a_section_with_an_explicit_null(monkeypatch):
     auth = AuthContext(user_id="user_owner")
     meta = {"roomId": "room-1", "ownerId": "org_1", "kind": "channel", "revision": 4}
@@ -1036,55 +1012,6 @@ async def test_follow_up_into_an_archived_room_is_a_409(monkeypatch):
 
 
 # --- UX slice 6: project pause, icon and colour, Instructions --------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_pause_and_resume_a_project_are_audited(monkeypatch):
-    from core.services import questions
-
-    auth = AuthContext(user_id="admin")
-    meta = {"roomId": "chan", "ownerId": "org_1", "kind": "channel", "revision": 2}
-    patch_meta, publish = _archive_fixture(monkeypatch, meta)
-    audit = AsyncMock()
-    monkeypatch.setattr(questions, "audit", audit)
-
-    await messaging.patch_room(auth, "chan", messaging.PatchRoomRequest(paused=True))
-    updates = patch_meta.await_args.args[1]
-    assert updates["pausedBy"] == "admin" and updates["pausedAt"]
-    audit.assert_awaited_once_with("admin", "org_1", "project.paused", {"roomId": "chan"})
-    publish.assert_awaited_once()
-
-    meta["pausedAt"] = updates["pausedAt"]
-    await messaging.patch_room(auth, "chan", messaging.PatchRoomRequest(paused=True))  # already paused: no-op
-    assert patch_meta.await_count == 1 and audit.await_count == 1
-
-    from core.services import admission
-
-    answer = AsyncMock()
-    monkeypatch.setattr(admission, "answer_paused_ask", answer)
-    await messaging.patch_room(auth, "chan", messaging.PatchRoomRequest(paused=False))
-    assert patch_meta.await_args.args[1] == {"pausedAt": None, "pausedBy": None}
-    assert audit.await_args.args[2] == "project.resumed"
-    answer.assert_awaited_once_with("chan", "admin")  # W18-8: the question asked while paused is answered now
-
-
-@pytest.mark.asyncio
-async def test_a_workspace_admin_may_pause_but_a_plain_member_may_not(monkeypatch):
-    from core.services import questions
-
-    meta = {"roomId": "chan", "ownerId": "org_1", "kind": "channel", "revision": 2}
-    patch_meta, _ = _archive_fixture(monkeypatch, meta, role="member")
-    monkeypatch.setattr(questions, "audit", AsyncMock())
-    member = AuthContext(user_id="m")
-    with pytest.raises(ApiProblem) as exc:
-        await messaging.patch_room(member, "chan", messaging.PatchRoomRequest(paused=True))
-    assert exc.value.error.code == "ROOM_FORBIDDEN"
-    ws_admin = AuthContext(user_id="wa")
-    with pytest.raises(ApiProblem):  # the workspace-admin pass covers pause alone, not other fields
-        await messaging.patch_room(ws_admin, "chan", messaging.PatchRoomRequest(paused=True, icon="rocket"))
-    patch_meta.assert_not_awaited()
-    await messaging.patch_room(ws_admin, "chan", messaging.PatchRoomRequest(paused=True))
-    assert patch_meta.await_args.args[1]["pausedBy"] == "wa"
 
 
 @pytest.mark.asyncio

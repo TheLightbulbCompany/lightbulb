@@ -88,11 +88,9 @@ async def test_assign_number_gives_the_configured_line_once(repos, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_number_route_says_why_there_is_none(repos, async_client_org_admin, monkeypatch):  # noqa: F811
-    monkeypatch.setattr(vo.settings, "VOICE_LINE_NUMBER", LINE)
-    messaging_repo._table().put_item(Item={"pk": f"PHONE#{LINE}", "sk": "LINE", "ownerId": "org_other"})
+async def test_number_route_without_a_choice_asks_for_the_voice_plan(repos, async_client_org_admin):  # noqa: F811
     r = await async_client_org_admin.post("/api/v1/voice/number")
-    assert r.status_code == 409 and r.json()["detail"]["code"] == "taken"
+    assert r.status_code == 402 and r.json()["detail"]["code"] == "voice_plan_required"
 
 
 def test_bad_model_shapes_skip_the_field_or_item_not_the_draft():

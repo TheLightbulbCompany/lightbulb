@@ -950,7 +950,7 @@ async def test_open_conversation_hashes_tenant_kind_and_client_key(tables, front
 async def test_open_conversation_refuses_another_tenants_conversation(tables, front):
     await _room(CALL, "call")  # the id is WS's
     req = OpenIn(
-        tenant_id=OTHER, conversation_id=CALL, client_key="c:x", kind="call", creator=Who(kind="member", id=OWNER)
+        tenant_id=OTHER, conversation_id=CALL, client_key="c:x", kind="call", creator=Who(kind="member", id=OTHER)
     )
     with pytest.raises(EngineError) as refused:
         await engine.open_conversation(req)

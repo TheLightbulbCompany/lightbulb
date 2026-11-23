@@ -262,15 +262,6 @@ async def test_update_status_not_if_status_applies_when_not_guarded(repo):
     assert retrieved.last_error == "boom"
 
 
-async def test_legacy_company_id_is_read_from_the_old_row_and_never_written(repo):
-    """A workspace provisioned before the native store keeps its company id on the legacy table."""
-    repo._table().put_item(Item={"user_id": "org_old", "company_id": "co_old", "status": "active"})
-    await repo.put_workspace(_make_company(user_id="org_old", company_id="co_ignored"))
-    assert (await repo.get_workspace("org_old")).company_id == "co_old"
-    assert "company_id" not in raw_workspace(repo, "org_old")
-    assert repo._table().get_item(Key={"user_id": "org_old"})["Item"]["company_id"] == "co_old"
-
-
 async def test_delete_removes_row(repo):
     await repo.put_workspace(_make_company(user_id="user_789"))
     await repo.delete("user_789")

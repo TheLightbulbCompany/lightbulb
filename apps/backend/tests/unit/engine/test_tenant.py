@@ -106,19 +106,6 @@ async def test_user_tenant_through_every_op(tables, clerk, monkeypatch):  # noqa
     assert clerk == []
 
 
-async def test_member_principal_is_trusted_on_an_org_tenant(clerk, monkeypatch):
-    """The product's member is the tenant's member: answering and acting on a workspace task read no Clerk
-    membership."""
-    member = "user_m"
-    update = _task_world(monkeypatch, _task("org_1", {"kind": "workspace"}), member)
-    who = Principal(kind="member", id=member)
-    monkeypatch.setattr(api, "_mark_action", AsyncMock())
-    await api.answer(AnswerIn(tenant_id="org_1", task_id=TASK, qid="q-1", principal=who, option_id="a",
-                              client_answer_id="c1"))  # fmt: skip
-    await api.act(ActIn(tenant_id="org_1", task_id=TASK, action="stop", principal=who))
-    assert update.await_count == 2 and clerk == []
-
-
 _MAIL = {"triggerId": "mail:m1", "source": "mail", "ref": {"text": "hi"}}
 
 

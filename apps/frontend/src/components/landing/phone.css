@@ -203,34 +203,24 @@
 .lp #line .clk{min-width:84px;padding:8px 10px;font-size:15px}
 .lp #line .cap{font-size:15px}
 .lp #line .wv{display:none}
-.lp #s1{height:auto;min-height:0}
 .lp .s1in{position:relative;display:block;padding:96px 16px 0}
 .lp .s1t{padding-top:0}
 .lp h1{font-size:40px}
 .lp .lede{font-size:17px}
 .lp .acts .btn{width:100%;justify-content:center}
-.lp .desk{height:auto;min-height:0;justify-content:center;gap:12px;margin-top:36px;padding-bottom:110px}
 .lp .phone{display:none}
 .lp .book{padding:16px 18px 18px 36px}
 .lp .book:before{left:18px}
 .lp .counter{height:110px}
 .lp .pin .stick{padding:84px 16px 90px}
 .lp .say{font-size:30px}
-.lp .vis{flex-direction:column;gap:18px;margin-top:20px;align-items:stretch}
-.lp .vis>*{width:100%!important;max-width:100%}
-.lp .sign{display:none}
 .lp .week{padding:12px}
 .lp .wk .hr{height:40px}
 .lp .wk .cell{height:40px}
 .lp .ev{font-size:11px;padding:4px 5px}
-.lp .ho{flex-direction:column}
-.lp .wire{width:2px;height:40px;margin:0}
-.lp .wire b{display:none}
 .lp .mob{margin:12px auto 0;width:200px;height:380px}
-.lp .hset{margin:16px 0 0}
 .lp .home{height:auto;grid-template-columns:1fr}
 .lp .home .pane{display:none}
-.lp .set{grid-template-columns:1fr}
 .lp .still{padding:96px 16px 96px}
 .lp .faq{grid-template-columns:1fr}
 .lp #s9 h2{font-size:44px}
@@ -245,10 +235,25 @@
 .lp:not(.js) :is(#s8,#s9){background:#0F1A2B}
 .lp:not(.js) .pin{height:auto!important}
 .lp:not(.js) .pin .stick{position:relative;height:auto;min-height:100vh}
-/* a phone screen is too short to pin a section: each one scrolls by and shows its end state */
-@media (max-width:760px){
+/* below 1200px the demos no longer fit beside each other in one screen: stack them and stop pinning,
+   so each section scrolls by and shows its end state */
+@media (max-width:1199px){
 .lp .pin{height:auto!important}
-.lp .pin .stick{position:relative;height:auto;min-height:0}
+.lp .pin .stick{position:relative;height:auto;min-height:0;padding-bottom:72px}
+.lp .s1in{position:relative;display:block}
+.lp .s1t{padding-top:0;max-width:640px}
+.lp #s1{height:auto;min-height:0}
+.lp .desk{height:auto;min-height:0;justify-content:center;gap:12px;margin-top:36px;padding-bottom:110px}
+.lp .vis{flex-direction:column;gap:18px;margin-top:20px;align-items:stretch}
+.lp .vis>*{width:100%!important;max-width:100%}
+.lp .sign{display:none}
+.lp .ho{flex-direction:column}
+.lp .wire{width:2px;height:40px;margin:0}
+.lp .wire b{display:none}
+.lp .hset{margin:16px 0 0}
+.lp .set{grid-template-columns:1fr}
+}
+@media (max-width:1199px){
 :root .lp .landing-nav{background:rgba(245,239,226,.92);backdrop-filter:blur(8px)}
 :root .lp.night .landing-nav{background:rgba(15,26,43,.92)}
 }

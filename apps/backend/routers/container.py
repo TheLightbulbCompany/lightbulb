@@ -40,9 +40,8 @@ async def _assert_provision_allowed(owner_id: str, *, actor_user_id: str | None 
     summary="Get container metadata for current user",
     description=(
         "A cold read of the workspace's status contract, fetched on mount and after a "
-        "live event. It triggers no provisioning: a new workspace is provisioned by the "
-        "Clerk user.created path, and a failed one is retried by that event's "
-        "redelivery or POST /container/retry. Its one write is creating an admin's "
+        "live event. It triggers no provisioning: a first provision starts from "
+        "POST /container/provision, and a failed one is retried by POST /container/retry. Its one write is creating an admin's "
         "missing trial row (create-if-absent), so a read that beats the webhook sees the trial."
     ),
     operation_id="container_status",
@@ -61,7 +60,7 @@ async def container_status(
     if not container:
         # No row: surface a gate as its structured 402 payload so the frontend renders the
         # picker / "top up" CTA instead of a generic "no container" state. An admin's first
-        # read can beat the user.created webhook, so the trial row is created here
+        # read can beat the trial row's creation, so it is created here
         # too (create-if-absent -- a write, not a trigger) or the gate would read "no
         # billing" and flash the paywall.
         await ensure_workspace_trial_default(auth, owner_id)

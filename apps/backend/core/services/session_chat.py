@@ -144,7 +144,7 @@ async def _seat(owner_id: str, meta: dict, user_id: str, *, full: str = "This se
         try:
             meta = await messaging_repo.upsert_member(room_id=meta["roomId"], owner_id=owner_id, member=member)
         except messaging_repo.MemberLimitExceeded as exc:
-            # ponytail: MAX_ROOM_MEMBERS (32) bounds a session's chat, as it bounds the vendor room.
+            # ponytail: MAX_ROOM_MEMBERS (32) bounds a session's chat.
             put_metric("messaging.session_room.capped")
             logger.warning("session chat full; %s not seated in %s", user_id, meta["roomId"])
             raise ApiProblem("MEMBER_LIMIT", full) from exc

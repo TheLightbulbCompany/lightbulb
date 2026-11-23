@@ -466,7 +466,6 @@ export interface AdminProvisioning {
   paperclip: {
     status?: string | null;
     company_id?: string | null;
-    org_id?: string | null;
     provisioner_user_id?: string | null;
     member_user_ids?: string[] | null;
     last_error?: string | null;

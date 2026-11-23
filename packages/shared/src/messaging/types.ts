@@ -63,8 +63,6 @@ export interface RoomSummary {
    * live-config workspace. Absent on rows the backend has not stamped yet.
    */
   workspaceId?: string | null;
-  /** The platform-managed channel shared with the Lightbulb team. */
-  shared?: boolean;
   /** The viewer is from another workspace than the room's owner (a shared-channel guest). */
   guest?: boolean;
   /**

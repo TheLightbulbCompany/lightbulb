@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 #: "How did you first hear about us?" -- the one list, the setup form's (T22).
 SOURCE_ANSWERS = frozenset(SOURCES)
-#: Doors that bring a person to "Create your workspace" and say so themselves.
+#: Doors that bring a person to "Set up your business" and say so themselves.
 DOORS = frozenset({"sign_up", "session_link"})
 TOUCH_KEYS = (
     "timestamp",

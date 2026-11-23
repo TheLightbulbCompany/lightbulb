@@ -85,9 +85,11 @@ export default function RootLayout({
           <script dangerouslySetInnerHTML={{ __html: THEME_SCRIPT }} />
         </head>
         <body className="antialiased">
-          <ErrorBoundary>
-            <SwrProvider>
-              <PostHogProvider>
+          {/* The boundary sits inside PostHogProvider so PostHog still loads when a page throws, and the
+              caught error reaches it (ErrorBoundary.componentDidCatch). */}
+          <SwrProvider>
+            <PostHogProvider>
+              <ErrorBoundary>
                 <DeployRefresh />
                 <SupportProvider>
                   {/* One provider for the whole app so the tooltip skip-delay
@@ -99,9 +101,9 @@ export default function RootLayout({
                       (a custom-JSX sonner action) can resolve useSupport(). */}
                   <Toaster />
                 </SupportProvider>
-              </PostHogProvider>
-            </SwrProvider>
-          </ErrorBoundary>
+              </ErrorBoundary>
+            </PostHogProvider>
+          </SwrProvider>
           <VercelAnalytics />
         </body>
       </html>

@@ -59,30 +59,6 @@ def test_send_wrong_token_401(client):
     assert r.status_code == 401
 
 
-def test_send_both_to_and_reply_key_400(client):
-    with patch.object(agent_mail.container_repo, "get_by_owner_id", AsyncMock(return_value=_container())):
-        r = client.post(
-            f"/api/v1/agent-mail/u/{OWNER}/send",
-            json={"agent_id": AGENT, "subject": "s", "body_text": "b", "to": "a@b.c", "reply_key": "x/y"},
-            headers=H,
-        )
-    assert r.status_code == 400
-
-
-def test_send_delegates(client):
-    with (
-        patch.object(agent_mail.container_repo, "get_by_owner_id", AsyncMock(return_value=_container())),
-        patch.object(agent_mail, "send", AsyncMock(return_value="sent")) as send,
-    ):
-        r = client.post(
-            f"/api/v1/agent-mail/u/{OWNER}/send",
-            json={"agent_id": AGENT, "subject": "s", "body_text": "b", "to": "v@x.y"},
-            headers=H,
-        )
-    assert r.status_code == 200 and r.json() == {"status": "sent"}
-    assert send.call_args.kwargs["to"] == "v@x.y" and send.call_args.kwargs["agent_id"] == AGENT
-
-
 # ---- ported from the deleted routers/agent_mail_send.py test suite --------
 # (same auth boundary, now on POST /u/{owner_id}/send instead of
 # the deleted owner-send router — see git show 28e83f275:apps/backend/tests/unit/routers/test_agent_mail_send.py)
@@ -134,16 +110,6 @@ async def test_send_non_ascii_bearer_is_401_not_500():
     assert exc.value.status_code == 401
 
 
-def test_send_rate_limit_returns_429(client):
-    with (
-        patch.object(agent_mail.container_repo, "get_by_owner_id", AsyncMock(return_value=_container())),
-        patch.object(agent_mail, "send", AsyncMock(return_value="sent")),
-    ):
-        for _ in range(agent_mail.RATE_LIMIT_PER_MINUTE):
-            assert client.post(f"/api/v1/agent-mail/u/{OWNER}/send", json=_send_body(), headers=H).status_code == 200
-        assert client.post(f"/api/v1/agent-mail/u/{OWNER}/send", json=_send_body(), headers=H).status_code == 429
-
-
 def test_send_401s_do_not_charge_the_rate_limit_bucket(client):
     """Auth runs before the limiter, so an unauthenticated flood cannot lock
     the real owner out."""
@@ -155,45 +121,6 @@ def test_send_401s_do_not_charge_the_rate_limit_bucket(client):
                 headers={"Authorization": "Bearer WRONG"},
             )
     assert len(agent_mail._RATE._buckets[OWNER]) == 0
-
-
-def test_inbox_lists_with_keys_and_truncates(client):
-    with (
-        patch.object(agent_mail.container_repo, "get_by_owner_id", AsyncMock(return_value=_container())),
-        patch.object(agent_mail, "team_address", AsyncMock(return_value="agents@acme.isol8.co")),
-        patch.object(agent_mail, "public_for", AsyncMock(side_effect=lambda a: a)),
-        patch.object(
-            agent_mail,
-            "list_messages",
-            AsyncMock(
-                return_value=[
-                    {
-                        "received_key": "2026#m1",
-                        "from_addr": "g@github.com",
-                        "subject": "Verify",
-                        "received_at": "2026",
-                        "text": "x" * 9000,
-                    }
-                ]
-            ),
-        ) as listed,
-    ):
-        r = client.get(f"/api/v1/agent-mail/u/{OWNER}/inbox?agent_id={AGENT}&limit=5", headers=H)
-    body = r.json()
-    assert listed.call_args.kwargs["agent_id"] == AGENT  # the shared mailbox, filtered to this agent's mail
-    assert body["address"] == "agents@acme.isol8.co"
-    assert body["messages"][0]["key"] == "agents@acme.isol8.co/2026#m1"
-    assert len(body["messages"][0]["text"]) == 8000
-    assert body["messages"][0]["channel"] == "mail"
-
-
-def test_inbox_without_address_is_empty(client):
-    with (
-        patch.object(agent_mail.container_repo, "get_by_owner_id", AsyncMock(return_value=_container())),
-        patch.object(agent_mail, "team_address", AsyncMock(return_value=None)),
-    ):
-        r = client.get(f"/api/v1/agent-mail/u/{OWNER}/inbox?agent_id={AGENT}", headers=H)
-    assert r.json() == {"address": None, "messages": []}
 
 
 @pytest.mark.parametrize("agent", ["agent_1", "agent_2", None])
@@ -551,20 +478,16 @@ async def test_a_meeting_that_never_reached_a_call_drops_off_after_a_day(async_c
 PUBLIC = "agents@thelightbulb.company"
 
 
-def test_the_agents_see_the_public_address_but_reply_keys_stay_on_the_routing_one(client):
+def test_the_agents_see_the_public_address(client):
     with (
         patch.object(agent_mail.container_repo, "get_by_owner_id", AsyncMock(return_value=_container())),
         patch.object(agent_mail, "_owner_email", AsyncMock(return_value="o@x.y")),
         patch.object(agent_mail, "ensure_team_address", AsyncMock(return_value=(TEAM, "ok"))),
         patch.object(agent_mail, "team_address", AsyncMock(return_value=TEAM)),
         patch.object(agent_mail, "public_for", AsyncMock(return_value=PUBLIC)),
-        patch.object(agent_mail, "list_messages", AsyncMock(return_value=[{"received_key": "k1"}])) as listed,
     ):
         minted = client.post(f"/api/v1/agent-mail/u/{OWNER}/address", json={}, headers=H).json()
-        inbox = client.get(f"/api/v1/agent-mail/u/{OWNER}/inbox?agent_id={AGENT}", headers=H).json()
     assert minted == {"address": PUBLIC, "reason": "ok"}
-    assert listed.await_args.args == (TEAM,)
-    assert inbox["address"] == PUBLIC and inbox["messages"][0]["key"] == f"{TEAM}/k1"
 
 
 def test_the_card_shows_the_public_address(client):
@@ -853,3 +776,12 @@ def _intent_allowed(monkeypatch):
     from core.services import effect_doors
 
     monkeypatch.setattr(effect_doors, "require_intent", _AsyncMock(return_value=None))
+
+
+def test_agent_send_and_inbox_are_gone_after_the_token_check(client):
+    """The image's lightbulb-mail.sh still calls these: a plain 410, never a 404 or a send."""
+    with patch.object(agent_mail.container_repo, "get_by_owner_id", AsyncMock(return_value=_container())):
+        sent = client.post(f"/api/v1/agent-mail/u/{OWNER}/send", json=_send_body(), headers=H)
+        read = client.get(f"/api/v1/agent-mail/u/{OWNER}/inbox?agent_id={AGENT}", headers=H)
+        bad = client.get(f"/api/v1/agent-mail/u/{OWNER}/inbox?agent_id={AGENT}", headers={"Authorization": "Bearer x"})
+    assert (sent.status_code, read.status_code, bad.status_code) == (410, 410, 401)

@@ -136,7 +136,7 @@ async def test_backfill_email_is_a_noop_without_an_email(dynamodb_table):
 
 
 def test_chat_theme_of_defaults_to_none_when_unset():
-    """Unlike timezone_of/daily_summary_on, chat_theme_of has no coerced
+    """Unlike timezone_of, chat_theme_of has no coerced
     default: null means "defer to this device", not "assume light"."""
     from core.repositories import user_repo
 

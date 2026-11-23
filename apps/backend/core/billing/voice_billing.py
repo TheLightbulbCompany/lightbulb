@@ -12,7 +12,7 @@ import logging
 import math
 from datetime import UTC, datetime
 from decimal import ROUND_CEILING, Decimal
-from typing import Literal
+from typing import Any, Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
@@ -20,6 +20,7 @@ import httpx
 from core.billing import metronome_client
 from core.billing.metronome_fast_gate import MetronomeFastGate
 from core.config import settings
+from core.engine import client as engine
 from core.dynamodb import get_table, run_in_thread
 from core.repositories import billing_repo, messaging_repo
 from core.services import metronome_gate, trial_cap
@@ -293,3 +294,42 @@ async def report_owner_minutes(owner_id: str, transaction_id: str, started_at: s
         ) or {}
         if not settled.get("billingSettled"):
             raise
+
+
+#: The newest rooms read per timeline. ponytail: one META read per call/channel room, capped; page by createdAt
+#: (or keep a by-kind index) when a workspace outgrows it.
+TIMELINE_ROOMS = 300
+
+
+def epoch_ms(v: Any) -> int:
+    """An ISO string, epoch seconds or epoch ms, as epoch ms (0 when missing or unreadable)."""
+    if isinstance(v, (int, float)):
+        return int(v if v > 1e12 else v * 1000)
+    try:
+        return int(datetime.fromisoformat(str(v).replace("Z", "+00:00")).timestamp() * 1000)
+    except ValueError:
+        return 0
+
+
+async def month_seconds(ws: str, tz_name: str | None) -> int:
+    """Seconds of calls and held meetings this month (the business's timezone): the month's counter row
+    (add_month_seconds at each end). A month whose counter doesn't exist yet (nothing has ended since
+    the counter shipped) is summed from the newest TIMELINE_ROOMS call and channel rooms instead.
+    ponytail: the fallback goes once every workspace has a counter for the month (December)."""
+    counted = await counted_seconds(ws, tz_name)
+    if counted is not None:
+        return counted
+    start = month_start(tz_name)
+    total, since = 0, start.timestamp()
+    for c in await engine.list_conversations(ws, ["call", "channel"], TIMELINE_ROOMS):
+        if c.kind == "call":
+            call = c.annotations.get("call") or {}
+            if epoch_ms(call.get("startedAt") or c.created_at) >= since * 1000:
+                total += int(call.get("durationSec") or 0)
+        elif (
+            (mt := c.annotations.get("meeting") or {}).get("inCallAt")
+            and mt.get("endedAt")
+            and int(mt["inCallAt"]) >= since
+        ):
+            total += max(0, int(mt["endedAt"]) - int(mt["inCallAt"]))
+    return total

@@ -693,7 +693,6 @@ CASES = [
     # users: the caller's own row; self-delete wipes only the caller
     Case("users", "POST", "/api/v1/users/sync"),
     Case("users", "GET", "/api/v1/users/me"),
-    Case("users", "POST", "/api/v1/users/me/active"),
     Case("users", "GET", "/api/v1/users/me/prefs"),
     Case("users", "PUT", "/api/v1/users/me/prefs", {"timezone": "Europe/London"}),
     Case("users", "POST", "/api/v1/users/me/delete", {"confirm_email": "{b}@example.com"}),

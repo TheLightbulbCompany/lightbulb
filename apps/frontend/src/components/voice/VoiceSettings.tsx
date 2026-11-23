@@ -5,7 +5,6 @@
 import { useState } from "react";
 import "@/app/settings/settings.css";
 import "@/components/settings/settings-place.css";
-import { DailySummaryCard } from "@/components/settings/DailySummaryCard";
 import { Button } from "@/components/ui/button";
 import { useConnections } from "@/hooks/useConnections";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
@@ -81,9 +80,5 @@ export function VoiceSettings() {
     <Section name="Billing & minutes"><BillingMinutes /></Section>
     <Section name="Phone PIN"><PhonePinCard /></Section>
     <Section name="Booking calendar"><CalendarCard /></Section>
-    <Section name="Notifications"><div className="settings-panel" id="panel-notifications">
-      <h2 className="settings-page-title">Notifications</h2>
-      <div className="settings-rows"><DailySummaryCard /></div>
-    </div></Section>
   </div>;
 }

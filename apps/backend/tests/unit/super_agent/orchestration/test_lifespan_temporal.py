@@ -40,7 +40,6 @@ def test_lifespan_sets_and_closes_client(app, monkeypatch):
 
 
 def test_lifespan_does_not_wait_for_a_hanging_connect(app, monkeypatch):
-
     async def hang():
         await asyncio.sleep(3600)
 

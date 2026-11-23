@@ -88,7 +88,7 @@ async def test_publish_without_an_app_id_asks_the_admins(world):
 
 @pytest.fixture
 def relay(monkeypatch):
-    from core.services import needs_you_email, push_service, task_conversation, webhook_dedup
+    from core.services import push_service, task_conversation, webhook_dedup
 
     seen: set[str] = set()
 
@@ -102,13 +102,11 @@ def relay(monkeypatch):
         "room": AsyncMock(return_value="room-task"),
         "post": AsyncMock(return_value="m1"),
         "push": AsyncMock(),
-        "away": AsyncMock(),
     }
     monkeypatch.setattr(webhook_dedup, "record_event_or_skip", dedupe)
     monkeypatch.setattr(task_conversation, "ensure_task_room", spies["room"])
     monkeypatch.setattr(task_conversation, "post_as_lightbulb", spies["post"])
     monkeypatch.setattr(push_service, "send_push_to_user", spies["push"])
-    monkeypatch.setattr(needs_you_email, "queue_question", spies["away"])
     return spies
 
 
@@ -123,7 +121,6 @@ async def test_relay_question_idempotent_and_only_to_answerers(world, relay):
     assert [c.args[0] for c in relay["push"].await_args_list] == [ADA]  # one push, the answerer only
     title, body, data = relay["push"].await_args.args[1:]
     assert data == {"source": "task_question", "taskId": TASK, "qid": ref.qid} and len(body) <= 180
-    assert relay["away"].await_args.args[3] == [ADA]
 
 
 async def test_relay_survives_an_origin_thread_that_is_not_in_the_origin_room(world, relay):
@@ -145,7 +142,7 @@ async def test_relay_survives_an_origin_thread_that_is_not_in_the_origin_room(wo
     await _run(tq.relay_question, WS, TASK, ref.qid)
     origin = [c for c in relay["post"].await_args_list if c.kwargs["event_id"].endswith(":origin")]
     assert [c.kwargs["thread_root"] for c in origin] == ["ack-elsewhere", None]  # then the origin room itself
-    assert [c.args[0] for c in relay["push"].await_args_list] == [ADA] and relay["away"].await_count == 1
+    assert [c.args[0] for c in relay["push"].await_args_list] == [ADA]
 
 
 async def test_relay_names_the_specialist_not_its_id(world, relay, monkeypatch):
@@ -352,7 +349,6 @@ async def test_relay_rechecks_retirement_after_room_creation(world, relay, monke
     await running
     relay["post"].assert_not_awaited()
     relay["push"].assert_not_awaited()
-    relay["away"].assert_not_awaited()
 
 
 @pytest.mark.parametrize("stage", ["task_post", "origin_post", "origin_refused", "first_push"])
@@ -408,4 +404,3 @@ async def test_retirement_during_delivery_suppresses_remaining_deliveries(world,
     # A delivery begun while open may finish. Nothing later starts after retirement.
     assert posts == [f"q:{ref.qid}"] + ([] if stage == "task_post" else [f"q:{ref.qid}:origin"])
     assert len(pushes) == (1 if stage == "first_push" else 0)
-    relay["away"].assert_not_awaited()

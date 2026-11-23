@@ -125,7 +125,7 @@ match. Keep the id-qualified form in the deploy-role trust policies.
 Names from deleted systems that still carry load. Prove nothing reads a resource before you delete it.
 
 - **`paperclip-companies` table**: the canonical workspace identity row.
-- **`PAPERCLIP_SERVICE_TOKEN_KEY`**: signs session shares, digests and Needs-you links.
+- **`PAPERCLIP_SERVICE_TOKEN_KEY`**: signs the Spark billing links, local-session grants and meeting-context tokens (`service_token._signing_key`).
 - **The bridge's `/internal/paperclip/v1/runs` route** (`apps/infra/hermes/bridge/server.py`): creates, polls
   and stops a real Hermes turn.
 - **`ECS_SUBNETS`, `ECS_SECURITY_GROUP_ID`**: the AgentCore `networkModeConfig` that
@@ -141,9 +141,10 @@ Names from deleted systems that still carry load. Prove nothing reads a resource
   stack (detached, not deleted).
 - **`LitestreamReplicaLifecycle`** in `service-stack.ts`: carries the bucket-scoped `s3:ListBucket` every profile
   read, write and delete needs.
-- **`components/messaging`, `workspace`, `teams` and `control`** in the web app: partly live. `/voice/lightbulb`
-  no longer mounts them (it renders `voice/AssistantThread` over `hooks/useRooms`), but `/voice/settings`
-  mounts `settings/SettingsPlace`, which pulls in `control` panels. Prove a file has no importer before you delete it.
+- **The web app's old chat folders are gone**: `components/messaging`, `workspace`, `teams`, `control` and
+  `settings/SettingsPlace` no longer exist (checked against `origin/main`, 2026-11-23). `/voice` is `components/voice`
+  over `hooks/useRooms.ts`; rooms are still the conversation store, so do not touch the messaging rooms.
+  Old docs and specs still name those paths; they are history, not a map.
 
 ## Critical Rules
 

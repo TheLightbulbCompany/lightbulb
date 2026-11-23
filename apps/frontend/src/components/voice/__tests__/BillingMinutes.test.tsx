@@ -8,7 +8,6 @@ vi.mock("../data", () => ({
   useAgentConfig: () => ({ data: { runOut: "keep" }, save: vi.fn() }),
 }));
 vi.mock("../VoicePlanCard", () => ({ VoicePlanCard: () => null }));
-vi.mock("@/components/settings/DailySummaryCard", () => ({ DailySummaryCard: () => null }));
 
 import { BillingMinutes } from "../VoiceSettings";
 

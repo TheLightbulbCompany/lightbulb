@@ -110,18 +110,6 @@ beforeEach(() => {
 });
 
 describe("LiveEventsProvider", () => {
-  it("tells the backend the person is here only while the tab is visible (away-email presence)", async () => {
-    post.mockClear();
-    const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
-    render(<LiveEventsProvider><Probe /></LiveEventsProvider>);
-    await act(async () => {});
-    expect(post).not.toHaveBeenCalledWith("/users/me/active", {});
-    visibility.mockReturnValue("visible");
-    await act(async () => { document.dispatchEvent(new Event("visibilitychange")); });
-    await waitFor(() => expect(post).toHaveBeenCalledWith("/users/me/active", {}));
-    visibility.mockRestore();
-  });
-
   it("loads live config for the signed-in user/owner while keeping HTTP ready during AppSync reconnect", async () => {
     render(<LiveEventsProvider><Probe /></LiveEventsProvider>);
     expect(screen.getByText(/http-ready:reconnecting/)).toBeInTheDocument();

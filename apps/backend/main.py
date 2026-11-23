@@ -167,8 +167,6 @@ async def lifespan(app: FastAPI):
     # stale "shutting down" from a prior shutdown.
     set_shutting_down(False)
 
-    from core.services.daily_digest import run_digest_sweeper
-    from core.services.needs_you_email import run_needs_you_sweeper
     from core.services.durable_activity import run_trial_idle_sweeper
     from core.services.run_ledger import run_ledger_sweeper
     from core.services.browser_control import run_autosave_sweeper
@@ -189,10 +187,6 @@ async def lifespan(app: FastAPI):
     os_voice_task = asyncio.create_task(os_voice_sweeper(os_voice_stop))
     memory_sweeper_stop = asyncio.Event()
     memory_sweeper_task = asyncio.create_task(run_memory_sweeper(memory_sweeper_stop))
-    digest_stop = asyncio.Event()
-    digest_task = asyncio.create_task(run_digest_sweeper(digest_stop))
-    away_stop = asyncio.Event()
-    away_task = asyncio.create_task(run_needs_you_sweeper(away_stop))
 
     gauge_task = asyncio.create_task(_running_count_gauge_loop())
 
@@ -208,8 +202,6 @@ async def lifespan(app: FastAPI):
             "voice_call_sweeper": voice_sweeper_task,
             "os_voice_sweeper": os_voice_task,
             "memory_sweeper": memory_sweeper_task,
-            "daily_digest": digest_task,
-            "needs_you_email": away_task,
             "running_gauges": gauge_task,
         }
     )
@@ -245,8 +237,6 @@ async def lifespan(app: FastAPI):
     voice_sweeper_stop.set()
     os_voice_stop.set()
     memory_sweeper_stop.set()
-    digest_stop.set()
-    away_stop.set()
     gauge_task.cancel()
     try:
         async with asyncio.timeout(20):
@@ -261,8 +251,6 @@ async def lifespan(app: FastAPI):
                 voice_sweeper_task,
                 os_voice_task,
                 memory_sweeper_task,
-                digest_task,
-                away_task,
                 gauge_task,
             ]
             await asyncio.gather(*cleanup, return_exceptions=True)
@@ -276,8 +264,6 @@ async def lifespan(app: FastAPI):
             voice_sweeper_task,
             os_voice_task,
             memory_sweeper_task,
-            digest_task,
-            away_task,
             gauge_task,
         ):
             task.cancel()
@@ -289,8 +275,6 @@ async def lifespan(app: FastAPI):
             voice_sweeper_task,
             os_voice_task,
             memory_sweeper_task,
-            digest_task,
-            away_task,
             gauge_task,
             return_exceptions=True,
         )

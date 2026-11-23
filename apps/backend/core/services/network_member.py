@@ -47,7 +47,7 @@ async def write_sessions(owner_id: str) -> dict:
     from core.services.website_logins import _humans_to_ask
     from core.services.workspace_name import saved_name
 
-    roster, name, members = await asyncio.gather(
+    roster, business, members = await asyncio.gather(
         load_agent_roster(owner_id), saved_name(owner_id), _humans_to_ask(owner_id, None)
     )
     if len(roster) > MAX_SESSIONS:
@@ -72,7 +72,7 @@ async def write_sessions(owner_id: str) -> dict:
     # ``members``: the sidecar's gate, the workspace's people; ``revoked_keys``: their signed-out computers, whose
     # proofs stay valid until they expire (30 days). ponytail: goes with the member sidecar
     doc = {
-        "workspace": name or owner_id,
+        "workspace": business or owner_id,
         "sessions": sessions,
         "members": members,
         "revoked_keys": await revoked_keys(members),

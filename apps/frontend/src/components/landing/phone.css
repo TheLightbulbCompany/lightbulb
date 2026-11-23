@@ -272,7 +272,7 @@
 :root .lp.night .landing-nav .nav-links a::after{background:#F5EFE2}
 :root .lp.night .landing-nav .btn-primary{background:#F0C34E;color:#0F1A2B}
 :root .lp.night .landing-nav .hamburger-line{background:#F5EFE2}
-@media (max-width:768px){:root .lp.night .landing-nav .nav-links{background:rgba(10,19,34,.98)}}
+@media (max-width:768px){:root .lp:not(.night) .landing-nav .nav-links{background:rgba(245,239,226,.98)}:root .lp.night .landing-nav .nav-links{background:rgba(10,19,34,.98)}}
 .lp .lb-foot{z-index:1}
 .lp #voices{scroll-margin-top:calc(var(--lb-navh,64px) + 96px)}
 .lp .vc a{display:flex;align-items:center;gap:12px;flex:1;color:inherit;text-decoration:none}

@@ -241,7 +241,7 @@ This ends at backend reply handling, before browser delivery and paint, and
 only includes messages that receive a matched reply. The older 54–57s cold
 invoke measurement is historical, not a current baseline. This alarm does not
 distinguish cold starts from model/tool work or catch every slow interaction;
-use the [chat performance checks](chat-performance.md) for that investigation.
+investigate cold starts and slow interactions separately.
 
 ## P22 — messaging-ingress-4xx
 

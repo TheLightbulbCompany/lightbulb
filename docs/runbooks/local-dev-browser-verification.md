@@ -22,9 +22,9 @@ Use `localhost:3000` in the browser. The dev backend accepts `localhost:3000` as
 
 `LOCAL_DEV_API_PROXY=1` is required for the local route. In development, the frontend rewrites `/api/v1/*` to the fixed `https://api-dev.thelightbulb.company/api/v1/*` destination. The rewrite is absent when the flag is unset and in production.
 
-## Sign in for a real dev workspace
+## Sign in for a real dev account
 
-Use an existing dedicated development Clerk user that is already an organization administrator of the browser-enabled test workspace. Verify `/v1/instance` reports `environment_type: development`, find the exact user using `/v1/users?email_address=<encoded email>` (not `email_address[]`), and verify membership in the intended dev organization. Mint a ticket using `POST /v1/sign_in_tokens` with `{"user_id":"<verified id>","expires_in_seconds":300}` and the dev secret as bearer authorization. Keep the response in process memory or a mode-0600 temporary file deleted immediately after redemption. Use a descriptive User-Agent for scripted Clerk requests.
+Use an existing dedicated development Clerk user (one person, one account; organizations are not used). Verify `/v1/instance` reports `environment_type: development` and find the exact user using `/v1/users?email_address=<encoded email>` (not `email_address[]`). Mint a ticket using `POST /v1/sign_in_tokens` with `{"user_id":"<verified id>","expires_in_seconds":300}` and the dev secret as bearer authorization. Keep the response in process memory or a mode-0600 temporary file deleted immediately after redemption. Use a descriptive User-Agent for scripted Clerk requests.
 
 Redeem the ticket in the loaded page:
 
@@ -33,10 +33,7 @@ const signIn = await window.Clerk.client.signIn.create({
   strategy: 'ticket',
   ticket: '<short-lived ticket>',
 });
-await window.Clerk.setActive({
-  session: signIn.createdSessionId,
-  organization: '<test organization id>',
-});
+await window.Clerk.setActive({ session: signIn.createdSessionId });
 ```
 
 Do not paste the ticket or any key into source, screenshots, runbooks, or logs. Do not use production users or workspaces.

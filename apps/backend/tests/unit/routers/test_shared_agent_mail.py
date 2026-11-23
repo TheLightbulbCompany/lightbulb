@@ -131,3 +131,29 @@ def test_shared_address_never_routes_to_other_tenant(client, shared, monkeypatch
     inbound.team_address.assert_awaited_once_with("user_sender")
     inbound.ensure_team_address.assert_not_awaited()
     handler.assert_not_awaited()
+
+
+@pytest.fixture
+def own_address(monkeypatch, shared):
+    """The sender has claimed a team address of their own: their tenant is the route."""
+    address = "agents@bob.thelightbulb.company"
+    monkeypatch.setattr(inbound, "team_address", AsyncMock(return_value=address))
+    inbound.ensure_team_address.return_value = (address, "ok")
+    inbound.get_by_address.return_value = {**fixtures._row(address=address), "owner_id": "user_sender"}
+    return address
+
+
+def test_payload_cannot_forge_verified_sender_identity(client, shared, own_address):
+    _, _, handler = shared
+    response = fixtures._post(client, payload(verified_sender_user_id="user_attacker"))
+    assert response.json()["status"] == "meeting_scheduled"
+    assert handler.await_args.kwargs == {"verified_sender_user_id": "user_sender"}
+
+
+def test_wrong_mailbox_owner_is_retryable_and_never_delivered(client, shared, own_address):
+    _, _, handler = shared
+    inbound.get_by_address.return_value = {"owner_id": "user_wrong"}
+    response = fixtures._post(client, payload())
+    assert response.status_code == 503
+    handler.assert_not_awaited()
+    inbound.delete_event.assert_awaited_once_with(fixtures.MESSAGE_ID)

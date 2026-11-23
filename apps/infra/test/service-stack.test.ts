@@ -94,9 +94,8 @@ function buildServiceStack(environment: "dev" | "prod", inspectAssets?: (images:
     appsyncEventsApiArn: `arn:aws:appsync:us-east-1:877352799272:apis/events-${environment}`,
     appsyncEventsRegion: "us-east-1",
     agentMailConfigurationSet: "isol8-test-agent-mail",
-    // Mirrors lightbulb-stage.ts's VENDOR_ORG_ID_BY_ENV["prod"]; left unset
-    // for dev here so the untested env keeps exercising the "" default.
-    vendorOrgId: environment === "prod" ? "org_3H3viGAfq2SXc9dIdcatmGXg8Td" : undefined,
+    // lightbulb-stage.ts's VENDOR_ORG_ID_BY_ENV is empty (vendor org retired): unset here too.
+    vendorOrgId: undefined,
   });
 
   if (inspectAssets) {
@@ -738,13 +737,13 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
     });
   });
 
-  test("stamps the vendor org id into the prod backend task and leaves it empty where unset", () => {
+  test("leaves the vendor org id empty in the prod backend task (vendor org retired)", () => {
     buildServiceStack("prod").hasResourceProperties("AWS::ECS::TaskDefinition", {
       ContainerDefinitions: Match.arrayWith([
         Match.objectLike({
           Name: "backend",
           Environment: Match.arrayWith([
-            Match.objectLike({ Name: "VENDOR_ORG_ID", Value: "org_3H3viGAfq2SXc9dIdcatmGXg8Td" }),
+            Match.objectLike({ Name: "VENDOR_ORG_ID", Value: "" }),
           ]),
         }),
       ]),

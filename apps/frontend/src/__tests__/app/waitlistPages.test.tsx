@@ -5,6 +5,8 @@ vi.mock("@/components/landing/Navbar", () => ({ Navbar: () => null }));
 vi.mock("@/components/landing/Footer", () => ({ Footer: () => null }));
 vi.mock("@/components/landing/PricingThreeCard", () => ({ PricingThreeCard: () => null }));
 vi.mock("@/lib/pricing", () => ({ getPricing: async () => null }));
+// The Spark page (/os) loads its own fonts; jsdom has no next/font.
+vi.mock("next/font/google", () => ({ Bricolage_Grotesque: () => ({ variable: "" }), Silkscreen: () => ({ variable: "" }) }));
 const captureSignupCta = vi.fn();
 vi.mock("@/lib/signupFlow", () => ({ captureSignupCta: (o: unknown) => captureSignupCta(o) }));
 

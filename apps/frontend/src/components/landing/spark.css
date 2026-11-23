@@ -275,8 +275,9 @@
 .sp .out small { color: var(--sp-soft); }
 
 /* ---------- 7 · questions ---------- */
-.sp #s7 .stick { background: var(--sp-midnight); }
-.sp .faq { position: absolute; left: calc(var(--sp-gut) + 34%); right: var(--sp-gut); top: calc(var(--lb-navh) + 120px); display: flex; flex-direction: column; border-top: 1px solid var(--sp-line); }
+/* Not pinned: the section grows with the answers people open (in flow, not absolute). */
+.sp #s7 .stick { background: var(--sp-midnight); height: auto; min-height: 100vh; overflow: visible; padding-bottom: 96px; }
+.sp .faq { position: relative; margin: calc(var(--lb-navh) + 120px) var(--sp-gut) 0 calc(var(--sp-gut) + 34%); display: flex; flex-direction: column; border-top: 1px solid var(--sp-line); }
 .sp .faq details { border-bottom: 1px solid var(--sp-line); }
 .sp .faq summary { list-style: none; cursor: pointer; display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 22px 4px; font-size: clamp(19px, 1.6vw, 24px); font-weight: 500; letter-spacing: -.01em; }
 .sp .faq summary::-webkit-details-marker { display: none; }

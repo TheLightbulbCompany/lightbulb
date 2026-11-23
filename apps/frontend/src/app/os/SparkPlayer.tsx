@@ -815,6 +815,11 @@ function start(): (() => void) | undefined {
     crea.style.width = CW + "px";
     crea.style.height = CH + "px";
     crea.style.transform = `translate(${pos[0] - CW / 2}px,${pos[1] - CH / 2}px) scale(${sc})`;
+    // From the questions down Spark is still (owner, 2026-11-23): the notch and creature fade out so they
+    // never sit over the answers.
+    const away = String(clamp((sec(7).offsetTop - (y + navB)) / (vh * 0.25)));
+    notch.style.opacity = away;
+    crea.style.opacity = away;
 
     /* the pointer */
     if (cur) {

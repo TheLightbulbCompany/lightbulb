@@ -22,7 +22,7 @@ from core.temporal.workflows import WORKFLOWS, TaskWorkflow
 from ..orchestration.fake_activities import Fakes
 
 WS, TID = "org_1", "8f14e45f-ceea-467a-9575-8a1b2c3d4e5f"
-SAM, PRIYA = "user_sam", "user_priya"
+SAM, PRIYA = WS, "user_priya"
 
 
 class QFakes(Fakes):

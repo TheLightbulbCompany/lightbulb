@@ -346,8 +346,8 @@ async def can_answer_now(ws: str, q: dict, user_id: str, *, member: bool = False
     if q["answererRule"] == "inviter":
         return user_id in (q.get("baseAnswerers") or [])
     rule = await _current_rule(ws, q.get("subkind"))
-    if rule != "admins" and user_id in (q.get("baseAnswerers") or []):
-        return True  # requester, app creator or governance holder, and today's rule still has that seat
+    if rule != "admins" and (user_id in (q.get("baseAnswerers") or []) or user_id == ws):
+        return True  # the requester, app creator or governance holder, or the tenant's own person (its requester)
     if not rule.endswith("admins"):
         return False
     return (members if members is not None else await _members(ws)).get(user_id) == "org:admin"

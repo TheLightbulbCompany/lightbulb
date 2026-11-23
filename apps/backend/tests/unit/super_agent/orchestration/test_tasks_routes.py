@@ -24,12 +24,6 @@ SAM, PRIYA = "org_1", "user_priya"
 ROOM = "11111111-2222-4333-8444-555555555555"
 
 
-@pytest.fixture(autouse=True)
-def _tenant_is_the_workspace(monkeypatch):
-    """These tests act as several people in one tenant: the tenant is pinned to WS."""
-    monkeypatch.setattr("routers.tasks.resolve_owner_id", lambda auth: WS)
-
-
 @pytest.fixture
 def world(table, monkeypatch):  # noqa: F811
     monkeypatch.setattr(api, "human_display_name", AsyncMock(side_effect=lambda u: u))

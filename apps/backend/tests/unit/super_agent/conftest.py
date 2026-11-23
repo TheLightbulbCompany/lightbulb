@@ -40,14 +40,3 @@ def _no_connected_apps(monkeypatch):
 
     monkeypatch.setattr(integrations_repo, "list_for_owner", _AsyncMock(return_value=[]))
     monkeypatch.setattr(integrations_repo, "get_manual_mcp_servers", _AsyncMock(return_value={}))
-
-
-def patch_roster(monkeypatch, members_of) -> None:
-    """A multi-person roster for the question tests: `members_of(ws, strict=...)` as the old Clerk read gave it,
-    behind `questions._members` (the product's one-person roster)."""
-    from core.services import questions
-
-    async def roster(ws):
-        return {m["user_id"]: m.get("role") or "" for m in await members_of(ws, strict=True) if m.get("user_id")}
-
-    monkeypatch.setattr(questions, "_members", roster)

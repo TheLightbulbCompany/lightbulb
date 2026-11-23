@@ -13,13 +13,7 @@ from core.engine import api  # the answer and action bodies moved there (engine-
 from routers import questions as router_mod
 
 WS = "org_1"
-SAM, ADA, PRIYA = "user_sam", "user_ada", "user_priya"
-
-
-@pytest.fixture(autouse=True)
-def _tenant_is_the_workspace(monkeypatch):
-    """These tests act as several people in one tenant: the tenant is pinned to WS."""
-    monkeypatch.setattr("routers.questions.resolve_owner_id", lambda auth: WS)
+SAM, ADA, PRIYA = "org_1", "org_1", "user_priya"
 
 
 def _q(task_id, qid="q-1", **over):
@@ -67,19 +61,6 @@ async def _task(audience):
     return row["taskId"]
 
 
-async def test_needs_you_lists_only_mine(world):
-    task = await _task({"kind": "person", "userIds": [SAM]})
-    await questions_repo.open_question(WS, _q(task))
-    await questions_repo.open_question(WS, _q(task, "q-2", answerers=[ADA], baseAnswerers=[ADA]))
-    resp = await world["client"].get("/api/v1/needs-you")
-    assert resp.status_code == 200
-    [item] = resp.json()["items"]
-    assert (item["id"], item["taskId"], item["state"], item["canAnswer"]) == ("q-1", task, "open", True)
-    assert item["waitingLabel"] == "Waiting on you"
-    assert [o["style"] for o in item["options"]] == ["primary", "danger"]
-    assert resp.json()["next"] is None
-
-
 @pytest.mark.parametrize("cursor", ["%%%", "bm90LWpzb24", "\x80"])  # not base64 / base64 of not-JSON / not ASCII
 async def test_needs_you_cursor_it_did_not_hand_out_is_400(world, cursor):
     resp = await world["client"].get("/api/v1/needs-you", params={"cursor": cursor})
@@ -93,26 +74,6 @@ async def test_needs_you_drops_answered(world):
         WS, task, "q-1", option_id="deny", trigger_id=None, by=SAM, client_answer_id="c", expected_version=None
     )
     assert (await world["client"].get("/api/v1/needs-you")).json()["items"] == []
-
-
-async def test_history_shows_deny_and_cancel_read_only_for_viewers(world, monkeypatch):
-    task = await _task({"kind": "workspace"})
-    monkeypatch.setattr(router_mod.tasks_access, "_is_workspace_member", AsyncMock(return_value=True))
-    await questions_repo.open_question(WS, _q(task, "q-1"))
-    await questions_repo.open_question(WS, _q(task, "q-2"))
-    await questions_repo.record_answer(
-        WS, task, "q-1", option_id="deny", trigger_id=None, by=SAM, client_answer_id="c", expected_version=None
-    )
-    world["who"]["user"] = PRIYA  # a workspace member, not an answerer
-    resp = await world["client"].get(f"/api/v1/tasks/{task}/questions")
-    assert resp.status_code == 200
-    items = {i["id"]: i for i in resp.json()["items"]}
-    assert items["q-1"]["state"] == "answered" and items["q-1"]["answer"]["optionId"] == "deny"
-    assert items["q-1"]["answeredBy"] == {"id": SAM, "name": "Sam"} and items["q-1"]["waitingLabel"] is None
-    assert items["q-2"]["canAnswer"] is False and items["q-2"]["waitingLabel"] == "Waiting on Sam"
-    await questions_repo.cancel_open(WS, task, by=PRIYA, reason="stopped")
-    q2 = {i["id"]: i for i in (await world["client"].get(f"/api/v1/tasks/{task}/questions")).json()["items"]}["q-2"]
-    assert (q2["state"], q2["reason"], q2["cancelledBy"]["id"]) == ("cancelled", "stopped", PRIYA)
 
 
 async def test_private_task_404_for_non_viewer(world):

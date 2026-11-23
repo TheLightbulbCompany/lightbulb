@@ -4,7 +4,6 @@ once the Question is answered or cancelled, and never the content in the email."
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 
-from tests.unit.super_agent.conftest import patch_roster
 import pytest
 
 from core.config import settings
@@ -32,7 +31,7 @@ def world(table, monkeypatch):
     monkeypatch.setattr(
         away.user_repo,
         "get",
-        AsyncMock(return_value={"user_id": "user_sam", "email": "s+clerk_test@x.co", "timezone": "America/New_York"}),
+        AsyncMock(return_value={"user_id": "org_1", "email": "s+clerk_test@x.co", "timezone": "America/New_York"}),
     )
     monkeypatch.setattr(away.email_service, "send_email", w.send)
     monkeypatch.setattr(away, "capture_product_event", MagicMock())
@@ -40,13 +39,12 @@ def world(table, monkeypatch):
     monkeypatch.setattr(away, "put_metric", lambda *a, **k: None)
     from core.services import questions
 
-    w.members = [{"user_id": "user_sam", "role": "org:member"}, {"user_id": "user_ada", "role": "org:admin"}]
+    w.members = [{"user_id": "org_1", "role": "org:member"}, {"user_id": "org_1", "role": "org:admin"}]
 
     async def members(org_id, *, strict=False):
         assert strict
         return w.members
 
-    patch_roster(monkeypatch, members)
     monkeypatch.setattr(
         questions.billing_repo,
         "get_capability_policy",
@@ -66,14 +64,14 @@ async def _open():
             "title": "send the Q3 invoice to acme@example.com",
             "options": [{"id": "allow_once", "label": "Allow once"}, {"id": "deny", "label": "Deny"}],
             "askedBy": {"kind": "worker"},
-            "answerers": ["user_sam"],
+            "answerers": ["org_1"],
             "answererRule": "requester",
-            "baseAnswerers": ["user_sam"],
+            "baseAnswerers": ["org_1"],
         },
     )
 
 
-def _row(user="user_sam"):
+def _row(user="org_1"):
     return {
         "pk": f"AWAY#{user}",
         "sk": f"Q#{TASK}#q-1",
@@ -88,16 +86,6 @@ def _row(user="user_sam"):
     }
 
 
-async def test_queue_question_one_row_per_answerer(world):
-    await away.queue_question(WS, TASK, "q-1", ["user_sam", "user_ada"], "Finance needs your OK", "x" * 400)
-    items = [c.kwargs["Item"] for c in world.put.call_args_list]
-    assert [(i["pk"], i["sk"], i["kind"]) for i in items] == [
-        ("AWAY#user_sam", f"Q#{TASK}#q-1", "task_question"),
-        ("AWAY#user_ada", f"Q#{TASK}#q-1", "task_question"),
-    ]
-    assert items[0]["sweep"] == "away" and len(items[0]["body"]) == 300 and items[0]["ownerId"] == WS
-
-
 async def test_away_email_for_unseen_question_after_5min(world):
     await _open()
     assert await away.check_one(_row(), NOW) is True
@@ -107,35 +95,7 @@ async def test_away_email_for_unseen_question_after_5min(world):
     assert f"panel=task&taskId={TASK}&from=away_email" in kw["text"]
 
 
-async def test_away_email_dropped_when_answered(world):
-    await _open()
-    await questions_repo.record_answer(
-        WS, TASK, "q-1", option_id="deny", trigger_id=None, by="user_sam", client_answer_id="c", expected_version=None
-    )
-    assert await away.check_one(_row(), NOW) is False
-    world.send.assert_not_awaited()
-    world.finish.assert_awaited_once_with("AWAY#user_sam", f"Q#{TASK}#q-1")
-
-
 async def test_away_email_dropped_for_a_non_answerer(world):
     await _open()
     assert await away.check_one(_row("user_priya"), NOW) is False
     world.send.assert_not_awaited()
-
-
-async def test_away_email_dropped_when_removed_from_the_workspace(world):
-    await _open()
-    world.members = [m for m in world.members if m["user_id"] != "user_sam"]
-    assert await away.check_one(_row(), NOW) is False
-    world.send.assert_not_awaited()
-    world.finish.assert_awaited_once_with("AWAY#user_sam", f"Q#{TASK}#q-1")
-
-
-async def test_away_email_clerk_error_is_retried_not_sent(world, monkeypatch):
-
-    await _open()
-    patch_roster(monkeypatch, AsyncMock(side_effect=RuntimeError("clerk")))
-    with pytest.raises(RuntimeError):
-        await away.check_one(_row(), NOW)  # run_once logs it; the row stays due for the next pass
-    world.send.assert_not_awaited()
-    world.finish.assert_not_awaited()

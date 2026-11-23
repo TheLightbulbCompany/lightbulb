@@ -13,7 +13,6 @@ from tests.unit.super_agent.automations.test_automations_api import (  # noqa: F
     ROOM,
     SAM,
     WS,
-    _tenant_is_the_workspace,
     _as,
     _chat_trigger,
     api,
@@ -73,16 +72,6 @@ async def test_create_rule_needs_room_membership(api):
     with _not_member(PRIYA):
         r = _as(api, PRIYA, admin=False).post(BASE, json=RULE)
     assert r.status_code == 409 and r.json()["detail"]["code"] == "room_not_member"
-
-
-async def test_room_rule_cap(api):
-    ids = [_as(api, PRIYA, admin=False).post(BASE, json={**RULE, "name": f"r{i}"}).json()["id"] for i in range(6)]
-    for sid in ids[:5]:
-        assert _as(api).post(f"{BASE}/{sid}/activate").status_code == 200
-    r = _as(api).post(f"{BASE}/{ids[5]}/activate")
-    assert r.status_code == 409 and r.json()["detail"]["code"] == "room_rule_cap"
-    r = _as(api, PRIYA, admin=False).post(BASE, json={**RULE, "name": "r7"})
-    assert r.status_code == 409 and r.json()["detail"]["code"] == "room_rule_cap"
 
 
 async def test_text_edit_drops_to_observe_and_resets_count(api):

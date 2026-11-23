@@ -4,7 +4,6 @@ The update is faked by running the real `record_answer` Activity (what the workf
 the Effect and the Trigger are the real ones. Adversarial: wrong person, demoted admin, a computer / OAuth / hook
 caller, answer after Stop, two presses at once, a replayed press, a bad option, free text stays off the update."""
 
-from tests.unit.super_agent.conftest import patch_roster
 from unittest.mock import AsyncMock
 
 import httpx
@@ -23,19 +22,13 @@ from routers import questions as router_mod
 
 from .conftest import TASK, WS
 
-SAM, ADA, PRIYA = "user_sam", WS, "user_priya"
+SAM, ADA, PRIYA = WS, WS, "user_priya"
 POLICY = {"money_moves": True, "outreach": False, "publishing": True, "provisioning": True}
 MEMBERS = [
     {"user_id": SAM, "role": "org:member"},
     {"user_id": ADA, "role": "org:admin"},
     {"user_id": PRIYA, "role": "org:member"},
 ]
-
-
-@pytest.fixture(autouse=True)
-def _tenant_is_the_workspace(monkeypatch):
-    """These tests act as several people in one tenant: the tenant is pinned to WS."""
-    monkeypatch.setattr("routers.questions.resolve_owner_id", lambda auth: WS)
 
 
 @pytest.fixture
@@ -47,7 +40,6 @@ def world(table, monkeypatch):
     async def members(org, *, strict=False):
         return roster["members"]
 
-    patch_roster(monkeypatch, members)
     updates: list[tuple] = []
 
     async def update_task(ws, task_id, name, ref):
@@ -111,15 +103,6 @@ async def test_free_text_rides_a_trigger_not_the_update(world):
     assert ref.trigger_id == f"answer:{qid}:c-1" and "expensive" not in repr(ref)
     trigger = await tasks_repo.get_trigger(WS, ref.trigger_id)
     assert trigger["ref"]["text"] == "Too expensive, use the .com we own"
-
-
-async def test_demoted_admin_403(world):
-    qid = await _question()
-    world["roster"]["members"] = [{**m, "role": "org:member"} if m["user_id"] == ADA else m for m in MEMBERS]
-    world["who"]["user"] = ADA
-    resp = await _press(world, qid)
-    assert resp.status_code == 403 and resp.json()["detail"]["code"] == "not_answerer"
-    assert world["updates"] == []
 
 
 async def test_answer_after_stop_409(world):

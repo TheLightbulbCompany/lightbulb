@@ -16,7 +16,7 @@ from tests.unit.super_agent.orchestration.test_tasks_repo import table  # noqa: 
 WS = "org_1"
 
 
-def _client(role: str) -> httpx.AsyncClient:
+def _client() -> httpx.AsyncClient:
     app = FastAPI()
     app.include_router(router_mod.router, prefix="/api/v1")
     app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id=WS, human_session=True)
@@ -52,7 +52,7 @@ async def test_export_streams_every_workspace_task_as_ndjson(world):
     output = {"id": "effect:1", "kind": "link", "title": "Venue", "ref": {"url": "https://x.test"}}
     await tasks_repo.add_task_output(WS, b, output)
 
-    r = await _client("org:admin").get("/api/v1/tasks/export")
+    r = await _client().get("/api/v1/tasks/export")
 
     assert r.status_code == 200
     assert r.headers["content-type"].startswith("application/x-ndjson")

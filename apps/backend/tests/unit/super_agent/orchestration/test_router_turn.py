@@ -1,7 +1,6 @@
 """`router_turn`: render, run, apply (wave-2 O Task 11; contracts-v2 §9, §10; G2, G18, G27).
 Review focus 2: a retried `router_turn` applies once."""
 
-from tests.unit.super_agent.conftest import patch_roster
 import re
 from datetime import datetime, timedelta, timezone
 import uuid
@@ -2037,8 +2036,6 @@ async def test_completion_ask_creates_waiting_canonical_question_not_a_worker_or
     from temporalio.testing import ActivityEnvironment
     from core.temporal import task_questions
     from core.repositories import questions_repo
-
-    patch_roster(monkeypatch, AsyncMock(return_value=[{"user_id": SAM}]))
 
     async def update(ws, task_id, name, ref):
         assert name == "ask"

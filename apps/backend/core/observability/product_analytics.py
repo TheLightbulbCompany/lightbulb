@@ -77,9 +77,7 @@ def capture_product_event(
 ) -> None:
     """Capture one PostHog product event keyed on the subscriber's Clerk id.
 
-    Identity rule (the workspace is the unit, the person is a human): an ``org_``
-    ``distinct_id`` is moved onto the ``workspace_id`` property and the org's
-    creator becomes the person.
+    The ``distinct_id`` is the person's own Clerk user id (the person is the tenant).
 
     ``set_person`` is merged into ``$set`` so the person profile carries current
     billing state (subscription_status / is_subscribed / trial_end /

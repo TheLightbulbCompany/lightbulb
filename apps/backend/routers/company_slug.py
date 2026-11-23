@@ -1,10 +1,8 @@
-"""The agent-email slug a new workspace picks at "Create your workspace".
+"""The agent-email slug a new account picks at "Set up your business".
 
-Agents' addresses are ``{agent}@{slug}.{AGENT_EMAIL_DOMAIN}``. The owner chooses the slug
-before the Clerk org exists: the page checks availability as they type, then HOLDS the slug
-for the user, and only then creates the org and claims the hold for it (the
-``organization.created`` webhook repeats the claim as a backstop). A lost race is a 409 and the
-user picks again; there are no numeric suffixes (owner ruling 2026-09-24).
+Agents' addresses are ``{agent}@{slug}.{AGENT_EMAIL_DOMAIN}``. The person chooses the slug:
+the page checks availability as they type, then HOLDS the slug for the user, and claims the hold
+for their own tenant. A lost race is a 409 and the user picks again; there are no numeric suffixes (owner ruling 2026-09-24).
 
 The hold, availability and source routes take a plain signed-in user: the caller may have no
 tenant yet. A person (no org) claims a slug for their own tenant: that is the only way a person
@@ -64,9 +62,8 @@ class SourceBody(BaseModel):
 
 @router.post("/source")
 async def stash_source(body: SourceBody, auth: Annotated[AuthContext, Depends(get_current_user)]):
-    """Stash where this person came from. The ``organization.created`` webhook moves it onto a new
-    org, and a person's own tenant adopts it now when its trial row already exists (else the trial
-    row's creation adopts it). Unknown answers and touch keys are dropped, never refused: this must
+    """Stash where this person came from. Their own tenant adopts it now when its trial row already
+    exists (else the trial row's creation adopts it). Unknown answers and touch keys are dropped, never refused: this must
     not stand between a person and a workspace."""
     from core.services import workspace_source
 
@@ -89,9 +86,7 @@ class ClaimBody(HoldBody):
 
 @router.post("/slug/claim")
 async def claim_slug(body: ClaimBody, auth: Annotated[AuthContext, Depends(get_current_user)]):
-    """Hand the caller's hold to their tenant and name it: an org's page calls this with the NEW
-    workspace's token right after creating it (the ``organization.created`` webhook repeats the claim
-    as a backstop); a person claims for their own tenant. This is the one door that gives a person a
+    """Hand the caller's hold to their tenant and name it: a person claims for their own tenant. This is the one door that gives a person a
     company slug, and with it their team address. One slug per tenant: a second, different slug is a
     409."""
     owner_id = resolve_owner_id(auth)

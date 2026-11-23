@@ -1780,7 +1780,7 @@ async def _touch_last_interactive_quietly(owner_id: str) -> None:
 
 async def _validate_human_in_owner(owner_id: str, user_id: str) -> None:
     if owner_id != user_id:  # the tenant is one person
-        raise ApiProblem("MEMBER_NOT_FOUND", "That human is not in this workspace.")
+        raise ApiProblem("MEMBER_NOT_FOUND", "That person is not on this account.")
 
 
 async def _resolved_member(owner_id: str, member: CreateRoomMember, roster: list[dict]) -> dict:
@@ -2500,8 +2500,8 @@ async def create_room(auth: AuthContext, request: CreateRoomRequest, *, meta_ext
         if await messaging_repo.ensure_user_stream(owner_id, human["id"]) is None:
             # A removed member: the creator (stale JWT) is refused, a removed invitee is not found.
             if human["id"] == auth.user_id:
-                raise ApiProblem("WORKSPACE_MEMBERSHIP_REQUIRED", "You are no longer a member of this workspace.")
-            raise ApiProblem("MEMBER_NOT_FOUND", "That human is not in this workspace.")
+                raise ApiProblem("WORKSPACE_MEMBERSHIP_REQUIRED", "You no longer have access to this account.")
+            raise ApiProblem("MEMBER_NOT_FOUND", "That person is not on this account.")
     normalized = [{key: member.get(key) for key in ("kind", "id", "role", "listenMode")} for member in members[1:]]
     room_id = messaging_repo.deterministic_room_id(owner_id, auth.user_id, str(request.client_room_id))
     req_hash = messaging_repo.request_hash(request.name, request.kind, normalized)
@@ -2723,7 +2723,7 @@ async def upsert_member(auth: AuthContext, room_id: str, request: UpsertRoomMemb
         # A person's choice of mode; a system sweep never overrides it.
         member = {**member, "modeSetBy": "user"}
     if request.kind == "human" and await messaging_repo.ensure_user_stream(owner_id, request.id) is None:
-        raise ApiProblem("MEMBER_NOT_FOUND", "That human is not in this workspace.")  # a removed member
+        raise ApiProblem("MEMBER_NOT_FOUND", "That person is not on this account.")  # a removed member
     current = await messaging_repo.list_members(room_id)
     room_agents = [row for row in current if row.get("kind") == "agent"]
     # Updating membership is not a new conversation. The room's existing front keeps its
@@ -4095,7 +4095,7 @@ async def create_human_message(
                         notification_copy.line(
                             row.get("displayTitle") or row.get("title") or row.get("cwdName") or "Session", 80
                         ),
-                        notification_copy.line(owner_member.get("displayName") or "Workspace member", 40),
+                        notification_copy.line(owner_member.get("displayName") or "Someone", 40),
                     )
                 )
     links = await _validate_message_links(
@@ -5381,7 +5381,7 @@ async def _agent_dm_room_id(owner_id: str, user_id: str, agent_id: str, *, meta_
     ``selectDm`` calls (agent ``active``) when none exists. The client room id is derived
     from the pair, so two racing posts converge on one room instead of two DMs."""
     if user_id != owner_id:  # the tenant is one person: no one else has a DM here
-        raise ApiProblem("MEMBER_NOT_FOUND", "That human is not in this workspace.")
+        raise ApiProblem("MEMBER_NOT_FOUND", "That person is not on this account.")
     for row in await messaging_repo.list_rooms_for_member(owner_id, "human", user_id):
         meta = row["meta"]
         if (
@@ -5420,7 +5420,7 @@ async def _user_for_handle(owner_id: str, handle: str) -> str:
     for row in with_human_handles(agents + humans, emails):
         if row["kind"] == "human" and row["mentionHandle"] == wanted:
             return row["id"]
-    raise ApiProblem("MEMBER_NOT_FOUND", "No workspace member has that handle.")
+    raise ApiProblem("MEMBER_NOT_FOUND", "No one on this account has that handle.")
 
 
 async def resolve_agent_post_room(owner_id: str, request: AgentPostRequest) -> str:
@@ -5447,7 +5447,7 @@ async def resolve_agent_post_room(owner_id: str, request: AgentPostRequest) -> s
     user_id = request.user_id
     if user_id is not None:
         if user_id != owner_id:  # the tenant is one person: only their own DM
-            raise ApiProblem("MEMBER_NOT_FOUND", "That human is not in this workspace.")
+            raise ApiProblem("MEMBER_NOT_FOUND", "That person is not on this account.")
     elif request.handle is not None:
         user_id = await _user_for_handle(owner_id, request.handle)
     if user_id is not None:

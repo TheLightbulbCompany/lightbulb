@@ -1348,7 +1348,7 @@ SESSION_SUMMARY_CAP = 24
 async def live_sessions_for_room(owner: str, room_id: str, members: list[dict]) -> list[dict]:
     """Bounded projection of the room's live sessions for agent ingress.
     Never raises: a missing summary is worse than a blocked dispatch, but not by much.
-    Session visibility is workspace-wide, so a room shared with another organization
+    Session visibility is workspace-wide, so a room shared with another tenant
     (#2644) gets no summary: any member whose home differs from the room's owner
     blanks the whole result before anything is queried."""
     if any(messaging_repo.member_home(member, owner) != owner for member in members):
@@ -1364,7 +1364,7 @@ async def live_sessions_for_room(owner: str, room_id: str, members: list[dict]) 
                 **s.model_dump(by_alias=True, include=include),
                 "title": s.display_title or s.title,
                 "humanUserId": s.human_user_id,
-                "displayName": names.get(s.human_user_id) or "Workspace member",
+                "displayName": names.get(s.human_user_id) or "Someone",
             }
             for s in sessions
         ]
@@ -1378,7 +1378,7 @@ async def referenced_sessions(owner: str, members: list[dict], session_ids: list
     """The sessions a room message references, projected for agent ingress. A reference is a
     link, not a wake (owner ruling 2026-10-02), so offline and ended sessions resolve too --
     under the message writer's own rule: shared, interactive, owner still in the room, and
-    no member from another organization. Never raises: a missing line beats a lost turn."""
+    no member from another tenant. Never raises: a missing line beats a lost turn."""
     if any(messaging_repo.member_home(member, owner) != owner for member in members):
         return []
     humans = {member["id"] for member in members if member.get("kind") == "human"}

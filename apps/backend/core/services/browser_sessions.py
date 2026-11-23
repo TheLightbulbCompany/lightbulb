@@ -64,7 +64,7 @@ def _data_client():
 
 def _profile_ids_by_name(client, name: str) -> list[str]:
     """``name`` is documented as a FILTER, not an exact match, so the exact comparison is
-    ours: ``org_x`` and ``org_xy`` can come back in the same page, and adopting (or
+    ours: ``user_x`` and ``user_xy`` can come back in the same page, and adopting (or
     deleting) the wrong one reaches into another tenant's workspace. One page only — the
     filter already narrows it to near-exact matches."""
     page = client.list_browser_profiles(name=name, maxResults=_PROFILE_PAGE)

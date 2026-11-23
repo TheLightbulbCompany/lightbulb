@@ -107,8 +107,8 @@ def _repo() -> WorkspaceRepo:
     return WorkspaceRepo()
 
 
-def starter_agent_id(org_id: str, starter_key: str) -> str:
-    return str(uuid.uuid5(_STARTER_NAMESPACE, f"{org_id}:{starter_key}"))
+def starter_agent_id(owner_id: str, starter_key: str) -> str:
+    return str(uuid.uuid5(_STARTER_NAMESPACE, f"{owner_id}:{starter_key}"))
 
 
 async def provision_org(owner_id: str, *, provisioner: str) -> Workspace:

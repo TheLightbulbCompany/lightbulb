@@ -69,8 +69,8 @@ async def get_by_status(status: str) -> list[dict]:
     return items
 
 
-#: Every non-owner row in this table keys on ``__<what>__#…``. A Clerk owner id is ``org_…``
-#: or ``user_…`` and never starts with ``_``, so ``scan_all`` can exclude all of them with one
+#: Every non-owner row in this table keys on ``__<what>__#…``. A Clerk owner id is ``user_…``
+#: and never starts with ``_``, so ``scan_all`` can exclude all of them with one
 #: ``begins_with`` -- and a reserved row added later is excluded by construction rather than by
 #: remembering to widen a list. ``PASS_KEY_PREFIX`` and ``LIFECYCLE_KEY_PREFIX`` both start here.
 RESERVED_KEY_PREFIX = "__"
@@ -824,8 +824,7 @@ async def mark_provision_error(owner_id: str, *, last_error: str, retryable: boo
     """Record a failed provision: ``status="error"`` with its cause.
 
     ``retryable`` records the cause's class (True transient, False deterministic);
-    either way the row waits for a retry (the ``organization.created`` redelivery or
-    ``POST /container/retry``).
+    either way the row waits for a retry (``POST /container/retry``).
     Never overwrites a ``running`` row -- a concurrent run that already
     succeeded wins, and a failed reconcile of a live workspace leaves it live.
     No-op when the row is gone.

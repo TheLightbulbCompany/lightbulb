@@ -76,7 +76,7 @@ describe("a refused save says why", () => {
   it("names the hand-off clash and the other refusals instead of a generic error", () => {
     expect(saveRefusal(refused("handoff_is_forwarded_line"))).toMatch(/same number you forward to the assistant/);
     expect(saveRefusal(refused("handoff_number_not_us"))).toMatch(/US or Canadian/);
-    expect(saveRefusal(refused("anything", 403))).toMatch(/Only an admin/);
+    expect(saveRefusal(refused("anything", 403))).toMatch(/You can't change the assistant/);
     expect(saveRefusal(refused("something_new"))).toBeNull();
     expect(saveRefusal(new Error("network"))).toBeNull();
   });

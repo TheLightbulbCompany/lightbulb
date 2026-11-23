@@ -155,9 +155,7 @@ export type AnalyticsEvent =
   | "onboarding_ready"
   | "onboarding_step_completed"
   | "onboarding_step_entered"
-  | "org_invitation_accepted"
   | "trial_started"
-  | "workspace_type_selected"
   // Signup
   | "signup_cta_clicked"
   | "signup_exit"

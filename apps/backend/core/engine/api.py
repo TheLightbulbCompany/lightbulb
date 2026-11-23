@@ -2,8 +2,8 @@
 
 Lightbulb Phone and Lightbulb Meetings call these, and only these, to put lines in a conversation, start and answer
 tasks and read what the agents said. In process today; the same shapes go over HTTP later (`core.engine.contract`).
-Every operation takes the tenant explicitly: none reads a Clerk organisation, and a `member` principal is the tenant's
-member on the product's word (as the phone trusts a call's `ownerUserId`), never looked up. A refusal is an
+Every operation takes the tenant explicitly (the person's own id), and a `member` principal is that person
+on the product's word (as the phone trusts a call's `ownerUserId`), never looked up. A refusal is an
 `EngineError` carrying the status and body the routes answered before; `http` turns it back into that `HTTPException`
 for a route.
 
@@ -954,9 +954,9 @@ def warm(tenant_id: str, agent_ids: list[str], conversation_id: str | None = Non
 _TENANT_WORKFLOW_PREFIXES = ("task", "learn", "gwatch", "fire", "hook")
 
 
-#: A tenant id `delete_tenant` acts on: a Clerk organisation or user id, nothing else (its WorkflowId prefix scan and
+#: A tenant id `delete_tenant` acts on: a Clerk user id, nothing else (its WorkflowId prefix scan and
 #: partition delete are keyed on it).
-_TENANT_ID = re.compile(r"(?:org|user)_[A-Za-z0-9]{1,64}")
+_TENANT_ID = re.compile(r"user_[A-Za-z0-9]{1,64}")
 
 
 async def delete_tenant(tenant_id: str) -> dict[str, int]:

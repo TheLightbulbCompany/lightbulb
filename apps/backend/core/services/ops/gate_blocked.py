@@ -37,10 +37,6 @@ GATE_CODES: tuple[str, ...] = (
     "trial_daily_cap",
     "trial_expired",
     "workspace_required",
-    # Retired 2026-09-15 with the personal-workspace code; still queried so the
-    # 7-day window does not drop their tail. Remove after 2026-09-22.
-    "signup_required",
-    "invitation_pending",
 )
 _WINDOW_S = 7 * 24 * 3600  # the query window — kept at 7 days
 _PERIOD_S = 86400  # the GetMetricData bucket size — daily, summed below

@@ -375,7 +375,7 @@ async def _evaluate_provision_gate_inner(
     """Return a Gate if the workspace's chat and orb cannot run right now, else None.
 
     The voice product's gate. It no longer gates provisioning: a workspace on the shared pool
-    costs nothing until it runs, so sign-up provisions unconditionally (``provision_new_workspace``)
+    costs nothing until it runs, so sign-up provisions unconditionally (``POST /container/provision``)
     and this only answers ``/container/status``. Phone is not judged here: going live needs the
     voice plan (``voice_onboarding.provision_at_go_live`` refuses with ``voice_payment_required``).
 

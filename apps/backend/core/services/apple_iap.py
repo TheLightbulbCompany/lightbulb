@@ -109,7 +109,7 @@ def owner_account_token(owner_id: str) -> str:
     """The ``appAccountToken`` a purchase for ``owner_id`` must carry.
 
     SHA-256 of the owner id shaped into a v5-style UUID (StoreKit accepts only a
-    UUID there, and ``org_…`` ids are not one). Derived, never stored: the
+    UUID there, and ``user_…`` ids are not one). Derived, never stored: the
     server recomputes and compares. The client never computes it — it gets it
     from POST /billing/apple/purchase-intent. Never change this computation: it
     would unbind every existing purchase.

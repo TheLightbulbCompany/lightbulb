@@ -80,7 +80,7 @@ async def test_a_user_outside_the_org_is_rejected_before_the_marker(repo, monkey
     monkeypatch.setattr(
         messaging,
         "_validate_human_in_owner",
-        AsyncMock(side_effect=ApiProblem("MEMBER_NOT_FOUND", "That human is not in this workspace.")),
+        AsyncMock(side_effect=ApiProblem("MEMBER_NOT_FOUND", "That person is not on this account.")),
     )
     with pytest.raises(ApiProblem):
         await messaging.join_default_room(OWNER, USER)

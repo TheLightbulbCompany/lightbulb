@@ -22,7 +22,7 @@ from dateutil.rrule import DAILY, rruleset, rrulestr
 
 from core.config import settings
 from core.dynamodb import is_cancelled
-from core.engine import engine
+from core.engine import client as engine
 from core.engine.contract import AnnotateIn, EngineError, LineIn, OpenIn, Principal
 from core.observability.metrics import put_metric
 from core.repositories import agent_email_repo, container_repo

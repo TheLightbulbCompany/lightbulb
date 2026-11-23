@@ -5,7 +5,7 @@ import asyncio
 import logging
 
 from core.config import settings
-from core.engine import engine
+from core.engine import client as engine
 from core.voice import livekit_huddles
 from core.voice.meetings import meeting_bots, meeting_invites
 

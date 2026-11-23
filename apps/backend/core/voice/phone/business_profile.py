@@ -192,7 +192,7 @@ async def caller_of(ws: str, trigger: dict | None) -> str | None:
     ref = (trigger or {}).get("ref") or {}
     if ref.get("origin") != "phone_contact" or not ref.get("callId"):
         return None
-    from core.engine import engine
+    from core.engine import client as engine
 
     conv = await engine.get_conversation(ws, ref["callId"])
     call = (conv.annotations.get("call") if conv else None) or {}

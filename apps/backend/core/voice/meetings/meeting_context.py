@@ -15,7 +15,7 @@ import uuid
 import jwt
 
 from core.dynamodb import run_in_thread
-from core.engine import engine
+from core.engine import client as engine
 from core.engine.hooks import NotAuthorized  # the engine's refusal: raised there when `authorize` answers allow=False
 from core.voice import store
 from core.voice.meetings import transcripts

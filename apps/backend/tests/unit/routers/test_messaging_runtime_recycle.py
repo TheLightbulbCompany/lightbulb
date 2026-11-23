@@ -5,6 +5,8 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from botocore.exceptions import ClientError
 
+ENGINE_APP = True  # these routes are served by `engine_main.app` alone
+
 OWNER, TOKEN, ARN = "org_a", "hook-token-for-a", "arn:aws:bedrock-agentcore:us-east-1:1:runtime/r-1"
 URL = f"/api/v1/internal/messaging/runtime/{OWNER}/recycle"
 H = {"Authorization": f"Bearer {TOKEN}"}

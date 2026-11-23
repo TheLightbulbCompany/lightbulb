@@ -102,7 +102,7 @@ function buildStacks(environment: "dev" | "prod"): {
     appsyncEventsApiArn: `arn:aws:appsync:us-east-1:877352799272:apis/events-${environment}`,
     appsyncEventsRegion: "us-east-1",
     agentMailConfigurationSet: "isol8-test-agent-mail",
-    vendorOrgId: environment === "prod" ? "org_3H3viGAfq2SXc9dIdcatmGXg8Td" : undefined,
+    vendorOrgId: undefined,
   });
 
   return {

@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
-from main import app
+from engine_main import app
 
 
 def test_rejected_hook_token_is_counted():

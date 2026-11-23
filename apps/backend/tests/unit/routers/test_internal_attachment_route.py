@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
-from main import app
+from engine_main import app
 
 OWNER, ROOM, ATT = "org_1", "11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222"
 

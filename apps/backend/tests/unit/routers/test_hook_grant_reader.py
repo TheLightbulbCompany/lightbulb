@@ -11,6 +11,8 @@ import pytest
 from core.services import hook_grants
 from core.services.messaging import RunEventResponse
 
+ENGINE_APP = True  # these routes are served by `engine_main.app` alone
+
 OWNER = "user_a"
 ROW = "11111111-1111-4111-8111-111111111111"
 AGENT = "22222222-2222-4222-8222-222222222222"

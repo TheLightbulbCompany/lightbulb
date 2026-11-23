@@ -439,16 +439,6 @@ async def test_a_path_that_names_another_id_is_refused(world, wire):
     assert await messaging_repo.list_messages_before(DM, 10**19, 10) == []
 
 
-def test_engine_follows_the_setting(monkeypatch):
-    import core.engine as package
-
-    for transport_name, module in (("http", client), ("inprocess", api)):
-        monkeypatch.setattr(settings, "ENGINE_TRANSPORT", transport_name)
-        monkeypatch.delitem(vars(package), "engine", raising=False)
-        assert package.engine is module
-    monkeypatch.delitem(vars(package), "engine", raising=False)
-
-
 BAD_TENANTS = ["", "org_", "user_", "org_a\nb", "org_a\x00", "org_a'b", "org_1/../org_2", "org_a:b", "team_abc", "org"]
 
 

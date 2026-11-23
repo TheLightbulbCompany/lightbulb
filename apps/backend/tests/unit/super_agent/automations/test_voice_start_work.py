@@ -35,7 +35,7 @@ def api(table, monkeypatch):
         patch("core.repositories.messaging_repo.get_room", side_effect=get_room),
         patch("core.repositories.messaging_repo.put_admit_trigger", AsyncMock()) as outbox,
     ):
-        from main import app
+        from engine_main import app
 
         yield type("Api", (), {"client": TestClient(app), "rows": rows, "meta": meta, "outbox": outbox})()
 

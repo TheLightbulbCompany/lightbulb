@@ -153,9 +153,9 @@ async def test_callbacks_refuse_a_bad_token(product, monkeypatch):
     assert r.status_code == 401
 
 
-def test_main_adds_only_the_callback_routes():
-    """The backend serves every route it served (the runtime's messaging callbacks moved module, not path), plus the
-    three engine callbacks."""
+def test_main_serves_the_engine_callbacks_and_not_the_runtime_routes():
+    """The backend serves the three engine callbacks; the runtime's callbacks (runtime, automations, messaging
+    internal) are mounted by the engine service alone."""
     import main
 
     paths = set(main.app.openapi()["paths"])
@@ -163,8 +163,15 @@ def test_main_adds_only_the_callback_routes():
         "/api/v1/internal/engine/tools/{name}",
         "/api/v1/internal/engine/context",
         "/api/v1/internal/engine/events",
-        "/api/v1/internal/messaging/agent-messages/{owner_id}",
-        "/api/v1/internal/messaging/runs/{owner_id}/events",
-        "/api/v1/internal/agents/voice-profile/{owner_id}",
-        "/api/v1/internal/messaging/attachments/{owner_id}/{room_id}/{attachment_id}",
     } <= paths
+    assert (
+        not {
+            "/api/v1/internal/messaging/agent-messages/{owner_id}",
+            "/api/v1/internal/messaging/runs/{owner_id}/events",
+            "/api/v1/internal/agents/voice-profile/{owner_id}",
+            "/api/v1/internal/messaging/attachments/{owner_id}/{room_id}/{attachment_id}",
+            "/api/v1/internal/runtime/{owner_id}/runs/{run_id}/events",
+            "/api/v1/internal/automations/{owner_id}/voice-start",
+        }
+        & paths
+    )

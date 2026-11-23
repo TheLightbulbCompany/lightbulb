@@ -7,7 +7,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from core.config import settings
-from core.engine import engine
+from core.engine import client as engine
 from core.voice import livekit_huddles, rooms
 
 router = APIRouter()

@@ -14,7 +14,7 @@ import uuid
 from datetime import datetime
 
 from core.dynamodb import run_in_thread
-from core.engine import engine
+from core.engine import client as engine
 from core.engine.contract import Principal, StartIn, start_task_id
 from core.observability.metrics import put_metric
 from core.repositories import container_repo

@@ -18,7 +18,7 @@ from typing import Annotated
 from fastapi import APIRouter
 from pydantic import Field
 
-from core.engine import engine
+from core.engine import client as engine
 from core.engine.contract import ConversationOut, LineIn, Principal
 from core.engine.contract import QuestionRef as SaidQuestion
 from core.voice.meetings import meeting_bots, meeting_invites

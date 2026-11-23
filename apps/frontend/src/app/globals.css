@@ -960,6 +960,39 @@
   transition: transform var(--dur-base) var(--ease-out);
 }
 .nav-links a:hover::after, .nav-links a.active::after { transform: scaleX(1); }
+/* Products: one button opening a small panel of the three products (Navbar.tsx). The colours are the
+   page tokens, so the panel follows the light, dark and Spark pages with no rule of its own. */
+.nav-products { position: relative; }
+.nav-products-btn {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 6px 12px 6px 14px; border: 0; border-radius: 99px; background: none;
+  font: inherit; color: inherit; cursor: pointer;
+  transition: color .2s, background .2s;
+}
+.nav-products-btn:hover, .nav-products-btn[aria-expanded="true"], .nav-products-btn.active {
+  color: var(--midnight); background: color-mix(in srgb, var(--midnight) 8%, transparent);
+}
+.nav-products-btn.active { font-weight: 600; }
+.nav-products-btn:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
+.nav-products-btn svg { transition: transform var(--dur-base) var(--ease-out); }
+.nav-products-btn[aria-expanded="true"] svg { transform: rotate(180deg); }
+.nav-products-label { display: none; }
+.nav-products-panel {
+  display: none; position: absolute; top: calc(100% + 12px); left: 50%; transform: translateX(-50%);
+  width: 340px; padding: 6px; border-radius: 14px; z-index: 60;
+  background: var(--cream); border: 1px solid var(--rule, var(--edge));
+  box-shadow: 0 16px 40px rgba(15, 26, 43, .16);
+}
+.nav-products-panel.open { display: grid; gap: 2px; opacity: 1; transition: opacity var(--dur-base) var(--ease-out); }
+@starting-style { .nav-products-panel.open { opacity: 0; } }
+.nav-products-panel a { display: grid; gap: 2px; padding: 10px 12px; border-radius: 10px; }
+.nav-products-panel a::after { content: none; }
+.nav-products-panel a:focus-visible { outline: 2px solid var(--brass); outline-offset: -2px; }
+.nav-product-name { font-weight: 600; color: var(--midnight); }
+.nav-product-line { font-size: 13px; font-weight: 400; line-height: 1.35; color: var(--lb-ink-mute, var(--midnight-muted)); }
+@media (prefers-reduced-motion: reduce) {
+  .nav-products-panel.open, .nav-products-btn svg { transition: none; }
+}
 .nav-brand { display: flex; align-items: flex-start; }
 .nav-brand .nav-badge { margin-top: 2px; }
 .nav-badge {
@@ -1058,6 +1091,17 @@
   .nav-mobile-login { display: block; }
   .nav-login { display: none; }
   .nav-hamburger { display: flex; }
+  /* The phone menu lists the products under a plain label instead of a dropdown. */
+  .nav-products-btn { display: none; }
+  .nav-products-label {
+    display: block; padding: 4px 16px 2px;
+    font-size: 12px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase;
+  }
+  .nav-products-panel {
+    display: grid; position: static; transform: none; width: auto;
+    padding: 0; border: 0; border-radius: 0; background: none; box-shadow: none;
+  }
+  .nav-products-panel a { padding: 10px 16px; }
   .nav-mobile-backdrop {
     display: block;
     position: fixed;

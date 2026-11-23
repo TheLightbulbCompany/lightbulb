@@ -98,10 +98,12 @@ describe("Phone page voice", () => {
     expect(captureSignupCta.mock.calls.map(([o]) => o.ctaId)).toEqual(["footer_start_free", "footer_setup"]);
   });
 
-  it("names the three products and pricing in the nav, in order", () => {
+  it("names the three products under Products, then pricing, in the nav, in order", () => {
     const { container } = render(<Navbar />);
-    const links = [...container.querySelectorAll(".nav-links a:not(.nav-mobile-login)")].map((a) => a.textContent);
-    expect(links).toEqual(["Phone", "Meetings", "Spark", "Pricing"]);
+    const links = [...container.querySelectorAll(".nav-links a:not(.nav-mobile-login)")].map(
+      (a) => a.querySelector(".nav-product-name")?.textContent ?? a.textContent,
+    );
+    expect(links).toEqual(["Lightbulb Phone", "Lightbulb Meetings", "Spark", "Pricing"]);
     expect(container.textContent).toContain("Set up Lightbulb Phone");
     expect(container.textContent).not.toContain("Set up your assistant");
   });

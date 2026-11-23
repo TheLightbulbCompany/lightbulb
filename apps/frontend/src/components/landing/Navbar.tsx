@@ -42,6 +42,8 @@ export function Navbar() {
   // A phone cannot install Spark: the button goes to the page's "open this on your Mac" line instead.
   const ctaHref = spark && onPhone ? (pathname === "/os" ? "#get" : "/os#get") : cta.href;
   const onCta = (ctaId: string, surface: string) => () => {
+    // The Spark and waitlist buttons can land on the page already open, so the phone menu must close itself.
+    setMobileOpen(false);
     if (spark) {
       if (!onPhone) trackSparkDownload("nav");
     } else if (cta.product === "phone") {

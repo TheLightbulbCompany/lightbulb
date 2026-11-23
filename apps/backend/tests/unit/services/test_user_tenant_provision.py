@@ -48,7 +48,6 @@ def no_clerk_orgs(monkeypatch):
     """A person has no organization: Clerk answers no org (404) and lists no members."""
     monkeypatch.setattr("core.services.clerk_admin.get_organization", AsyncMock(return_value=None))
     monkeypatch.setattr("core.services.clerk_admin.list_organization_members", AsyncMock(return_value=[]))
-    monkeypatch.setattr("core.services.welcome_email.send_owner_welcome", AsyncMock())
 
 
 @pytest.fixture

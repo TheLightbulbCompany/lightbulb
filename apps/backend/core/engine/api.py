@@ -265,10 +265,12 @@ async def get_roster(tenant_id: str) -> list[dict]:
 
 async def _open_dm(req: OpenIn) -> ConversationOut:
     ws, member = req.tenant_id, req.creator.id
+    if member != ws:  # the tenant is one person: only they open their conversations
+        raise _problem(403, "not_tenant_person")
     try:
         front = {"id": req.agent_id} if req.agent_id else await task_conversation._front_agent(ws)
         room = await messaging.create_room(
-            AuthContext(user_id=member, org_id=ws),
+            AuthContext(user_id=ws, human_session=True),
             messaging.CreateRoomRequest(
                 client_room_id=uuid.uuid5(uuid.NAMESPACE_URL, f"{req.client_key}|{front['id']}"),
                 name=None,
@@ -340,9 +342,11 @@ async def append_line(req: LineIn) -> LineOut:
         )
         return LineOut(message_id=message_id)
     member, key = req.principal.id, req.idempotency_key
+    if member != req.tenant_id:  # the tenant is one person: only they speak as a member
+        raise _problem(403, "not_tenant_person")
     answered = await _answer_said_question(req.tenant_id, req.conversation_id, member, req.answers, req.text, key)
     msg = await messaging.create_human_message(
-        AuthContext(user_id=member, org_id=req.tenant_id),
+        AuthContext(user_id=req.tenant_id, human_session=True),
         req.conversation_id,
         messaging.CreateMessageRequest(
             client_message_id=uuid.uuid5(uuid.NAMESPACE_URL, key),

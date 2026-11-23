@@ -14,7 +14,5 @@ describe("VercelAnalytics", () => {
     const card = encodeURIComponent("/chat?panel=teams-approval-detail&detailId=ap-secret");
     const sent = props.beforeSend!({ url: `https://thelightbulb.company/sign-up?__clerk_ticket=t&redirect_url=${card}` });
     expect(sent.url).toBe("https://thelightbulb.company/sign-up");
-    expect(props.beforeSend!({ url: "https://thelightbulb.company/join/invite?decision=x" }).url)
-      .toBe("https://thelightbulb.company/join/invite");
   });
 });

@@ -335,9 +335,6 @@ class Settings(BaseSettings):
     # without it; CDK-wired in dev/prod. This is the billing source of truth
     # for "$150".
     STRIPE_ULTRA_PRICE_ID: str = ""
-    # $20/month per human member from the 6th (billing_service.SEATS_INCLUDED).
-    # Empty = fail closed: a 6+ member checkout is refused and no seat is billed.
-    STRIPE_SEAT_PRICE_ID: str = ""
     # $100/month Front desk add-on (a third subscription item; pays for the workspace's texting number).
     # Empty = fail closed: the add-on cannot be bought.
     STRIPE_FRONT_DESK_PRICE_ID: str = ""
@@ -349,8 +346,6 @@ class Settings(BaseSettings):
     WORKSPACE_PRICE_USD: int = 50
     BASE_PRICE_USD: int = 20
     ULTRA_PRICE_USD: int = 150
-    # Display dollars for STRIPE_SEAT_PRICE_ID (per member from the 6th); lockstep with its unit amount.
-    SEAT_PRICE_USD: int = 20
     # Display dollars for STRIPE_FRONT_DESK_PRICE_ID (Photon's $250/month line price); lockstep with its unit amount.
     FRONT_DESK_PRICE_USD: int = 250
     # Display dollars for STRIPE_SPARK_PRICE_ID (Spark's monthly price); lockstep with its unit amount.

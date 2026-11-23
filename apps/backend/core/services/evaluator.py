@@ -71,9 +71,7 @@ def _delete_episodes(client, memory_id: str, user_id: str) -> int:
     return workspace_memory._delete_records(client, f"user={user_id}", memory_id, [base, f"{base}episodes/"])
 
 
-async def delete_episodes(
-    user_id: str, *, resweep_after_s: float = workspace_memory.RESWEEP_AFTER_S, still_gone=None
-) -> int:
+async def delete_episodes(user_id: str, *, resweep_after_s: float = workspace_memory.RESWEEP_AFTER_S) -> int:
     """Every record in both of the user's namespaces and every raw event written under their actor
     id, then one late re-sweep of records (extraction may still be in flight), as the private-scope wipe."""
     memory_id = settings.AGENTCORE_SESSIONS_MEMORY_ID
@@ -84,9 +82,7 @@ async def delete_episodes(
     await run_in_thread(_delete_events, client, user_id, memory_id)
     base = _ns(user_id)
     task = asyncio.create_task(
-        workspace_memory._tail(
-            f"user={user_id}", memory_id, [base, f"{base}episodes/"], [], resweep_after_s, still_gone
-        )
+        workspace_memory._tail(f"user={user_id}", memory_id, [base, f"{base}episodes/"], [], resweep_after_s)
     )
     workspace_memory._tails.add(task)
     task.add_done_callback(workspace_memory._tails.discard)

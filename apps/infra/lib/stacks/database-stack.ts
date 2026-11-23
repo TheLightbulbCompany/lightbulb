@@ -35,7 +35,6 @@ export class DatabaseStack extends cdk.Stack {
   public readonly oauthStateTable: dynamodb.Table;
   public readonly integrationsTable: dynamodb.Table;
   public readonly paperclipCompaniesTable: dynamodb.Table;
-  public readonly workspaceJoinLinksTable: dynamodb.Table;
 
 
   constructor(scope: Construct, id: string, props: DatabaseStackProps) {
@@ -277,24 +276,6 @@ export class DatabaseStack extends cdk.Stack {
     this.integrationsTable = createTable("IntegrationsTable", "integrations", {
       partitionKey: { name: "owner_id", type: dynamodb.AttributeType.STRING },
       sortKey: { name: "provider", type: dynamodb.AttributeType.STRING },
-    });
-
-    // Workspace join links — ONE row per Clerk org (PK org_id), holding the
-    // SHA-256 of that workspace's live join token and nothing else that could
-    // reconstruct it. Hash-only at rest, same posture as the bedrock-gate
-    // tokens table; the plaintext exists once, in the mint response.
-    //
-    // No GSI and no TTL, both deliberate. Redeem is told which org to look up
-    // (the join URL carries the org id beside the secret), so a token-hash
-    // index would only add a second row that a concurrent regenerate could
-    // orphan as an unrevokable live credential. And the owner's decision is
-    // that join links do not expire — they end when an admin regenerates
-    // (one PutItem over this row) or revokes (one DeleteItem).
-    //
-    // NOT ephemeral: losing these rows silently breaks every link an admin has
-    // already shared, so it takes PITR like the rest of the durable tables.
-    this.workspaceJoinLinksTable = createTable("WorkspaceJoinLinksTable", "workspace-join-links", {
-      partitionKey: { name: "org_id", type: dynamodb.AttributeType.STRING },
     });
 
     // Paperclip companies — maps Isol8 user_id → their Paperclip company

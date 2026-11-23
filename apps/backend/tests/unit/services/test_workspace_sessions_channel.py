@@ -57,33 +57,6 @@ async def test_live_config_admits_a_member_to_the_sessions_channel(published):
 
 
 @pytest.mark.asyncio
-async def test_removal_tells_the_leaver_first_then_drops_their_sessions_access(published, monkeypatch):
-    await live_config(BOB)
-    user_channel = f"/ws/{await messaging_repo.ensure_workspace_id(OWNER)}/users/"
-    sent_before_deactivate: list[int] = []
-    real_deactivate = messaging_repo.deactivate_user_stream
-
-    async def deactivate(*args, **kwargs):
-        sent_before_deactivate.append(len(published))
-        return await real_deactivate(*args, **kwargs)
-
-    monkeypatch.setattr(messaging.messaging_repo, "list_rooms_for_member", AsyncMock(return_value=[]))
-    monkeypatch.setattr(messaging.messaging_repo, "deactivate_user_stream", deactivate)
-    published.clear()
-    await messaging.revoke_human_membership(OWNER, BOB.user_id)
-
-    assert sent_before_deactivate == [1]  # told while their user channel still works
-    [notice] = published
-    assert notice["channel"].startswith(user_channel)
-    event = json.loads(notice["events"][0])
-    assert event["type"] == "workspace.access.removed"
-    assert event["payload"] == {"workspaceId": await messaging_repo.ensure_workspace_id(OWNER)}
-    # No new subscribe is admitted: the member row went with the stream, in one write.
-    assert await _member_row(BOB.user_id) is None
-    assert not (await messaging_repo.get_user_stream(OWNER, BOB.user_id))["active"]
-
-
-@pytest.mark.asyncio
 async def test_enrollment_after_a_concurrent_removal_is_refused(published):
     key = await messaging_repo.ensure_user_stream(OWNER, BOB.user_id)
     await messaging_repo.deactivate_user_stream(OWNER, BOB.user_id)

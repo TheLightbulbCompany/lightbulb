@@ -63,7 +63,6 @@ _CONTRACT_TABLES: dict[str, tuple[list[tuple[str, str, str]], dict[str, list[tup
     "oauth-tokens": ([("user_id", "HASH", "S")], {}),
     "oauth-state": ([("state", "HASH", "S")], {}),
     "integrations": ([("owner_id", "HASH", "S"), ("provider", "RANGE", "S")], {}),
-    "workspace-join-links": ([("org_id", "HASH", "S")], {}),
     # The public A2A Agent Card reads the workspace's AGENT# roster rows here.
     "tasks": (
         [("pk", "HASH", "S"), ("sk", "RANGE", "S")],

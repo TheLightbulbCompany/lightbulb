@@ -2241,7 +2241,7 @@ async def _autojoin(owner_id: str, room_id: str, user_id: str) -> bool:
     try:
         if await messaging_repo.ensure_user_stream(owner_id, user_id) is None:
             await messaging_repo.release_autojoin(room_id, user_id)
-            return False  # a removed member: only the membership webhook's rejoin turns them back on
+            return False  # a removed member's stream stays off
         meta = await messaging_repo.upsert_member(room_id=room_id, owner_id=owner_id, member=member)
     except messaging_repo.MemberLimitExceeded:
         # Keep the marker: a full room must not turn every poll into a retry.
@@ -2995,52 +2995,6 @@ async def delete_room(auth: AuthContext, room_id: str) -> None:
             # require_room_member answers 404 if the room is now gone.
             if attempt == 2:
                 raise
-
-
-async def revoke_human_membership(owner_id: str, user_id: str) -> None:
-    """Rotate every room key before deactivating this user's private stream."""
-    discovered = await messaging_repo.list_rooms_for_member(owner_id, "human", user_id)
-    own_session_chats: list[str] = []
-    for row in discovered:
-        room_id = row["meta"]["roomId"]
-        member = await messaging_repo.get_member(room_id, "human", user_id)
-        if member is None:
-            continue
-        meta = await messaging_repo.get_room(room_id)
-        if meta is None or messaging_repo.member_home(member, meta["ownerId"]) != owner_id:
-            continue
-        await _remove_member_with_notices(meta, "human", user_id)
-        if is_session_room(meta) and meta["session"].get("ownerId") == user_id:
-            own_session_chats.append(meta["session"]["sessionId"])
-    # Cooperative revocation of /ws/<ws>/sessions: an open AppSync subscription cannot be closed
-    # server-side, so the leaver's own client is told to drop it, while its channel still works.
-    # Their stream (and sessions member row) then go off, so no new subscribe is admitted.
-    try:
-        from core.services.live_events import get_live_event_publisher  # imports this module
-
-        workspace_id = await messaging_repo.ensure_workspace_id(owner_id)
-        await get_live_event_publisher().publish_user(
-            owner_id, user_id, make_live_event("workspace.access.removed", {"workspaceId": workspace_id})
-        )
-    except Exception:
-        logger.warning("workspace.access.removed notice failed")
-    await messaging_repo.deactivate_user_stream(owner_id, user_id)
-    # Second pass, stream off: a first seat (#general) that landed after the list above
-    # held no marker and passed its own re-check while the stream was still on.
-    # The list reads an eventually consistent GSI that can miss a seat committed just now, so the
-    # auto-seated #general and an existing feed are swept by id as well (consistent reads; a no-op without a seat).
-    swept = {row["meta"]["roomId"] for row in await messaging_repo.list_rooms_for_member(owner_id, "human", user_id)}
-    swept |= {default_room_id(owner_id), messaging_repo.feed_room_id(owner_id)}
-    for room_id in swept:
-        await _remove_human_seat(owner_id, room_id, user_id)
-    if own_session_chats:
-        # Their sessions' chats go silent for everyone: the person they were about is gone. After
-        # the stream is off, which the chat door reads once it has seated someone: a seat that
-        # lands before this list is removed here, one that lands after it is refused there.
-        from core.services import session_chat  # lazy: it imports this module
-
-        for session_id in own_session_chats:
-            await session_chat.silence(owner_id, session_id, keep=None)
 
 
 async def list_messages(
@@ -5504,6 +5458,8 @@ async def _agent_dm_room_id(owner_id: str, user_id: str, agent_id: str, *, meta_
     """The human↔agent DM, created through the same ``create_room`` the web client's
     ``selectDm`` calls (agent ``active``) when none exists. The client room id is derived
     from the pair, so two racing posts converge on one room instead of two DMs."""
+    if user_id != owner_id:  # the tenant is one person: no one else has a DM here
+        raise ApiProblem("MEMBER_NOT_FOUND", "That human is not in this workspace.")
     for row in await messaging_repo.list_rooms_for_member(owner_id, "human", user_id):
         meta = row["meta"]
         if (
@@ -5514,7 +5470,7 @@ async def _agent_dm_room_id(owner_id: str, user_id: str, agent_id: str, *, meta_
         ):
             return meta["roomId"]
     detail = await create_room(
-        AuthContext(user_id=user_id, org_id=owner_id),
+        AuthContext(user_id=owner_id, human_session=True),
         CreateRoomRequest(
             client_room_id=uuid.uuid5(uuid.NAMESPACE_URL, f"lightbulb-agent-dm|{owner_id}|{user_id}|{agent_id}"),
             name=None,
@@ -5580,10 +5536,8 @@ async def resolve_agent_post_room(owner_id: str, request: AgentPostRequest) -> s
         return matches[0]
     user_id = request.user_id
     if user_id is not None:
-        # _validate_human_in_owner waves the owner id itself through; an org id is never a human.
-        if not user_id.startswith("user_") or user_id == owner_id:
+        if user_id != owner_id:  # the tenant is one person: only their own DM
             raise ApiProblem("MEMBER_NOT_FOUND", "That human is not in this workspace.")
-        await _validate_human_in_owner(owner_id, user_id)
     elif request.handle is not None:
         user_id = await _user_for_handle(owner_id, request.handle)
     if user_id is not None:

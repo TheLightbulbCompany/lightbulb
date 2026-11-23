@@ -267,10 +267,3 @@ async def sync_front_desk(owner_id: str, *, subscription_id: str, previous_subsc
     if not has or status == "canceled":
         return await release_line(owner_id)
     return "skipped"
-
-
-async def unlink_member(owner_id: str, user_id: str) -> None:
-    """Drop every phone ``user_id`` linked on the workspace's line: a member who left texts as a customer."""
-    line = await agent_email_repo.text_line_for_owner(owner_id)
-    if line:
-        await agent_email_repo.drop_member_phones(line, user_id)

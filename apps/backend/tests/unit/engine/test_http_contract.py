@@ -24,7 +24,6 @@ from core.engine.contract import (
 )
 from core.repositories import effects_repo, messaging_repo, tasks_repo
 from core.services import container_rpc, task_conversation
-from core.services.messaging import ApiProblem
 
 from .test_api import (  # noqa: F401 -- the moto tables and the rooms the in-process tests use
     ANSWER_ERRORS,
@@ -413,13 +412,13 @@ async def test_a_lost_revision_race_raises_the_store_error(world):
 
 
 async def test_an_app_refusal_is_the_same_problem(world):
-    """A refusal by the app's own door (a person not in the room) is the same ApiProblem, status and body."""
+    """A refusal by the engine's own door (a person who is not the tenant) is the same error, status and body."""
     stranger = _member_line("voice-turn:x", "Hi").model_copy(update={"principal": Who(kind="member", id="user_x")})
     problems = []
     for e in (api, client):
-        with pytest.raises(ApiProblem) as err:
+        with pytest.raises(EngineError) as err:
             await e.append_line(stranger)
-        problems.append((err.value.status_code, err.value.body()))
+        problems.append((err.value.status, err.value.detail))
     assert problems[0] == problems[1]
 
 

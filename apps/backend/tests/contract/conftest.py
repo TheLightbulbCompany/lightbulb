@@ -72,6 +72,7 @@ _CONTRACT_TABLES: dict[str, tuple[list[tuple[str, str, str]], dict[str, list[tup
         },
     ),
     "setup-requests": ([("id", "HASH", "S")], {}),
+    "spark-transcripts": ([("user_id", "HASH", "S"), ("sk", "RANGE", "S")], {}),
     "paperclip-companies": (
         [("user_id", "HASH", "S")],
         {

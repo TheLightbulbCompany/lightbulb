@@ -169,7 +169,8 @@ async def get_account(auth: AuthContext = Depends(get_human_session)) -> Account
 async def delete_account(auth: AuthContext = Depends(get_human_session)) -> Response:
     """Delete the signed-in person's Spark account. Every step is idempotent, so a retry finishes a partial one:
     cancel their Spark subscription, close their open voice session at OpenAI, remove every `os_*` attribute from their
-    users row except the `os_deleted_at` tombstone (a later account starts with no trial), then delete the
+    users row except the `os_deleted_at` tombstone (a later account starts with no trial) and delete their saved
+    voice transcripts, then delete the
     Clerk user. Referrers keep what they earned. Ended voice-session rows
     are keyed by session id and expire by TTL. A Stripe or Clerk failure is 502 `delete_failed`."""
     from core.services import clerk_admin
@@ -179,6 +180,7 @@ async def delete_account(auth: AuthContext = Depends(get_human_session)) -> Resp
         await os_billing.cancel_for_deleted_user(uid)  # raises before any Spark data is removed
         for sid in (await os_billing._row(uid)).get(os_voice.ACTIVE) or ():
             await os_voice.close_and_wait(sid, "signed_out")  # OpenAI gets session.close before the cleanup
+        await os_voice.delete_transcripts(uid)  # after the close: its last turn is saved as the session ends
         row = await os_billing._row(uid)  # re-read: ending a session adds to os_voice_seconds
         spark = {f"#a{i}": k for i, k in enumerate(k for k in row if k.startswith("os_") and k != "os_deleted_at")}
         if spark:

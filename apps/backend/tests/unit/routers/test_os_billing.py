@@ -40,6 +40,15 @@ def ddb(monkeypatch, jwks):  # noqa: F811
             AttributeDefinitions=[{"AttributeName": "user_id", "AttributeType": "S"}],
             BillingMode="PAY_PER_REQUEST",
         )
+        resource.create_table(
+            TableName=dynamodb.table_name("spark-transcripts"),
+            KeySchema=[{"AttributeName": "user_id", "KeyType": "HASH"}, {"AttributeName": "sk", "KeyType": "RANGE"}],
+            AttributeDefinitions=[
+                {"AttributeName": "user_id", "AttributeType": "S"},
+                {"AttributeName": "sk", "AttributeType": "S"},
+            ],
+            BillingMode="PAY_PER_REQUEST",
+        )
         resource.create_table(  # with the customer index the real workspace handlers query
             TableName=dynamodb.table_name("billing-accounts"),
             KeySchema=[{"AttributeName": "owner_id", "KeyType": "HASH"}],

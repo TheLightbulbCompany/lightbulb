@@ -1,0 +1,118 @@
+"""Spark voice transcripts: the sideband turns GPT-Live transcript deltas into one saved item per turn, only
+when SPARK_TRANSCRIPTS_ENABLED is on; a failed write never touches the session; account deletion removes them."""
+
+import json
+
+import boto3
+import pytest
+from moto import mock_aws
+
+from core import dynamodb
+from core.config import settings
+from core.voice import os_voice
+from scripts import spark_transcripts
+
+SID = "vs_1"
+
+
+@pytest.fixture
+def table(monkeypatch):
+    with mock_aws():
+        resource = boto3.resource("dynamodb", region_name="us-east-1")
+        t = resource.create_table(
+            TableName=dynamodb.table_name(os_voice.TRANSCRIPTS),
+            KeySchema=[{"AttributeName": "user_id", "KeyType": "HASH"}, {"AttributeName": "sk", "KeyType": "RANGE"}],
+            AttributeDefinitions=[
+                {"AttributeName": "user_id", "AttributeType": "S"},
+                {"AttributeName": "sk", "AttributeType": "S"},
+            ],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        monkeypatch.setattr(dynamodb, "_dynamodb_resource", resource)
+        yield t
+
+
+@pytest.fixture
+def on(monkeypatch):
+    monkeypatch.setattr(settings, "SPARK_TRANSCRIPTS_ENABLED", True)
+
+
+def state(user="user_a"):
+    return {"sessionId": SID, "userId": user, "startedAt": 1_800_000_000, "usageSeconds": 0}
+
+
+def delta(role, text):
+    kind = "session.input_transcript.delta" if role == "user" else "session.output_transcript.delta"
+    return json.dumps({"type": kind, "delta": text, "start_ms": 0, "end_ms": 1})
+
+
+async def hear(s, *events):
+    for role, text in events:
+        assert await os_voice._event(s, delta(role, text)) is False
+
+
+def rows(table):
+    return sorted(table.scan()["Items"], key=lambda i: i["sk"])
+
+
+async def test_deltas_become_one_item_per_turn(table, on):
+    s = state()
+    await hear(s, ("user", "open "), ("user", "my calendar"), ("spark", "Opening "), ("spark", "it now."))
+    await hear(s, ("user", "thanks"))  # the person speaking again ends Spark's turn
+    assert [(r["role"], r["text"]) for r in rows(table)] == [("user", "open my calendar"), ("spark", "Opening it now.")]
+    await os_voice._flush(s)  # the session closing saves the turn still held
+    items = rows(table)
+    assert [(r["role"], r["text"]) for r in items] == [
+        ("user", "open my calendar"), ("spark", "Opening it now."), ("user", "thanks"),
+    ]  # fmt: skip
+    first = items[0]
+    assert first["user_id"] == "user_a" and first["sessionId"] == SID
+    assert first["sk"].startswith(f"1800000000#{SID}#")
+    assert first["ttl"] == first["at"] + 90 * 86400
+
+
+async def test_a_pause_ends_a_turn(table, on, monkeypatch):
+    s = state()
+    await hear(s, ("user", "what time is it"))
+    await os_voice._flush(s, idle=60)  # not silent long enough
+    assert rows(table) == []
+    await os_voice._flush(s, idle=0)
+    assert [r["text"] for r in rows(table)] == ["what time is it"]
+
+
+async def test_off_writes_nothing(table, monkeypatch):
+    monkeypatch.setattr(settings, "SPARK_TRANSCRIPTS_ENABLED", False)
+    s = state()
+    await hear(s, ("user", "hello"), ("spark", "hi"))
+    await os_voice._flush(s)
+    assert rows(table) == [] and "turns" not in s
+
+
+async def test_a_failed_write_never_breaks_the_session(on, monkeypatch, caplog):
+    seen = []
+    monkeypatch.setattr(os_voice, "put_metric", lambda name, **kw: seen.append(name))
+
+    def boom(name):
+        raise RuntimeError("no table")
+
+    monkeypatch.setattr(os_voice, "get_table", boom)
+    s = state()
+    await hear(s, ("user", "secret words"), ("spark", "reply"))
+    await os_voice._flush(s)
+    assert seen == ["os_voice.transcript.write_failed"] * 2
+    assert "secret words" not in caplog.text
+
+
+async def test_delete_removes_only_that_persons_transcripts(table, on):
+    for user in ("user_a", "user_b"):
+        s = state(user)
+        await hear(s, ("user", "hi"))
+        await os_voice._flush(s)
+    await os_voice.delete_transcripts("user_a")
+    assert [r["user_id"] for r in rows(table)] == ["user_b"]
+
+
+def test_the_script_hides_the_user_id():
+    item = {"user_id": "user_a", "sk": f"1800000000#{SID}#1", "sessionId": SID, "role": "user", "text": "hi"}
+    out = spark_transcripts.render([item])
+    assert "user_a" not in out and spark_transcripts.person("user_a") in out and "user: hi" in out

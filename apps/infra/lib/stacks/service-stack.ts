@@ -1772,6 +1772,8 @@ export class ServiceStack extends cdk.Stack {
         env === "prod"
           ? (process.env.STRIPE_SPARK_PRICE_ID_PROD ?? "")
           : (process.env.STRIPE_SPARK_PRICE_ID_DEV ?? ""),
+      // Save Spark voice transcripts. Dev only: prod waits for the owner's yes and the privacy text.
+      SPARK_TRANSCRIPTS_ENABLED: env === "dev" ? "1" : "0",
       METRONOME_VOICE_METRIC_ID: env === "dev"
         ? "17a42d84-c10c-4c6a-907d-feb2ab02d080"
         : "8065419d-79f8-4b8e-ad1d-d933479521cc",

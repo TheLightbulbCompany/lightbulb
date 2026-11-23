@@ -184,7 +184,7 @@ class AutomationIn(_In):
     instructions: str = Field(min_length=1, max_length=20000)
     specialist_id: str | None = None
     deliver_to: str = Field(default="none", pattern=_DELIVER_TO.pattern)
-    budget_per_run_usd: float = Field(default=1.0, gt=0, le=100)
+    budget_per_run_usd: float = Field(default=1.0, ge=0.01, le=100)
     schedule: ScheduleIn | None = None
     events: list[EventTriggerIn] = []
     activate: bool = False
@@ -201,7 +201,7 @@ class AutomationPatch(_In):
     instructions: str | None = Field(default=None, min_length=1, max_length=20000)
     specialist_id: str | None = None
     deliver_to: str | None = Field(default=None, pattern=_DELIVER_TO.pattern)
-    budget_per_run_usd: float | None = Field(default=None, gt=0, le=100)
+    budget_per_run_usd: float | None = Field(default=None, ge=0.01, le=100)
     schedule: ScheduleIn | None = None
     match: RuleMatchIn | None = None
     speculative: bool | None = None

@@ -13,6 +13,12 @@ WS = "org_1"
 TASK = "8f14e45f-ceea-467a-9575-8a1b2c3d4e5f"
 
 
+@pytest.fixture(autouse=True)
+def _tenant_is_the_workspace(monkeypatch):
+    """These tests act as several people in one tenant: the tenant is pinned to WS."""
+    monkeypatch.setattr("core.services.activity.resolve_owner_id", lambda auth: WS)
+
+
 def _q(qid="q-1", kind="approval", **over):
     return {
         "taskId": TASK,
@@ -41,7 +47,7 @@ def feed_world(table, monkeypatch):
 
 
 async def _feed(user="user_sam"):
-    page = await activity.list_activity(AuthContext(user_id=WS), cursor=None, limit=30)
+    page = await activity.list_activity(AuthContext(user_id=user), cursor=None, limit=30)
     return page.model_dump(by_alias=True, mode="json")
 
 

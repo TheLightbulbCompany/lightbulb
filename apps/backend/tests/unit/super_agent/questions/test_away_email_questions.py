@@ -4,6 +4,7 @@ once the Question is answered or cancelled, and never the content in the email."
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 
+from tests.unit.super_agent.conftest import patch_roster
 import pytest
 
 from core.config import settings
@@ -45,7 +46,7 @@ def world(table, monkeypatch):
         assert strict
         return w.members
 
-    monkeypatch.setattr(questions.clerk_admin, "list_organization_members", members)
+    patch_roster(monkeypatch, members)
     monkeypatch.setattr(
         questions.billing_repo,
         "get_capability_policy",
@@ -131,12 +132,9 @@ async def test_away_email_dropped_when_removed_from_the_workspace(world):
 
 
 async def test_away_email_clerk_error_is_retried_not_sent(world, monkeypatch):
-    from core.services import questions
 
     await _open()
-    monkeypatch.setattr(
-        questions.clerk_admin, "list_organization_members", AsyncMock(side_effect=RuntimeError("clerk"))
-    )
+    patch_roster(monkeypatch, AsyncMock(side_effect=RuntimeError("clerk")))
     with pytest.raises(RuntimeError):
         await away.check_one(_row(), NOW)  # run_once logs it; the row stays due for the next pass
     world.send.assert_not_awaited()

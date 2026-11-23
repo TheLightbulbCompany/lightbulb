@@ -26,7 +26,7 @@ def store(monkeypatch, table):
     monkeypatch.setattr(
         "core.services.hermes_profiles.owner_object_size", lambda k: len(objects[k]) if k in objects else None
     )
-    monkeypatch.setattr("core.services.clerk_admin.get_organization", AsyncMock(return_value={"name": "Acme Builders"}))
+    monkeypatch.setattr("core.services.workspace_name.saved_name", AsyncMock(return_value="Acme Builders"))
     roster = [{"id": A1, "name": "Friday"}, {"id": A2, "name": "Ops Lead"}]
     monkeypatch.setattr("core.services.messaging.load_agent_roster", AsyncMock(return_value=roster))
     monkeypatch.setattr("core.services.website_logins._humans_to_ask", AsyncMock(return_value=["user_1", "user_2"]))

@@ -252,25 +252,17 @@ def _stub_proactive(monkeypatch):
 
 
 def _stub_org_seed(monkeypatch, seed=None):
-    """Patch the org seed's collaborators: the Clerk creator lookup and
-    ``_ensure_workspace_for_org`` itself (returned)."""
+    """Patch the seed itself, ``_ensure_owner_workspace`` (returned)."""
     seed = seed or AsyncMock()
-    monkeypatch.setattr("core.services.user_provision._ensure_workspace_for_org", seed)
-    monkeypatch.setattr(
-        "core.services.clerk_admin.get_organization",
-        AsyncMock(return_value={"created_by": "user_c"}),
-    )
+    monkeypatch.setattr("core.services.user_provision._ensure_owner_workspace", seed)
     return seed
 
 
 async def test_seed_helper_user_owner_is_its_own_provisioner(monkeypatch, _stub_proactive):
-    """A user tenant's provisioner is the person: no Clerk org lookup."""
+    """The provisioner is the person."""
     seed = _stub_org_seed(monkeypatch)
-    get_org = AsyncMock()
-    monkeypatch.setattr("core.services.clerk_admin.get_organization", get_org)
     assert await provision_runner._seed_owner_workspace("user_p") == provision_runner.EXIT_OK
-    get_org.assert_not_awaited()
-    seed.assert_awaited_once_with(org_id="user_p", user_id="user_p", is_admin=True)
+    seed.assert_awaited_once_with(owner_id="user_p", owner_user_id="user_p")
 
 
 async def test_seed_helper_leaves_the_schedule_cleanup_to_the_reconcile(monkeypatch, _stub_proactive):
@@ -279,31 +271,6 @@ async def test_seed_helper_leaves_the_schedule_cleanup_to_the_reconcile(monkeypa
     _stub_org_seed(monkeypatch)
     assert await provision_runner._seed_owner_workspace("org_x") == provision_runner.EXIT_OK
     _stub_proactive.assert_not_awaited()
-
-
-async def test_seed_helper_org_resolves_creator_then_calls_ensure_workspace_for_org(monkeypatch):
-    """Org owner_id (org_...): the runner has only owner_id (dispatch drops the
-    triggering user), so the bootstrap identity is the org CREATOR resolved from
-    Clerk (created_by), always an admin."""
-    ensure_org = AsyncMock()
-    monkeypatch.setattr("core.services.user_provision._ensure_workspace_for_org", ensure_org)
-    monkeypatch.setattr(
-        "core.services.clerk_admin.get_organization",
-        AsyncMock(return_value={"created_by": "user_creator"}),
-    )
-    assert await provision_runner._seed_owner_workspace("org_xyz") == provision_runner.EXIT_OK
-    ensure_org.assert_awaited_once_with(org_id="org_xyz", user_id="user_creator", is_admin=True)
-
-
-async def test_seed_helper_org_no_resolvable_creator_is_transient(monkeypatch):
-    """No Clerk creator (org lookup returns None / a Clerk blip): defer as
-    TRANSIENT so SFN retries rather than failing the provision on a blip. The
-    seed helper is never entered."""
-    monkeypatch.setattr("core.services.clerk_admin.get_organization", AsyncMock(return_value=None))
-    ensure_org = AsyncMock()
-    monkeypatch.setattr("core.services.user_provision._ensure_workspace_for_org", ensure_org)
-    assert await provision_runner._seed_owner_workspace("org_xyz") == provision_runner.EXIT_TRANSIENT
-    ensure_org.assert_not_awaited()
 
 
 async def test_seed_helper_deterministic_error_exits_10(monkeypatch):

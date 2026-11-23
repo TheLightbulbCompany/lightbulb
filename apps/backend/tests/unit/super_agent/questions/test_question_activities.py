@@ -1,6 +1,7 @@
 """lane Q Activities over the moto tasks table (wave2-Q Task 3): open from proposed Effects, relay to answerers
 only and once, record an answer with its Effect decision and Trigger, cancel on Stop."""
 
+from tests.unit.super_agent.conftest import patch_roster
 import asyncio
 from unittest.mock import AsyncMock
 
@@ -22,7 +23,7 @@ POLICY = {"money_moves": True, "outreach": False, "publishing": True, "provision
 def world(table, monkeypatch):
     monkeypatch.setattr(questions.billing_repo, "get_capability_policy", AsyncMock(return_value=dict(POLICY)))
     members = [{"user_id": SAM, "role": "org:member"}, {"user_id": ADA, "role": "org:admin"}]
-    monkeypatch.setattr(questions.clerk_admin, "list_organization_members", AsyncMock(return_value=members))
+    patch_roster(monkeypatch, AsyncMock(return_value=members))
     return table
 
 
@@ -84,7 +85,7 @@ async def test_open_questions_no_answerer(world, monkeypatch):
     """Nobody can answer: the task says so where it was asked (never a silent stop), then NoAnswerer ends it."""
     from core.services import task_conversation
 
-    monkeypatch.setattr(questions.clerk_admin, "list_organization_members", AsyncMock(return_value=[]))
+    patch_roster(monkeypatch, AsyncMock(return_value=[]))
     posts = AsyncMock(return_value="m-1")
     monkeypatch.setattr(task_conversation, "post_as_lightbulb", posts)
     monkeypatch.setattr(task_conversation, "ensure_task_room", AsyncMock(return_value="task-room"))
@@ -106,7 +107,7 @@ async def test_no_answerer_survives_a_failed_or_hung_post(world, monkeypatch, fa
         await asyncio.sleep(3600)
 
     monkeypatch.setattr(tq, "_NO_ANSWERER_POST_S", 0.05)
-    monkeypatch.setattr(questions.clerk_admin, "list_organization_members", AsyncMock(return_value=[]))
+    patch_roster(monkeypatch, AsyncMock(return_value=[]))
     monkeypatch.setattr(task_conversation, "post_as_lightbulb", post)
     monkeypatch.setattr(task_conversation, "ensure_task_room", AsyncMock(return_value="task-room"))
     await effects_repo.put_effect(WS, _effect(kind="purchase"))
@@ -292,7 +293,7 @@ async def test_no_answerer_on_a_later_effect_writes_nothing(world, monkeypatch):
     """Answerer lists are all computed before any row: a refusal on the 2nd effect leaves no 1st question open."""
     await effects_repo.put_effect(WS, _effect())  # send → Sam
     await effects_repo.put_effect(WS, _effect(call="c2", kind="purchase", operands={"item": "x"}))  # admins
-    monkeypatch.setattr(questions.clerk_admin, "list_organization_members", AsyncMock(return_value=[]))
+    patch_roster(monkeypatch, AsyncMock(return_value=[]))
     with pytest.raises(ApplicationError):
         await _run(tq.open_questions, WS, TASK)
     assert await questions_repo.list_for_task(WS, TASK) == []
@@ -422,9 +423,8 @@ async def test_relay_rechecks_retirement_after_room_creation(world, relay, monke
 async def test_retirement_during_delivery_suppresses_remaining_deliveries(world, relay, monkeypatch, stage, retire):
     from core.services import messaging, push_service, task_conversation
 
-    monkeypatch.setattr(
-        questions.clerk_admin,
-        "list_organization_members",
+    patch_roster(
+        monkeypatch,
         AsyncMock(
             return_value=[
                 {"user_id": SAM, "role": "org:admin"},

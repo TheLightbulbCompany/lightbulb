@@ -5,6 +5,7 @@ through the `ask` update; the text rides a Trigger, the update carries ids; a re
 
 from unittest.mock import AsyncMock
 
+from tests.unit.super_agent.conftest import patch_roster
 import pytest
 from temporalio.client import WorkflowUpdateFailedError
 from temporalio.exceptions import ApplicationError
@@ -24,9 +25,8 @@ POLICY = {"money_moves": True, "outreach": False, "publishing": True, "provision
 @pytest.fixture
 def ask_api(api, monkeypatch):
     monkeypatch.setattr(questions.billing_repo, "get_capability_policy", AsyncMock(return_value=dict(POLICY)))
-    monkeypatch.setattr(
-        questions.clerk_admin,
-        "list_organization_members",
+    patch_roster(
+        monkeypatch,
         AsyncMock(return_value=[{"user_id": "sam", "role": "org:member"}, {"user_id": "ada", "role": "org:admin"}]),
     )
     monkeypatch.setattr(ri, "human_display_name", AsyncMock(side_effect=lambda u: u.title()))

@@ -4,6 +4,7 @@ The update is faked by running the real `record_answer` Activity (what the workf
 the Effect and the Trigger are the real ones. Adversarial: wrong person, demoted admin, a computer / OAuth / hook
 caller, answer after Stop, two presses at once, a replayed press, a bad option, free text stays off the update."""
 
+from tests.unit.super_agent.conftest import patch_roster
 import asyncio
 from unittest.mock import AsyncMock
 
@@ -32,6 +33,12 @@ MEMBERS = [
 ]
 
 
+@pytest.fixture(autouse=True)
+def _tenant_is_the_workspace(monkeypatch):
+    """These tests act as several people in one tenant: the tenant is pinned to WS."""
+    monkeypatch.setattr("routers.questions.resolve_owner_id", lambda auth: WS)
+
+
 @pytest.fixture
 def world(table, monkeypatch):
     monkeypatch.setattr(api, "human_display_name", AsyncMock(side_effect=lambda u: u.split("_")[1].title()))
@@ -41,7 +48,7 @@ def world(table, monkeypatch):
     async def members(org, *, strict=False):
         return roster["members"]
 
-    monkeypatch.setattr(questions.clerk_admin, "list_organization_members", members)
+    patch_roster(monkeypatch, members)
     updates: list[tuple] = []
 
     async def update_task(ws, task_id, name, ref):
@@ -52,7 +59,7 @@ def world(table, monkeypatch):
     who = {"user": SAM}
     app = FastAPI()
     app.include_router(router_mod.router, prefix="/api/v1")
-    app.dependency_overrides[router_mod.person_only] = lambda: AuthContext(user_id=WS)
+    app.dependency_overrides[router_mod.person_only] = lambda: AuthContext(user_id=who["user"])
     client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t")
     return {"client": client, "who": who, "updates": updates, "roster": roster, "app": app}
 
@@ -197,7 +204,7 @@ async def test_concurrent_presses_one_winner(world, monkeypatch):
 
     async def as_user(user, cid):
         app = world["app"]
-        app.dependency_overrides[router_mod.person_only] = lambda: AuthContext(user_id=WS)
+        app.dependency_overrides[router_mod.person_only] = lambda: AuthContext(user_id=user)
         return await world["client"].post(_url("q-two"), json={"optionId": "allow_once", "clientAnswerId": cid})
 
     results = await asyncio.gather(as_user(ADA, "c-a"), as_user("user_bo", "c-b"))

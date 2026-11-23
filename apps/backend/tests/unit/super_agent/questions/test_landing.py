@@ -1,6 +1,7 @@
 """Landing (wave2-Q Task 6): `apply_effect` over the moto table with fake executors, and the workflow's review
 branch with fake Activities. Review focus 4: a Landing retried after the send succeeded sends once."""
 
+from tests.unit.super_agent.conftest import patch_roster
 import asyncio
 import uuid
 from unittest.mock import AsyncMock
@@ -29,11 +30,7 @@ IDEM = f"{TASK}:1:c1"
 @pytest.fixture
 def world(table, monkeypatch):
     monkeypatch.setattr(questions.billing_repo, "get_capability_policy", AsyncMock(return_value=dict(POLICY)))
-    monkeypatch.setattr(
-        questions.clerk_admin,
-        "list_organization_members",
-        AsyncMock(return_value=[{"user_id": SAM, "role": "org:member"}]),
-    )
+    patch_roster(monkeypatch, AsyncMock(return_value=[{"user_id": SAM, "role": "org:member"}]))
     sends = []
 
     async def mail(owner, operands, by):

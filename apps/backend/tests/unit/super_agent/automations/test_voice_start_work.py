@@ -20,7 +20,7 @@ BODY = {"runId": RUN, "callId": CALL, "roomId": ROOM, "title": "Draft the launch
 
 @pytest.fixture
 def api(table, monkeypatch):
-    rows = {RUN: {"runId": RUN, "roomId": ROOM, "agentId": "ceo-1", "requesterUserId": "user_sam"}}
+    rows = {RUN: {"runId": RUN, "roomId": ROOM, "agentId": "ceo-1", "requesterUserId": "org_1"}}
     meta = {"roomId": ROOM, "kind": "channel", "ownerId": WS}
 
     async def get_voice_run(owner_id, run_id):
@@ -54,7 +54,7 @@ async def test_voice_start_is_deterministic_task_in_room(api):
     assert r.json()["taskId"] == ts.router_task_id(trigger_id, 0, 0)
     row = await tasks_repo.get_trigger(WS, trigger_id)
     assert row["source"] == "voice" and row["admission"] == "respond" and row["lane"] == "shared"
-    assert row["actorUserId"] == "user_sam"  # the VOICERUN row's verified requester, not the model's word
+    assert row["actorUserId"] == "org_1"  # the VOICERUN row's verified requester, not the model's word
     assert row["ref"]["deliverRoomId"] == ROOM and row["ref"]["agentId"] == "ceo-1"
     start = row["ref"]["start"]
     assert (
@@ -76,7 +76,7 @@ async def test_same_utterance_twice_one_task(api):
 async def test_dm_call_uses_the_requesters_private_lane(api):
     api.meta["kind"] = "dm"
     r = _post(api)
-    assert (await tasks_repo.get_trigger(WS, r.json()["triggerId"]))["lane"] == ts.router_lane_key("user_sam")
+    assert (await tasks_repo.get_trigger(WS, r.json()["triggerId"]))["lane"] == ts.router_lane_key("org_1")
 
 
 async def test_a_guest_cannot_start_work(api):

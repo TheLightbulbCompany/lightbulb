@@ -16,6 +16,12 @@ WS = "org_1"
 SAM, ADA, PRIYA = "user_sam", "user_ada", "user_priya"
 
 
+@pytest.fixture(autouse=True)
+def _tenant_is_the_workspace(monkeypatch):
+    """These tests act as several people in one tenant: the tenant is pinned to WS."""
+    monkeypatch.setattr("routers.questions.resolve_owner_id", lambda auth: WS)
+
+
 def _q(task_id, qid="q-1", **over):
     return {
         "taskId": task_id,
@@ -37,7 +43,7 @@ def world(table, monkeypatch):
     who = {"user": SAM}
     app = FastAPI()
     app.include_router(router_mod.router, prefix="/api/v1")
-    app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id=WS)
+    app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id=who["user"])
     client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t")
     return {"client": client, "who": who}
 

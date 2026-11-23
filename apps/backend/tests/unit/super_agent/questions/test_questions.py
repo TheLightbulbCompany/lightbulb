@@ -1,5 +1,6 @@
 """Question rules (wave2-Q Task 1; spec 05 §3.3, §3.5; contracts-v2 §3, §8). Pure; Clerk and policy are faked."""
 
+from tests.unit.super_agent.conftest import patch_roster
 import pytest
 
 from core import tasks_schema as ts
@@ -24,7 +25,7 @@ def clerk(monkeypatch):
         calls.append((org_id, strict))
         return state["members"]
 
-    monkeypatch.setattr(questions.clerk_admin, "list_organization_members", fake)
+    patch_roster(monkeypatch, fake)
     return {"calls": calls, "state": state}
 
 
@@ -64,12 +65,6 @@ async def test_answerers_by_subkind(clerk, policy, subkind, policy_over, extra, 
 async def test_admin_answerer_never_listed_twice(clerk, policy):
     ids, _, _ = await questions.answerers(ORG, {**TASK, "ownerUserId": "user_ada"}, "review", "review")
     assert ids == ["user_ada", "user_bo"]
-
-
-async def test_personal_workspace_owner_is_the_admin(clerk, policy):
-    ids, _, _ = await questions.answerers("user_solo", {**TASK, "ownerUserId": "user_solo"}, "approval", "purchase")
-    assert ids == ["user_solo"]
-    assert clerk["calls"] == []
 
 
 async def test_no_answerer_raises(clerk, policy):

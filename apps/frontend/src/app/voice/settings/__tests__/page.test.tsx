@@ -7,7 +7,6 @@ vi.mock("@/components/voice/data", () => hooks);
 vi.mock("swr", () => ({ default: hooks.usePlan }));
 vi.mock("@/lib/api", () => ({ useApi: () => ({}) }));
 vi.mock("@/hooks/useConnections", () => ({ useConnections: () => ({ connections: [{ provider: "google", status: "disconnected" }], startOAuth: vi.fn() }) }));
-vi.mock("@/components/settings/DailySummaryCard", () => ({ DailySummaryCard: () => <p>daily</p> }));
 
 import Page from "../page";
 
@@ -34,7 +33,6 @@ it("Billing card shows 38 of 1,500 min", () => {
 
 it("shows only the salon-owner sections, none of the old chat-product ones", () => {
   render(<Page />);
-  for (const t of ["daily"]) expect(screen.getByText(t)).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Connect Google Calendar" })).toBeInTheDocument();
   for (const t of [/workspace billing/, /Approvals/, /Inference provider/, /Session notifications/]) expect(screen.queryByText(t)).not.toBeInTheDocument();
   expect(screen.queryByText("Members")).not.toBeInTheDocument();

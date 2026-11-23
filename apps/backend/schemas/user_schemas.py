@@ -71,10 +71,6 @@ class UserPrefs(BaseModel):
     """GET/PUT /api/v1/users/me/prefs response."""
 
     timezone: str = Field(..., description="IANA timezone; America/New_York when never set")
-    dailySummary: bool = Field(..., description="Daily 'needs you' digest (push + email); default on")
-    awayEmail: bool = Field(
-        default=True, description="Email a DM, @mention or approval left unseen 5 minutes while away; default on"
-    )
     chatTheme: Literal["light", "dark"] | None = Field(
         default=None,
         description="Account chat theme; null when never set on any device (client falls back to OS/localStorage)",
@@ -90,8 +86,6 @@ class UserPrefsUpdate(BaseModel):
     """PUT /api/v1/users/me/prefs body. Omitted fields are left unchanged."""
 
     timezone: str | None = Field(default=None, max_length=64, description="IANA timezone, e.g. Europe/Paris")
-    dailySummary: bool | None = None
-    awayEmail: bool | None = None
     chatTheme: Literal["light", "dark"] | None = None
     sessionsReachableFromBackgroundWork: bool | None = None
     #: The whole object; a client sends every field it shows.

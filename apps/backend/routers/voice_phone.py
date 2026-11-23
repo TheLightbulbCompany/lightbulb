@@ -74,7 +74,7 @@ from core.voice.phone.calls import (
     transcript_lines,
 )
 from core.voice.phone.numbers import _E164, _e164, us_number
-from routers.voice import month_seconds
+from core.billing.voice_billing import month_seconds
 from core.voice.room_lines import QuestionRef
 
 logger = logging.getLogger(__name__)

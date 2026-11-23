@@ -23,7 +23,7 @@ from core.auth import (
     resolve_owner_id,
 )
 from core.config import settings
-from core.repositories import container_repo, messaging_repo, user_repo
+from core.repositories import container_repo, messaging_repo
 from core.services import chat_gate
 from core.services import messaging as service
 from core.services import (
@@ -456,7 +456,6 @@ async def set_room_read_cursor(
     auth: AuthContext = Depends(get_current_user),
 ):
     result = await service.set_read_cursor(auth, room_id, request)
-    asyncio.create_task(user_repo.touch_active(auth.user_id))  # presence for the away email (T15)
     return result
 
 

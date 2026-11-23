@@ -13,6 +13,7 @@ const capture = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/analytics", () => ({ capture }));
 vi.mock("@/components/landing/Navbar", () => ({ Navbar: () => null }));
 vi.mock("@/components/landing/Footer", () => ({ Footer: () => null }));
+vi.mock("next/font/google", () => ({ Bricolage_Grotesque: () => ({ variable: "" }), Silkscreen: () => ({ variable: "" }) }));
 const signUpProps = vi.hoisted(() => vi.fn());
 vi.mock("@clerk/nextjs", () => ({
   useAuth: () => ({ isLoaded: true, isSignedIn: s.signedIn }),

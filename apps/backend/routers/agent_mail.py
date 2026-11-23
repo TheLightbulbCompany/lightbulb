@@ -34,14 +34,11 @@ from core.repositories.agent_mail_inbox_repo import (
     MAX_TEXT_CHARS,
     count_received_after,
     get_message,
-    list_messages,
     list_page,
-    reply_key,
 )
-from core.services import effect_doors
 from core.voice.meetings import meeting_invites, transcripts
 from core.services.agent_email import EMAIL_ADDRESS_RE, ensure_team_address, public_for, team_address
-from core.services.agent_mail_send import _owner_email, send
+from core.services.agent_mail_send import _owner_email
 from core.services.rate_bucket import RateBucket
 
 router = APIRouter()
@@ -74,46 +71,15 @@ async def _require_hook_token(owner_id: str, request: Request) -> None:
         raise HTTPException(status_code=429, detail={"status": "rate_limited"})
 
 
-class SendRequest(BaseModel):
-    agent_id: str
-    subject: str
-    body_text: str
-    body_html: str | None = None
-    to: str | None = None
-    reply_key: str | None = None
-    purpose: str = "routine"
+# Agent-sent mail is retired. The Hermes image's lightbulb-mail.sh still calls these two routes, so they
+# answer 410 Gone with a plain reason instead of vanishing into a 404.
+_GONE = {"status": "gone", "message": "Agent email is retired; agents can no longer send or read mail."}
 
 
 @router.post("/u/{owner_id}/send")
-async def send_mail(owner_id: str, body: SendRequest, request: Request) -> dict:
+async def send_mail(owner_id: str, request: Request) -> None:
     await _require_hook_token(owner_id, request)
-    if body.to and body.reply_key:
-        raise HTTPException(status_code=400, detail={"status": "to_and_reply_key"})
-    try:  # with the switch on, a send must be one a person allowed (Lane Q door gating); off is today's path
-        await effect_doors.require_intent(
-            owner_id,
-            "mail.send",
-            effect_doors.mail_operands(
-                agent_id=body.agent_id,
-                subject=body.subject,
-                body_text=body.body_text,
-                to=body.to,
-                reply_key=body.reply_key,
-            ),
-        )
-    except effect_doors.DoorRefused as exc:
-        raise HTTPException(status_code=403, detail={"status": exc.code, "message": str(exc)}) from exc
-    result = await send(
-        owner_id=owner_id,
-        agent_id=body.agent_id,
-        subject=body.subject,
-        body_text=body.body_text,
-        body_html=body.body_html,
-        to=body.to,
-        reply_key=body.reply_key,
-        purpose=body.purpose,
-    )
-    return {"status": result}
+    raise HTTPException(status_code=410, detail=_GONE)
 
 
 class AddressRequest(BaseModel):
@@ -129,26 +95,9 @@ async def mint_address(owner_id: str, body: AddressRequest, request: Request) ->
 
 
 @router.get("/u/{owner_id}/inbox")
-async def inbox(owner_id: str, agent_id: str, request: Request, since: str | None = None, limit: int = 20) -> dict:
+async def inbox(owner_id: str, request: Request) -> None:
     await _require_hook_token(owner_id, request)
-    address = await team_address(owner_id)
-    if not address:
-        return {"address": None, "messages": []}
-    rows = await list_messages(address, since=since, limit=limit, agent_id=agent_id)
-    return {
-        "address": await public_for(address),
-        "messages": [
-            {
-                "key": reply_key(address, r["received_key"]),
-                "from": r.get("from_addr", ""),
-                "subject": r.get("subject", ""),
-                "received_at": r.get("received_at", ""),
-                "channel": r.get("channel") or "mail",
-                "text": (r.get("text") or "")[:_INBOX_TEXT_CHARS],
-            }
-            for r in rows
-        ],
-    }
+    raise HTTPException(status_code=410, detail=_GONE)
 
 
 # ---- owner settings (Clerk) -------------------------------------------------

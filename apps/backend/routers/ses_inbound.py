@@ -16,36 +16,11 @@ Svix gave the old Resend webhook, because the Lambda is trusted
 infrastructure we control, not a third party. An empty secret disables the
 endpoint entirely (fail-closed).
 
-**Outcome -> HTTP status is deliberate, not uniformly 200.** Every
-DETERMINISTIC drop (disabled, unknown recipient, over cap, spam/virus, failed
-authentication, auto-submitted, duplicate) is terminal — retrying would
-produce the identical drop again — so those stay 200, as does a successful
-``delivered`` and a ``stored_not_woken`` (the message is saved to the inbox
-either way; only WAKING the agent is gated, on the sender being allowlisted OR
-the address being open (``send_to_anyone``, the default), AND on that sender
-being authenticated — see ``sender_allowed`` and ``authenticated_sender``
-below; an open-mode stranger past its daily wake limit is the same, reported as
-``stored_not_woken_rate_limited``). ``container_not_running`` also stays 200: it now
-only means the owner is OVER CAP (the cap gate below already normally
-intercepts that case before ``deliver_to_agent`` is even called; this is
-belt-and-suspenders for the same predicate) — waking a capped owner is
-exactly what the cap forbids, and hammering retries at it would not change
-that.
-
-TRANSIENT failures return 503 so SES/the Lambda's own (bounded) retry policy
-gets a chance to succeed later: a ``deliver_to_agent`` outcome of ``"error"``
-(a delivery error talking to the runtime; the invoke itself holds through a
-cold microVM start, so a parked workspace is not a transient failure),
-and the top-level catch-all for an unexpected exception (e.g. a DynamoDB
-blip). Dedup is keyed on ``message_id`` and recorded BEFORE delivery is
-attempted, so a retry that later succeeds cannot double-deliver — the second
-attempt short-circuits at the ``duplicate`` check. EVERY 503 return
-(``error``, the catch-all) ROLLS THAT DEDUP ROW BACK first
-(``_rollback_dedup``): a dedup record must never outlive a request we are
-explicitly asking SES to retry, or the retry short-circuits as a
-``duplicate``, the mail is dropped for good, and the Fargate cold start the
-wake just paid for is wasted. Terminal drops keep their row — re-running one
-would produce the identical drop.
+**What it does.** Mail to a team address is a meeting invite or nothing: a `text/calendar` part goes to
+``meeting_invites.handle_team_mail``; every other message is dropped (``dropped_not_an_invite``). The agent
+product that used to read, store and answer mail is gone. Every deterministic drop is terminal, so it stays 200;
+the top-level catch-all returns 503 so SES/the Lambda retries, and rolls the dedup row back first
+(``_rollback_dedup``) so the retry is not short-circuited as a ``duplicate``.
 
 A bad/missing shared secret is 401 — not retried; there is no fixing a
 forged credential by resending the same request.
@@ -75,30 +50,17 @@ from core.repositories.agent_email_repo import (
     resolve,
     update_settings,
 )
-from core.repositories.agent_mail_inbox_repo import find_by_message_id, put_message, reply_key
-from core.repositories.container_repo import try_claim_daily_system_notice, try_consume_stranger_wake
-from core.repositories.workspace_repo import WorkspaceRepo
-from core.services import agent_email, clerk_admin
+from core.repositories.container_repo import try_claim_daily_system_notice
+from core.services import clerk_admin
 from core.voice.meetings import meeting_invites
-from core.services.agent_email import ensure_team_address, sender_allowed, team_address
-from core.services.agent_mail_autoreply import send_cap_autoreply
-from core.services.agent_mail_thread import thread_session_key
-from core.services.agent_mail_delivery import deliver_to_agent
+from core.services.agent_email import ensure_team_address, team_address
 from core.services.agent_mail_owner_send import send_to_owner
 from core.services.agent_mail_send import _owner_email
 from core.services.agent_mail_inbound import (
-    STRANGER_WAKES_PER_OWNER_PER_DAY,
-    STRANGER_WAKES_PER_SENDER_PER_DAY,
     authenticated_sender,
-    build_attachment_manifest,
-    build_delivered_message,
     is_auto_submitted,
     parse_from_address,
-    stranger_key,
 )
-from core.services.agent_mail_reply import reply_subject
-from core.services.trial_cap import trial_block_reason
-from core.services.user_provision import ceo_agent_id
 from core.services.webhook_dedup import WebhookDedupResult, delete_event, record_event_or_skip
 
 logger = logging.getLogger(__name__)
@@ -108,7 +70,7 @@ router = APIRouter()
 # The outcomes worth counting individually. Everything else — every
 # deterministic drop, plus the transient `error` — collapses to `dropped` so
 # the dimension stays bounded.
-_METRIC_RESULTS = ("delivered", "capped_notified", "stored_not_woken", "stored_not_woken_rate_limited")
+_METRIC_RESULTS = ("dropped_not_an_invite",)
 
 
 def _final(status: str, *, code: int = 200):
@@ -123,26 +85,6 @@ def _final(status: str, *, code: int = 200):
     if code == 200:
         return {"status": status}
     return JSONResponse(status_code=code, content={"status": status})
-
-
-async def _thread_writer(address: str, headers: dict[str, str]) -> str | None:
-    """The agent whose sent mail this answers: the writer of ``References[0]``
-    (the thread root), else of ``In-Reply-To``. Only rows at this workspace's
-    address count, so a message id seen elsewhere cannot steer delivery."""
-    for name in ("References", "In-Reply-To"):
-        ids = next((v for k, v in headers.items() if k.lower() == name.lower()), "").split()
-        item = await find_by_message_id(address, ids[0]) if ids else None
-        if item and item.get("direction") == "out":
-            return item.get("agent_id")
-    return None
-
-
-async def _ceo(owner_id: str) -> str | None:
-    """The starter CEO, else a legacy roster's first seeded agent — the same resolution every
-    other CEO door uses. Reading only ``starter_agent_ids`` dropped every first-contact mail to
-    the founder workspace (no starter roster) as ``dropped_unknown_recipient`` (prod 2026-10-07)."""
-    row = await WorkspaceRepo().resolve_owner_row(owner_id)
-    return ceo_agent_id(row) if row else None
 
 
 async def _rollback_dedup(message_id: str) -> None:
@@ -294,8 +236,6 @@ async def handle_ses_inbound(body: SesInboundBody, request: Request):
         if row is None:
             return _final("dropped_unknown_recipient")
 
-        sender = parse_from_address(body.from_)
-
         # Anti-abuse gate: SES's own receipt pipeline already scanned this
         # mail for spam/viruses before the Lambda ever saw it, so an explicit
         # FAIL here is authoritative — always dropped.
@@ -340,146 +280,9 @@ async def handle_ses_inbound(body: SesInboundBody, request: Request):
         if is_auto_submitted(body.headers or {}):
             return _final("dropped_auto_submitted")
 
-        # A reply to an agent's mail goes back to that agent — resolved BEFORE
-        # delivery, since the thread's session key carries no agent id and the
-        # bridge qualifies it per agent. Everything else is the CEO's.
-        agent_id = await _thread_writer(row["address"], body.headers or {}) or await _ceo(row["owner_id"])
-        if not agent_id:
-            return _final("dropped_unknown_recipient")
-
-        # Store first — every gated-clean message lands in the inbox whether or
-        # not it wakes the agent. Waking is open to any authenticated sender
-        # unless the owner turned ``send_to_anyone`` off, in which case it is
-        # reserved for the owner + the owner's allowlist. The cap autoreply is
-        # reserved for the allowlist either way (see the cap block below).
-        #
-        # Idempotent on SES's message_id: the 503 paths below roll back the
-        # dedup row so SES retries, and that retry must reuse the row the
-        # first attempt stored rather than add a second one.
-        stored = await find_by_message_id(row["address"], body.message_id)
-        if not stored:
-            stored = await put_message(
-                address=row["address"],
-                owner_id=row["owner_id"],
-                agent_id=agent_id,
-                message_id=body.message_id,
-                from_addr=sender,
-                subject=body.subject or "",
-                text=body.text or "",
-                headers=body.headers or {},
-                attachments=body.attachments or [],
-            )
-            await agent_email.mail_changed(row["owner_id"])  # a replay already nudged the panel
-        # Waking takes BOTH: the sender is permitted — listed by the owner, or
-        # the address is open (`send_to_anyone`, the default since the
-        # 2026-09-24 owner ruling) — AND the `From` is actually authenticated.
-        # `sender_allowed` alone is not enough — `From` is a bare header parse,
-        # so an attacker whose own domain passes SPF can forge an allowlisted
-        # `From` and wake somebody else's agent. See `authenticated_sender`,
-        # which stays mandatory in open mode too. The message is still STORED
-        # either way; only the wake tightens.
-        allowlisted = sender_allowed(row, sender)
-        if not (
-            (allowlisted or row.get("send_to_anyone")) and authenticated_sender(verdicts, body.headers or {}, sender)
-        ):
-            return _final("stored_not_woken")
-        key = reply_key(row["address"], stored["received_key"])
-
-        # Free-tier cost cap — same predicate the chat/container-start
-        # gates use, so an over-cap owner can't route around it via email.
-        #
-        # ANSWERED only for an EXPLICITLY allowlisted sender (`allowlisted`
-        # above — the owner or someone the owner listed). An open-mode
-        # stranger who reaches this point is dropped WITHOUT a reply
-        # (`dropped_over_cap`): replying would confirm the address exists and
-        # turn this into a reflector, exactly what we refuse for the drops
-        # above. That allowlist check is the whole safety argument for
-        # replying here.
-        #
-        # The reply is server-templated with no agent run — that is the whole
-        # reason we can answer at all when the cap says we cannot think.
-        #
-        # POSITION IS LOAD-BEARING: this is the first branch that originates
-        # real outbound mail, so it must sit AFTER every gate above that
-        # decides whether this inbound is trustworthy (spam/virus, DMARC/
-        # SPF+DKIM anti-spoof, auto-submitted loop guard, sender allowlist) —
-        # `From` is a bare header parse with no DKIM/SPF binding, so the
-        # sender allowlist alone does not prove the message wasn't spoofed or
-        # a mail-loop auto-reply. Sending here before those gates run would
-        # turn this endpoint into a reflector or a loop. Do not move this
-        # block back above them.
-        cap_reason = await trial_block_reason(row["owner_id"])
-        if cap_reason is not None:
-            if not allowlisted:
-                return _final("dropped_over_cap")
-            notified = await send_cap_autoreply(
-                owner_id=row["owner_id"],
-                agent_id=agent_id,
-                reason=cap_reason,
-                from_addr=row["address"],
-                to=sender,
-                in_reply_to=body.headers.get("Message-ID", "") or body.headers.get("Message-Id", ""),
-                subject=reply_subject(body.subject or ""),
-            )
-            return _final("capped_notified" if notified else "dropped_over_cap")
-
-        # Open-mode strangers are bounded per sender and per owner per day: a wake spends the
-        # owner's inference budget, so an unbounded stranger could drain a trial's daily allowance
-        # or a paid owner's credits. Over the limit the mail stays stored but does not wake the
-        # agent, and nobody is answered. The owner and allowlisted senders are never limited.
-        # Placed after the cap block so mail that is refused anyway does not burn the counters; a
-        # 503 retry of the same message counts again, which only makes the limit slightly stricter.
-        if not allowlisted and not await try_consume_stranger_wake(
-            row["owner_id"],
-            sender_key=stranger_key(sender),
-            day=datetime.now(timezone.utc).strftime("%Y-%m-%d"),
-            owner_cap=STRANGER_WAKES_PER_OWNER_PER_DAY,
-            sender_cap=STRANGER_WAKES_PER_SENDER_PER_DAY,
-        ):
-            return _final("stored_not_woken_rate_limited")
-
-        # Attachment manifest — best-effort. A manifest-formatting bug must
-        # not drop a real delivery: a working text delivery beats a dropped one.
-        try:
-            manifest = build_attachment_manifest(body.attachments)
-        except Exception:  # noqa: BLE001 — see comment above.
-            manifest = ""
-
-        message = build_delivered_message(
-            from_addr=sender,
-            subject=body.subject,
-            body_text=body.text or "",
-            reply_key=key,
-            attachments_manifest=manifest,
-            trusted=allowlisted,
-        )
-
-        result = await deliver_to_agent(
-            owner_id=row["owner_id"],
-            agent_id=agent_id,
-            message=message,
-            idempotency_key=body.message_id,
-            # Same mail thread -> same OpenClaw session, so a reply is a
-            # continuation rather than a cold start. None (no usable
-            # message-id) keeps the old per-message throwaway session.
-            session_key=thread_session_key(body.headers),
-            # Super-agent workspaces: how the Router's reply gets back into this thread (lane A, A9).
-            source="mail",
-            reply_ref={
-                "address": sender,
-                "messageId": body.headers.get("Message-ID", "") or body.headers.get("Message-Id", "") or None,
-                "references": body.headers.get("References") or None,
-                "subject": body.subject or "",
-            },
-        )
-        if result == "error":
-            # Transient delivery failure (e.g. a running container's RPC
-            # errored) — 503 so SES/the Lambda retries. `container_not_running`
-            # is intentionally excluded: that now means OVER CAP, which a
-            # retry cannot fix.
-            await _rollback_dedup(body.message_id)
-            return _final(result, code=503)
-        return _final(result)
+        # Meeting invites were the only mail this address still acts on. Nothing reads or wakes an
+        # agent from other mail any more (agent email retired with the agent product).
+        return _final("dropped_not_an_invite")
     except Exception:  # noqa: BLE001 — see module docstring.
         logger.exception("ses_inbound handler failed unexpectedly")
         # Same reason as the two 503s above: this one asks SES to retry too.

@@ -129,7 +129,7 @@ match. Keep the id-qualified form in the deploy-role trust policies.
 Names from deleted systems that still carry load. Prove nothing reads a resource before you delete it.
 
 - **`paperclip-companies` table**: the canonical workspace identity row.
-- **`PAPERCLIP_SERVICE_TOKEN_KEY`**: signs session shares, digests and Needs-you links.
+- **`PAPERCLIP_SERVICE_TOKEN_KEY`**: signs the Spark billing links, local-session grants and meeting-context tokens (`service_token._signing_key`).
 - **The bridge's `/internal/paperclip/v1/runs` route** (`apps/infra/hermes/bridge/server.py`): creates, polls
   and stops a real Hermes turn.
 - **`ECS_SUBNETS`, `ECS_SECURITY_GROUP_ID`**: the AgentCore `networkModeConfig` that
@@ -145,9 +145,10 @@ Names from deleted systems that still carry load. Prove nothing reads a resource
   stack (detached, not deleted).
 - **`LitestreamReplicaLifecycle`** in `service-stack.ts`: carries the bucket-scoped `s3:ListBucket` every profile
   read, write and delete needs.
-- **`components/messaging`, `workspace`, `teams` and `control`** in the web app: partly live. `/voice/lightbulb`
-  mounts `workspace/RightPane` (which renders `teams` and `control` panels) and `messaging`; `/voice/settings`
-  mounts `settings/SettingsPlace`, which pulls in `control` panels. Prove a file has no importer before you delete it.
+- **The web app's old chat folders are gone**: `components/messaging`, `workspace`, `teams`, `control` and
+  `settings/SettingsPlace` no longer exist (checked against `origin/main`, 2026-11-23). `/voice` is `components/voice`
+  over `hooks/useRooms.ts`; rooms are still the conversation store, so do not touch the messaging rooms.
+  Old docs and specs still name those paths; they are history, not a map.
 
 ## Critical Rules
 
@@ -517,7 +518,7 @@ fields (`apps/frontend/src/lib/pricing.ts`); never bake a price into a client re
 React 19, Tailwind v4, Clerk, SWR. The app lives under `src/app/voice/`: Home (`/voice`), `/voice/lightbulb` (the
 orb and the conversation), `/voice/agent`, `/voice/needs-you`, `/voice/settings`, `/voice/setup`, with components in
 `components/voice/`. Sign-in, sign-up and the Mac app land on `/voice`. `/chat` redirects to `/voice/lightbulb`
-(or `/voice/settings` for provider and settings links); the old workspace shell is deleted; `RightPane` survives inside `/voice/lightbulb`. `src/middleware.ts`
+(or `/voice/settings` for provider and settings links); the old workspace shell is deleted. Nothing under `components/voice` or `components/huddle` imports `messaging`, `workspace` or `teams`. `src/middleware.ts`
 protects `/voice` and the other app routes and runs the admin-host gate (`/admin` 404s off admin hosts).
 
 - **`packages/shared` (`@lightbulb/shared`) is load-bearing:** the API client, the AppSync live-events client and

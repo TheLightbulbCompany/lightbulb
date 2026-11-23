@@ -2354,29 +2354,6 @@ async def set_activity_seen(home_owner_id: str, user_id: str, up_to: str) -> str
     return await get_activity_seen(home_owner_id, user_id) or up_to
 
 
-DIGEST_TTL_S = 3 * 24 * 3600
-
-
-async def claim_digest(user_id: str, home_owner_id: str, local_date: str) -> bool:
-    """Claim the one daily digest for (human, workspace, local date). ``True``
-    exactly once: the conditional put is the send's idempotency boundary."""
-    try:
-        await run_in_thread(
-            _table().put_item,
-            Item={
-                "pk": f"DIGEST#{user_id}#{home_owner_id}#{local_date}",
-                "sk": "DIGEST",
-                "expiresAt": int(time.time()) + DIGEST_TTL_S,
-            },
-            ConditionExpression="attribute_not_exists(pk)",
-        )
-    except ClientError as exc:
-        if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
-            return False
-        raise
-    return True
-
-
 async def batch_get(keys: list[tuple[str, str]]) -> dict[tuple[str, str], dict]:
     """Strongly read many ``(pk, sk)`` rows, 100 per request; missing rows are absent."""
     table = _table()
@@ -3171,49 +3148,6 @@ async def label_run_followup(owner_id: str, run_id: str, follow_up: str) -> dict
         UpdateExpression="SET followUp = :label, followUpAt = :now, updatedAt = :now REMOVE sweep, deadlineAt",
         ConditionExpression="attribute_exists(sk) AND sweep = :followup",
         ExpressionAttributeValues={":label": follow_up, ":now": utc_now_iso(), ":followup": "followup"},
-    )
-
-
-# ---------------------------------------------------------------------------
-# away-email checks (T15): ``AWAY#<user>`` rows on the same sparse deadline index,
-# ``sweep = "away"``; written by the projector and ``needs_you_email.queue_question``
-# ---------------------------------------------------------------------------
-
-
-async def list_due_away_checks(now_epoch: int, page_size: int = 100) -> list[dict]:
-    """``[{pk, sk}]`` of every away check whose deadline has passed."""
-    query = {
-        "IndexName": GSI_BY_RUN_DEADLINE,
-        "KeyConditionExpression": "sweep = :away AND deadlineAt < :now",
-        "ExpressionAttributeValues": {":away": "away", ":now": int(now_epoch)},
-        "Limit": page_size,
-    }
-    keys: list[dict] = []
-    table = _table()
-    while True:
-        response = await run_in_thread(table.query, **query)
-        keys.extend({"pk": item["pk"], "sk": item["sk"]} for item in response.get("Items", []))
-        last = response.get("LastEvaluatedKey")
-        if not last:
-            return keys
-        query["ExclusiveStartKey"] = last
-
-
-async def get_away_check(pk: str, sk: str) -> dict | None:
-    return await _get(pk, sk)
-
-
-async def finish_away_check(pk: str, sk: str) -> None:
-    await run_in_thread(_table().delete_item, Key={"pk": pk, "sk": sk})
-
-
-async def defer_away_check(pk: str, sk: str, deadline_epoch: int) -> None:
-    await run_in_thread(
-        _table().update_item,
-        Key={"pk": pk, "sk": sk},
-        UpdateExpression="SET deadlineAt = :d",
-        ConditionExpression="attribute_exists(pk)",
-        ExpressionAttributeValues={":d": int(deadline_epoch)},
     )
 
 

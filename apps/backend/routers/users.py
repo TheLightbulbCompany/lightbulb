@@ -3,9 +3,7 @@
 import logging
 import time
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse
-from html import escape
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
 from core.auth import get_current_user, resolve_owner_id, AuthContext
@@ -120,8 +118,6 @@ async def get_me(auth: AuthContext = Depends(get_current_user)) -> dict:
 def _prefs(row: dict | None) -> UserPrefs:
     return UserPrefs(
         timezone=user_repo.timezone_of(row),
-        dailySummary=user_repo.daily_summary_on(row),
-        awayEmail=user_repo.away_email_on(row),
         chatTheme=user_repo.chat_theme_of(row),
         sessionsReachableFromBackgroundWork=user_repo.sessions_reachable_from_background_work(row),
         sessionNotifications=user_repo.session_notifications(row),
@@ -130,96 +126,24 @@ def _prefs(row: dict | None) -> UserPrefs:
 
 @router.get("/me/prefs", response_model=UserPrefs, operation_id="get_my_prefs")
 async def get_my_prefs(auth: AuthContext = Depends(get_current_user)) -> UserPrefs:
-    """The caller's per-human prefs: IANA ``timezone``, the ``dailySummary`` digest
-    toggle, the account's ``chatTheme`` (null when never set), and the agent-session
-    switch ``sessionsReachableFromBackgroundWork`` (on by default)."""
+    """The caller's per-human prefs: IANA ``timezone``, the account's ``chatTheme`` (null when never set), and the
+    agent-session switch ``sessionsReachableFromBackgroundWork`` (on by default)."""
     return _prefs(await user_repo.get(auth.user_id))
 
 
 @router.put("/me/prefs", response_model=UserPrefs, operation_id="update_my_prefs")
 async def update_my_prefs(body: UserPrefsUpdate, auth: AuthContext = Depends(get_current_user)) -> UserPrefs:
-    """Set any of ``timezone`` / ``dailySummary`` / ``chatTheme``; omitted fields
-    are unchanged."""
+    """Set any of ``timezone`` / ``chatTheme``; omitted fields are unchanged."""
     if not await user_repo.get(auth.user_id):
         await user_repo.put(auth.user_id, auth.email)
     await user_repo.set_prefs(
         auth.user_id,
         timezone=body.timezone,
-        daily_summary=body.dailySummary,
-        away_email=body.awayEmail,
         chat_theme=body.chatTheme,
         sessions_reachable_from_background_work=body.sessionsReachableFromBackgroundWork,
         session_notifications=body.sessionNotifications.model_dump() if body.sessionNotifications else None,
     )
     return _prefs(await user_repo.get(auth.user_id))
-
-
-def _unsubscribe_page(message: str, *, form_token: str | None = None, status_code: int = 200) -> HTMLResponse:
-    form = (
-        f'<form method="post" action="?token={escape(form_token)}"><button type="submit">Unsubscribe</button></form>'
-        if form_token
-        else ""
-    )
-    return HTMLResponse(
-        f'<!doctype html><meta name="viewport" content="width=device-width"><title>Lightbulb</title>'
-        f'<div style="font-family:sans-serif;max-width:480px;margin:48px auto;padding:0 16px">'
-        f"<p>{escape(message)}</p>{form}</div>",
-        status_code=status_code,
-    )
-
-
-@router.get("/digest/unsubscribe", response_class=HTMLResponse, include_in_schema=False)
-async def digest_unsubscribe_page(token: str = Query(..., max_length=2048)) -> HTMLResponse:
-    """The email footer link. A GET never changes anything (link scanners
-    prefetch it); it shows a one-button form that POSTs the same token."""
-    from core.services.daily_digest import verify_unsubscribe_token
-
-    if verify_unsubscribe_token(token) is None:
-        return _unsubscribe_page("This unsubscribe link is invalid or has expired.", status_code=400)
-    return _unsubscribe_page("Stop the Lightbulb daily summary email and notification?", form_token=token)
-
-
-@router.post("/digest/unsubscribe", response_class=HTMLResponse, include_in_schema=False)
-async def digest_unsubscribe(token: str = Query(..., max_length=2048)) -> HTMLResponse:
-    """RFC 8058 one-click target (``List-Unsubscribe-Post``). Unauthenticated: the
-    signed, expiring, purpose-scoped token is the only credential, and all it can
-    do is turn the "Daily summary" pref off. Idempotent."""
-    from core.services.daily_digest import verify_unsubscribe_token
-
-    user_id = verify_unsubscribe_token(token)
-    if user_id is None:
-        return _unsubscribe_page("This unsubscribe link is invalid or has expired.", status_code=400)
-    await user_repo.set_prefs(user_id, daily_summary=False)
-    return _unsubscribe_page("You're unsubscribed from the daily summary. Turn it back on in Settings.")
-
-
-@router.post("/me/active", status_code=204, operation_id="mark_me_active")
-async def mark_me_active(auth: AuthContext = Depends(get_current_user)) -> None:
-    """Presence for the away email (T15): web and the phone call this every two minutes
-    while the app is visible / in the foreground, never from a hidden tab."""
-    await user_repo.touch_active(auth.user_id)
-
-
-@router.get("/away-email/unsubscribe", response_class=HTMLResponse, include_in_schema=False)
-async def away_email_unsubscribe_page(token: str = Query(..., max_length=2048)) -> HTMLResponse:
-    """The away email's footer link (T15). A GET changes nothing; it shows the POST form."""
-    from core.services.needs_you_email import verify_unsubscribe_token
-
-    if verify_unsubscribe_token(token) is None:
-        return _unsubscribe_page("This unsubscribe link is invalid or has expired.", status_code=400)
-    return _unsubscribe_page("Stop emails when something needs you and you're away?", form_token=token)
-
-
-@router.post("/away-email/unsubscribe", response_class=HTMLResponse, include_in_schema=False)
-async def away_email_unsubscribe(token: str = Query(..., max_length=2048)) -> HTMLResponse:
-    """RFC 8058 one-click target. The token can only turn the away email off. Idempotent."""
-    from core.services.needs_you_email import verify_unsubscribe_token
-
-    user_id = verify_unsubscribe_token(token)
-    if user_id is None:
-        return _unsubscribe_page("This unsubscribe link is invalid or has expired.", status_code=400)
-    await user_repo.set_prefs(user_id, away_email=False)
-    return _unsubscribe_page("You won't get these emails any more. Turn them back on in Settings.")
 
 
 class DeleteAccountRequest(BaseModel):

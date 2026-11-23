@@ -470,11 +470,12 @@ export function register(properties: Record<string, unknown>): void {
  * by the global error/unhandledrejection forwarders installed in
  * ``components/PostHogProvider.tsx``.
  */
-export function captureException(error: unknown): void {
+export function captureException(error: unknown, properties?: Record<string, unknown>): void {
   if (typeof window === "undefined") return;
   if (!isLoaded()) return;
   // posthog-js >= 1.190 exposes captureException directly.
-  posthog.captureException(error);
+  if (properties) posthog.captureException(error, properties);
+  else posthog.captureException(error);
 }
 
 /**

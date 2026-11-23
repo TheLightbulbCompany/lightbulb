@@ -6,7 +6,8 @@ export type SparkPrice = { priceText: string; trialDays: number } | null;
 
 export async function getSparkPrice(): Promise<SparkPrice> {
   try {
-    const r = await fetch(`${BACKEND_URL}/os/config`, { next: { revalidate: 300 } });
+    // The same bound as the Phone plan's fetch (lib/pricing.ts): a slow backend must not hold the page.
+    const r = await fetch(`${BACKEND_URL}/os/config`, { next: { revalidate: 300 }, signal: AbortSignal.timeout(2500) });
     if (!r.ok) return null;
     const c = await r.json();
     return typeof c?.priceText === "string" && Number.isInteger(c?.trialDays) && c.trialDays > 0

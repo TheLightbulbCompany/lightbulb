@@ -8,7 +8,7 @@ import { useEffect, useRef } from "react";
  *  - Spark: the real Spark launch clip (/landing/demo/spark-demo.mp4) on a laptop.
  *  - Lightbulb Meetings: a Meet call where Lightbulb answers out loud and keeps the notes.
  * The scenes are plain markup; one effect drives them imperatively (the same posture as
- * app/os/SparkStage.tsx), so a 60fps caption typewriter never re-renders React. Each demo resets
+ * components/landing/SparkStage.tsx), so a 60fps caption typewriter never re-renders React. Each demo resets
  * behind the title card, then waits on the card before it plays. Reduced motion: no autoplay
  * video, near-instant steps. Portraits are Unsplash photos, self-hosted under /landing/demo.
  */

@@ -6,9 +6,11 @@ vi.mock("@/components/landing/Footer", () => ({ Footer: () => null }));
 vi.mock("@/components/landing/PricingThreeCard", () => ({ PricingThreeCard: () => null }));
 vi.mock("@/lib/pricing", () => ({ getPricing: async () => null }));
 // jsdom has no canvas or media playback: the Spark bulb is canvas art, and the home demos drive a <video>.
-vi.mock("@/app/os/SparkStage", () => ({ SparkStage: () => null }));
+vi.mock("@/components/landing/SparkStage", () => ({ SparkStage: () => null }));
 Object.defineProperty(HTMLMediaElement.prototype, "pause", { configurable: true, value: () => {} });
 Object.defineProperty(HTMLMediaElement.prototype, "play", { configurable: true, value: () => Promise.resolve() });
+// The Spark page (/os) loads its own fonts; jsdom has no next/font.
+vi.mock("next/font/google", () => ({ Bricolage_Grotesque: () => ({ variable: "" }), Silkscreen: () => ({ variable: "" }) }));
 const captureSignupCta = vi.fn();
 vi.mock("@/lib/signupFlow", () => ({ captureSignupCta: (o: unknown) => captureSignupCta(o) }));
 

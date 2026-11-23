@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 
-import { SparkStage } from "@/app/os/SparkStage";
+import { SparkStage } from "./SparkStage";
 import { captureSignupCta } from "@/lib/signupFlow";
 
 /*

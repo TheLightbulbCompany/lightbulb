@@ -2,8 +2,8 @@
 
 import { useEffect, useRef } from "react";
 
-import { CODE } from "./SparkDownload";
-import { SPARK } from "./sparkStageBrand";
+import { CODE } from "@/app/os/SparkDownload";
+import { SPARK } from "@/app/os/sparkStageBrand";
 
 /* Spark's stage bulb, ported from the Mac app's FirstRun/Stage.swift (StageArt.render) cell for cell:
    the same geometry (the app icon's 1024 px units), the 8x8 Bayer tile, the same ramps and the app's

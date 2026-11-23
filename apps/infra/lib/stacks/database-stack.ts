@@ -346,7 +346,7 @@ export class DatabaseStack extends cdk.Stack {
     });
 
     // Spark voice transcripts (os_voice): one row per turn, keyed by person, `<startedAt>#<sessionId>#<seq>`.
-    // Text only, expired after 90 days by TTL; written only where SPARK_TRANSCRIPTS_ENABLED is on.
+    // Text only, expired after 90 days by TTL; written while SPARK_TRANSCRIPTS_ENABLED is on.
     // Covered by the backend wildcard table grant; deleted with the person's Spark account.
     createTable("SparkTranscriptsTable", "spark-transcripts", {
       partitionKey: { name: "user_id", type: dynamodb.AttributeType.STRING },

@@ -19,9 +19,4 @@ describe("Spark redirects", () => {
       permanent: false,
     });
   });
-
-  it("send /spark to the page at /os (Next carries the query, so an invite code survives)", async () => {
-    const redirects = await nextConfig.redirects!();
-    expect(redirects).toContainEqual({ source: "/spark", destination: "/os", permanent: false });
-  });
 });

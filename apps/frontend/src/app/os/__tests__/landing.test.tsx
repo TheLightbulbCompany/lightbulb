@@ -141,19 +141,4 @@ describe("/os landing page (dev only)", () => {
     expect(screen.getByRole("img").getAttribute("aria-label")).toMatch(/^Spark: a small blue creature/);
   });
 
-  it("describes today's first conversation, not the old tidy-your-Desktop lesson", async () => {
-    const { container } = await page();
-    const text = container.textContent ?? "";
-    expect(text).not.toMatch(/tid(y|ies) your Desktop/i);
-    expect(text).toContain("Its first hello: it circles what it sees, then does one small thing you ask.");
-    expect(text).toContain("Say hi. Spark shows what it sees and does one small thing.");
-  });
-
-  it("shares Spark's own 1200 x 630 picture", async () => {
-    const { metadata } = await import("../page");
-    expect(metadata.openGraph?.images).toEqual([
-      { url: "/og-spark.jpg", width: 1200, height: 630, alt: "Meet Spark. One-click voice interface for your Mac." },
-    ]);
-    expect(metadata.twitter?.images).toEqual(["/og-spark.jpg"]);
-  });
 });

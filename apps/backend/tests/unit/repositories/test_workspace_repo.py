@@ -7,7 +7,7 @@ The repo is async (matches the pattern of other repos in
 """
 
 import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from unittest.mock import patch
 
 import boto3
@@ -266,21 +266,6 @@ async def test_delete_removes_row(repo):
     await repo.put_workspace(_make_company(user_id="user_789"))
     await repo.delete("user_789")
     assert await repo.get_workspace("user_789") is None
-
-
-async def test_scan_purge_due_returns_overdue_disabled(repo):
-    now = datetime.now(timezone.utc)
-    past = now - timedelta(days=1)
-    future = now + timedelta(days=10)
-    # disabled and overdue -> should be returned
-    await repo.put_workspace(_make_company(user_id="overdue", status="disabled", scheduled_purge_at=past))
-    # disabled but not yet due -> should NOT be returned
-    await repo.put_workspace(_make_company(user_id="not_yet", status="disabled", scheduled_purge_at=future))
-    # active -> should NOT be returned (different status)
-    await repo.put_workspace(_make_company(user_id="still_active", status="active"))
-    due = await repo.scan_purge_due(now)
-    user_ids = {c.org_id for c in due}
-    assert user_ids == {"overdue"}
 
 
 # ---------------------------------------------------------------------------

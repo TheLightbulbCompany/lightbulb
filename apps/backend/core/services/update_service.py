@@ -1,8 +1,5 @@
 """Update service -- pending-update applier + scheduled worker.
 
-The scheduled worker also runs ``_paperclip_purge_pass`` once per day: it deletes
-``status="disabled"`` workspace rows whose ``scheduled_purge_at <= now``.
-
 Plus the P0c owner-day rollup pass (``_rollup_pass``) — once per hour,
 refresh today+yesterday rollup rows for every owner with a bound company
 Stripe account (``rollup_service.refresh_owner_day``).
@@ -16,9 +13,6 @@ from core.observability.metrics import put_metric
 from core.repositories import billing_repo, container_repo
 
 logger = logging.getLogger(__name__)
-
-# Daily purge pass cadence, in seconds.
-_PURGE_PASS_INTERVAL_SECONDS = 24 * 60 * 60
 
 # Hourly owner-day rollup pass cadence, in seconds (P0c).
 _ROLLUP_PASS_INTERVAL_SECONDS = 60 * 60
@@ -41,36 +35,6 @@ def request_worker_stop() -> None:
     """Ask run_scheduled_worker to finish its current iteration and exit."""
     if _worker_stop is not None:
         _worker_stop.set()
-
-
-async def _paperclip_purge_pass() -> None:
-    """Daily pass: delete disabled workspace rows past their grace window.
-
-    Per-row failures are logged and swallowed so one bad row doesn't break the whole pass.
-    """
-    from core.repositories.workspace_repo import WorkspaceRepo
-
-    repo = WorkspaceRepo()
-    try:
-        due = await repo.scan_purge_due(datetime.now(timezone.utc))
-    except Exception:
-        logger.exception("paperclip_purge_pass: scan_purge_due failed")
-        return
-    if not due:
-        return
-    logger.info("paperclip_purge_pass: %d disabled rows due for purge", len(due))
-    purged = 0
-    failed = 0
-    for ws in due:
-        try:
-            await repo.delete(ws.org_id)
-            purged += 1
-        except Exception:
-            logger.exception("paperclip_purge_pass: failed for org_id=%s", ws.org_id)
-            failed += 1
-    put_metric("paperclip.purge_pass.purged", value=purged)
-    if failed:
-        put_metric("paperclip.purge_pass.failed", value=failed)
 
 
 async def _rollup_pass() -> None:
@@ -105,10 +69,9 @@ async def admitted(name: str, *, interval_s: int) -> bool:
 async def run_scheduled_worker() -> None:
     """Background worker for the three fleet-wide reconciliation passes.
 
-    Runs every 60 seconds indefinitely. Each iteration enters its passes (Paperclip retry,
-    Paperclip purge, owner-day rollup) only on the instance that wins ``admitted()`` for that
+    Runs every 60 seconds indefinitely. Each iteration enters its passes (owner-day rollup) only on the instance that wins ``admitted()`` for that
     pass's window that tick -- at desiredCount >= 2 the loser scans nothing, instead of every
-    instance re-scanning the same rows. Cadence for the daily purge and hourly rollup lives on
+    instance re-scanning the same rows. Cadence for the hourly rollup lives on
     the admission row (``interval_s``), not a process-local clock, so a deploy no longer forces
     an immediate run.
 
@@ -123,14 +86,6 @@ async def run_scheduled_worker() -> None:
     while not _worker_stop.is_set():
         try:
             put_metric("update.scheduled_worker.heartbeat")
-            # T13: Paperclip purge pass — admitted once per
-            # _PURGE_PASS_INTERVAL_SECONDS (24h), fleet-wide.
-            if await admitted("paperclip_purge", interval_s=_PURGE_PASS_INTERVAL_SECONDS):
-                try:
-                    await _paperclip_purge_pass()
-                except Exception:
-                    logger.exception("paperclip_purge_pass crashed")
-
             # P0c: owner-day rollup pass — admitted once per
             # _ROLLUP_PASS_INTERVAL_SECONDS (1h), fleet-wide.
             if await admitted("owner_day_rollup", interval_s=_ROLLUP_PASS_INTERVAL_SECONDS):

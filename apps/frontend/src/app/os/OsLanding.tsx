@@ -48,7 +48,7 @@ export function OsLanding({ ready, price }: { ready: boolean; price: SparkPrice 
     ],
     [
       "Is my voice stored?",
-      "No. Your voice is processed by OpenAI to understand and answer you, and we do not store the audio.",
+      "No. Your voice is processed by OpenAI to understand and answer you, and we do not store the audio. We keep a text transcript for 90 days to improve Spark.",
     ],
   ];
 

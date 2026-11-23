@@ -176,7 +176,7 @@ def _title(row: dict, member: bool) -> str | None:
 
 # ponytail: counted, not locked: two viewers racing for the last seat both get in, and a viewer
 # who stops renewing keeps an open subscription uncounted until the page closes.
-# T18 load test on dev, 2026-10-15 (scripts/load/k6/link_viewers.js): 100 viewers on one link held
+# T18 load test on dev, 2026-10-15: 100 viewers on one link held
 # p95 frame latency ~300 ms and 99.99% delivery; the backend did not reach its ceiling.
 MAX_LINK_VIEWERS = 100
 # A lease connects once and subscribes once (the authorizer consumes it), so every connection

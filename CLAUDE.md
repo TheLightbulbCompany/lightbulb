@@ -202,8 +202,7 @@ on a `dev.thelightbulb.company` page with `Clerk.client.signIn.create({strategy:
 a production email.
 
 `/api/v1/debug/provision` (`PATCH` rewrites every roster profile and stops the warm session; `DELETE` then
-`POST` reprovisions) still exists and returns 403 in prod. The `dev-clean-slate-reset` and `prod-org-reprovision`
-skills in `.agents/skills/` still describe Paperclip and Aurora wipes; those steps are stale.
+`POST` reprovisions) still exists and returns 403 in prod. The `dev-clean-slate-reset` skill in `.agents/skills/` covers wiping a dev test person.
 
 ## Shipping
 

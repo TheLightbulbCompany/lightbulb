@@ -146,10 +146,9 @@ def _reset_shutdown_flag():
 
 @pytest.fixture(autouse=True)
 def _no_aws_profile(monkeypatch):
-    # The dev acceptance harness (scripts/super_agent/acceptance/ctx.py aws_profile_default, reached from
-    # validate_meeting_context and the acceptance tests) setdefaults AWS_PROFILE=isol8-admin. Owning the
-    # variable here restores it after every test, so it never leaks to later tests in the xdist worker,
-    # where boto3 then fails on any machine without that local SSO profile.
+    # A developer's local SSO profile must never reach a test: boto3 would then resolve it (and fail on
+    # any machine without it). Owning the variable here also restores it after every test, so nothing
+    # that sets it leaks to later tests in the xdist worker.
     monkeypatch.delenv("AWS_PROFILE", raising=False)
     monkeypatch.delenv("AWS_DEFAULT_PROFILE", raising=False)
 

@@ -2,9 +2,6 @@
 
 * ``provision_org`` writes the META row (``active``, the provisioner as first member, a fresh
   onboarding generation) and seeds ``STARTER_ROSTER`` into ``agent_registry``.
-* ``disable_workspace`` marks a deleted Clerk org's row ``disabled`` with a purge timer; the
-  cleanup cron (``update_service._workspace_purge_pass``) deletes it afterwards.
-
 Leaving a workspace is ``WorkspaceRepo.remove_member`` (the class keeps its name until task 9).
 """
 
@@ -13,7 +10,7 @@ from __future__ import annotations
 import dataclasses
 import logging
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from botocore.exceptions import ClientError
 from ulid import ULID
@@ -175,16 +172,6 @@ async def provision_org(owner_id: str, *, provisioner: str) -> Workspace:
         raise
     logger.info("workspace_provisioning.provision_org: %s active (provisioner=%s)", owner_id, provisioner)
     return row
-
-
-async def disable_workspace(org_id: str, *, grace_days: int = 30) -> None:
-    """Mark a workspace row ``disabled`` with a purge timer (the Clerk org was deleted)."""
-    repo = _repo()
-    if await repo.get_workspace(org_id) is None:
-        return
-    purge_at = datetime.now(timezone.utc) + timedelta(days=grace_days)
-    await repo.update_status(org_id, status="disabled", scheduled_purge_at=purge_at)
-    logger.info("workspace_provisioning.disable_workspace: %s scheduled for purge at %s", org_id, purge_at.isoformat())
 
 
 async def _mark_failed(repo: WorkspaceRepo, org_id: str, reason: str) -> None:

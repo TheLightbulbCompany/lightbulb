@@ -4,7 +4,10 @@ user id) and refuses anyone else it is handed, writing nothing under either acco
 Real DynamoDB (moto) and the product's own writers; the only stubs are the outside world (Photon's lookups and
 signature, the wake of an agent). A refusal is judged on stored state: every row naming A or B is the same after."""
 
+import time
 import uuid
+from datetime import datetime, timezone
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -329,14 +332,87 @@ async def refuse_engine_act(front, stubs, web, held):
 
 
 async def write_engine_act(front, stubs, web):
-    before = _held_now()
-    with pytest.raises(EngineError) as unknown:  # A reaches the task lookup
-        await engine.act(_act(A))
-    assert unknown.value.status == 404
-    assert _held_now() == before
+    from core.temporal import activities as acts
+    from core.temporal import client as temporal_client
+
+    trigger = {"triggerId": "door-act", "source": "mail", "ref": {"text": "hi"}, "actorUserId": A}
+    task = await acts._ensure_task(A, ts.new_task_id(), trigger, "shared", "queued", title="t", visibility="person")
+    with patch.object(temporal_client, "update_task", AsyncMock()) as update:
+        await engine.act(
+            ActIn(tenant_id=A, task_id=task["taskId"], action="stop", principal=Principal(kind="member", id=A))
+        )
+    assert update.await_args.args[:3] == (A, task["taskId"], "stop")  # the workflow is told to stop, under A's tenant
+    assert (await tasks_repo.get_task(A, task["taskId"]))["pk"] == ts.ws_pk(A)
+    marked = await messaging_repo.list_messages_before(ts.task_room_id(task["taskId"]), 10**19, 100)
+    assert [m["text"].split(" by ")[0] for m in marked if m.get("kind") == "marker"] == ["Stopped"]
+
+
+BOT, NONCE = "bot-door", "nonce-door"
+
+
+async def _meeting_room(owner_human: str) -> str:
+    """A live meeting room of A's tenant whose owner member is `owner_human` and whose bot is `BOT`."""
+    room_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"door-meeting-{owner_human}"))
+    member = {"kind": "human", "id": owner_human, "displayName": "Host", "mentionHandle": None, "role": "owner"}
+    await messaging_repo.create_room(
+        owner_id=A, room_id=room_id, client_room_id=room_id, creator_user_id=owner_human, name="Meet",
+        kind="channel", members=[{**member, "listenMode": None}], req_hash=messaging_repo.request_hash(None, room_id),
+    )  # fmt: skip
+    meta = await messaging_repo.get_room(room_id)
+    meeting = {"status": "in_call", "recallBotId": BOT, "ticketNonce": NONCE, "inCallAt": int(time.time()) - 60}
+    await messaging_repo.patch_room_meta(
+        room_id, {"meeting": {**meeting, "invitedBy": owner_human}}, expected_revision=int(meta["revision"])
+    )
+    return room_id
+
+
+async def _chat(room_id: str) -> None:
+    from routers import meetings
+
+    data = {
+        "participant": {"id": 7, "name": "Maya"},
+        "timestamp": {"absolute": datetime.now(timezone.utc).isoformat()},
+        "data": {"text": "please put the link here"},
+    }
+    await meetings._chat(BOT, room_id, data, NONCE)
+
+
+async def refuse_meeting_chat(front, stubs, web, held):
+    room = await _meeting_room(B)  # the meeting is A's, but its owner seat names B
+    before = held()
+    await _chat(room)  # a webhook speaks only as the tenant's own person: dropped, not raised
+    assert held() == before
+
+
+async def write_meeting_chat(front, stubs, web):
+    room = await _meeting_room(A)
+    await _chat(room)
+    stored = [m for m in await messaging_repo.list_messages_before(room, 10**19, 100) if m.get("via") == "meeting_chat"]
+    assert [m["author"]["id"] for m in stored] == [A]
+    assert (await messaging_repo.get_room(room))["ownerId"] == A
+
+
+def _post_to(**target) -> messaging.AgentPostRequest:
+    return messaging.AgentPostRequest(event_id=str(uuid.uuid4()), agent_id=uuid.uuid4(), text="hi", **target)
+
+
+async def refuse_agent_post_room(front, stubs, web, held):
+    before = held()
+    with pytest.raises(messaging.ApiProblem) as refused:
+        await messaging.resolve_agent_post_room(A, _post_to(user_id=B))
+    assert refused.value.status_code == 404
+    assert held() == before
+
+
+async def write_agent_post_room(front, stubs, web):
+    room = await messaging.resolve_agent_post_room(A, _post_to(user_id=A))
+    assert (await messaging_repo.get_room(room))["ownerId"] == A
+    assert {m["id"] for m in await messaging_repo.list_members(room) if m["kind"] == "human"} == {A}
 
 
 DOORS = {
+    "meetings webhook chat": (refuse_meeting_chat, write_meeting_chat),
+    "messaging.resolve_agent_post_room": (refuse_agent_post_room, write_agent_post_room),
     "engine open_conversation (call)": (refuse_engine_open_call, write_engine_open_call),
     "engine open_conversation (channel)": (refuse_engine_open_channel, write_engine_open_channel),
     "engine submit_event": (refuse_engine_submit_event, write_engine_submit_event),

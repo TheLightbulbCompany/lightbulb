@@ -144,7 +144,7 @@ export type { OutputsFilter, TasksClient } from "./tasks/client";
 export type { DirectoryAgent } from "./tasks/useTasks";
 export { NEEDS_YOU_KEY_SUFFIX, putTaskSummary, questionsKey, refreshTask, taskKey, taskListKey, agentDirectory, useTask, useOlderTasks, useTaskCache, useTaskChangedRefresh, useTaskList, useTaskQuestions } from "./tasks/useTasks";
 export {
-  automationRowLine, automationStatusLine, budgetLine, canDecide, canEdit, deliveryRoomId, deliveryWords, money, nextRunWords, runNow, runNowReason, runsAgain, runsPerMonth, scheduleWords, viewerTimeZone, waitingWords,
+  automationRowLine, automationStatusLine, budgetLine, canDecide, canEdit, deliveryRoomId, deliveryWords, money, nextRunWords, runNow, runNowReason, runsAgain, runsPerMonth, scheduleWords, viewerTimeZone,
 } from "./tasks/automations";
 export type { RunNowOutcome } from "./tasks/automations";
 export {

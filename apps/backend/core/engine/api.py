@@ -474,7 +474,7 @@ async def _answer_said_question(owner_id: str, room_id: str, member: str, ref: Q
                     option_id="answer", text=text[:4000],
                     client_answer_id=uuid.uuid5(uuid.NAMESPACE_URL, key).hex)  # fmt: skip
     try:
-        await _submit_answer(owner_id, ref.task_id, ref.qid, member, body, member=True)
+        await _submit_answer(owner_id, ref.task_id, ref.qid, member, body)
     except (EngineError, HTTPException) as e:  # a refusal, or a product hook's HTTPException (a call gone)
         logger.info("voice room %s: question %s not answered by voice (%s)", room_id, ref.qid, e.detail)
         return False
@@ -653,8 +653,7 @@ _STYLES = {"deny": "danger", "request_changes": "secondary"}
 async def answer(req: AnswerIn) -> dict:
     """`principal` answers Question `qid` of `task_id` (`_submit_answer`): the question's view and the task's summary."""
     _tenant_person(req.tenant_id, req.principal)
-    member = req.principal.kind == "member"
-    return await _submit_answer(req.tenant_id, req.task_id, req.qid, req.principal.id, req, member=member)
+    return await _submit_answer(req.tenant_id, req.task_id, req.qid, req.principal.id, req)
 
 
 async def _people(ids: list[str | None]) -> dict[str, str]:
@@ -753,14 +752,12 @@ def _not_open(q: dict) -> EngineError:
     return _problem(409, "not_open", state=q["state"], by=q.get("answeredBy"), at=q.get("answeredAt"))
 
 
-async def _submit_answer(
-    ws: str, task_id: str, qid: str, me: str, body: Any, *, member: bool = False
-) -> dict[str, Any]:
+async def _submit_answer(ws: str, task_id: str, qid: str, me: str, body: Any) -> dict[str, Any]:
     """`me` answers Question `qid`: the card's press, and a line said to the voice right after it said the question
-    (`_answer_said_question`). `body`: `option_id`, `text`, `client_answer_id`, `expect_version`. `member`: `me` is
-    the tenant's member on the caller's word. Raises the answer route's refusals as EngineError."""
+    (`_answer_said_question`). `body`: `option_id`, `text`, `client_answer_id`, `expect_version`.
+    Raises the answer route's refusals as EngineError."""
     task = await tasks_repo.get_task(ws, task_id)
-    if task is None or not await tasks_access.can_view(task, me, member=member):
+    if task is None or not await tasks_access.can_view(task, me):
         raise _not_found()
     q = await questions_repo.get_question(ws, task_id, qid)
     if q is None:
@@ -774,7 +771,7 @@ async def _submit_answer(
         # A closed task's Questions are cancelled when it ends; one left open (that cancel failed) is still never
         # answered, and no Temporal update is sent (it would start a fresh run for a finished task).
         raise _problem(409, "task_closed")
-    if not await questions.can_answer_now(ws, q, me, member=member):
+    if not await questions.can_answer_now(ws, q, me):
         raise _problem(403, "not_answerer")
     offered = {o["id"] for o in q.get("options") or []} or {"answer"}
     if body.option_id not in offered:
@@ -838,15 +835,14 @@ _GATED = frozenset({"retry"})  # a new attempt: today's chat gate first (§14.10
 async def act(req: ActIn) -> dict:
     """Stop, resolve, reopen or retry a task as `principal`, at `version` when given: the task's summary after."""
     _tenant_person(req.tenant_id, req.principal)
-    member = req.principal.kind == "member"
-    return await _act(req.tenant_id, req.task_id, req.action, req.principal.id, req.version, member=member)
+    return await _act(req.tenant_id, req.task_id, req.action, req.principal.id, req.version)
 
 
-async def _visible_tree(ws: str, task_id: str, user_id: str, *, member: bool = False) -> dict:
+async def _visible_tree(ws: str, task_id: str, user_id: str) -> dict:
     tree = await tasks_repo.get_task_tree(ws, task_id)
     if tree["task"] is None:
         raise _problem(404, "not_found")
-    if not await tasks_access.can_view(tree["task"], user_id, member=member):
+    if not await tasks_access.can_view(tree["task"], user_id):
         raise _problem(404, "not_found")  # hidden reads as missing: no existence leak (lead ruling, 5 Nov)
     return tree
 
@@ -859,8 +855,8 @@ async def _summary(tree: dict, viewer: str) -> dict:
     return tasks_access.summarize({**tree, "userNames": names}, viewer)
 
 
-async def _act(ws: str, task_id: str, action: str, user_id: str, version: int | None, *, member: bool = False) -> dict:
-    tree = await _visible_tree(ws, task_id, user_id, member=member)
+async def _act(ws: str, task_id: str, action: str, user_id: str, version: int | None) -> dict:
+    tree = await _visible_tree(ws, task_id, user_id)
     task = tree["task"]
     if version is not None and task["version"] != version:
         raise _problem(409, "version_conflict", version=task["version"])

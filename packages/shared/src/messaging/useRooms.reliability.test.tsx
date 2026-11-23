@@ -66,7 +66,6 @@ const onVisibilityChange = (listener: () => void) => {
 const uuid = () => "11111111-1111-4111-8111-111111111111";
 const platform = (over: Partial<RoomsPlatform> = {}): RoomsPlatform => ({
   userId: "user-a",
-  orgId: "org-a",
   live,
   isVisible,
   onVisibilityChange,
@@ -384,7 +383,7 @@ describe("room history reliability with real live transport", () => {
     messaging.listRooms.mockResolvedValue(directory);
     messaging.getRoom.mockImplementation(async roomId => roomId === linkedRoom.roomId ? linkedRoom : room);
     messaging.listMessages.mockImplementation(async roomId => ({ messages: [{ ...message, roomId }], nextAfterSeq: null }));
-    const cache = new Map([[unstable_serialize(["messaging-rooms", "user-a:org-a"]), { data: directory }]]);
+    const cache = new Map([[unstable_serialize(["messaging-rooms", "user-a"]), { data: directory }]]);
     function RoomLink({ selectRoom }: { selectRoom: (roomId: string) => void }) {
       useEffect(() => { selectRoom(linkedRoom.roomId); }, [selectRoom]);
       return null;

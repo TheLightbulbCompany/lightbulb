@@ -262,11 +262,10 @@ async def admin_container_reprovision(
     request: Request,
     auth: AuthContext = Depends(require_platform_admin),
 ):
-    owner_id = user_id
     # Durable: an idle-session wait can outlast the request, so a Step Functions reconcile
     # execution does the work. dispatch_reconcile never raises.
-    await dispatch_reconcile(owner_id)
-    return {"status": "reconciling", "owner_id": owner_id}
+    await dispatch_reconcile(user_id)
+    return {"status": "reconciling", "owner_id": user_id}
 
 
 # ---------------------------------------------------------------------------
@@ -308,16 +307,15 @@ async def admin_provision_retry(
     request: Request,
     auth: AuthContext = Depends(require_platform_admin),
 ):
-    owner_id = user_id
-    row = await container_repo.get_by_owner_id(owner_id)
+    row = await container_repo.get_by_owner_id(user_id)
     if not row:
         raise HTTPException(status_code=404, detail="No container row for this owner")
     status = row.get("status")
     if status == "running":
         raise HTTPException(status_code=409, detail="Container is running — nothing to retry")
-    if not await dispatch_provision(owner_id):
+    if not await dispatch_provision(user_id):
         raise HTTPException(status_code=502, detail="Provisioning could not be started — nothing was dispatched")
-    fresh = await container_repo.get_by_owner_id(owner_id)
+    fresh = await container_repo.get_by_owner_id(user_id)
     return {
         "ok": True,
         "status": (fresh or {}).get("status"),
@@ -364,8 +362,7 @@ async def admin_billing_cancel_subscription(
     request: Request,
     auth: AuthContext = Depends(require_platform_admin),
 ):
-    owner_id = user_id
-    return _refuse_billing_noop(await billing_service.cancel_subscription_for_owner(owner_id))
+    return _refuse_billing_noop(await billing_service.cancel_subscription_for_owner(user_id))
 
 
 @router.post(
@@ -379,8 +376,7 @@ async def admin_billing_pause_subscription(
     request: Request,
     auth: AuthContext = Depends(require_platform_admin),
 ):
-    owner_id = user_id
-    return _refuse_billing_noop(await billing_service.pause_subscription_for_owner(owner_id))
+    return _refuse_billing_noop(await billing_service.pause_subscription_for_owner(user_id))
 
 
 @router.post(
@@ -394,8 +390,7 @@ async def admin_billing_resume_subscription(
     request: Request,
     auth: AuthContext = Depends(require_platform_admin),
 ):
-    owner_id = user_id
-    return _refuse_billing_noop(await billing_service.resume_subscription_for_owner(owner_id))
+    return _refuse_billing_noop(await billing_service.resume_subscription_for_owner(user_id))
 
 
 @router.post(
@@ -409,8 +404,7 @@ async def admin_billing_founding_team(
     request: Request,
     auth: AuthContext = Depends(require_platform_admin),
 ):
-    owner_id = user_id
-    return _refuse_billing_noop(await billing_service.mark_founding_team(owner_id))
+    return _refuse_billing_noop(await billing_service.mark_founding_team(user_id))
 
 
 @router.post(
@@ -426,8 +420,7 @@ async def admin_billing_pause_30_days(
 ):
     from core.services.trial_lifecycle import pause_once
 
-    owner_id = user_id
-    return _refuse_billing_noop(await pause_once(owner_id))
+    return _refuse_billing_noop(await pause_once(user_id))
 
 
 @router.post(
@@ -442,10 +435,9 @@ async def admin_billing_issue_credit(
     request: Request,
     auth: AuthContext = Depends(require_platform_admin),
 ):
-    owner_id = user_id
     return _refuse_billing_noop(
         await billing_service.issue_credit_for_owner(
-            owner_id, amount_cents=body.amount_cents, reason=body.reason, request_id=body.request_id
+            user_id, amount_cents=body.amount_cents, reason=body.reason, request_id=body.request_id
         )
     )
 
@@ -462,8 +454,7 @@ async def admin_billing_mark_invoice_resolved(
     request: Request,
     auth: AuthContext = Depends(require_platform_admin),
 ):
-    owner_id = user_id
-    return _refuse_billing_noop(await billing_service.mark_invoice_resolved(owner_id, body.invoice_id))
+    return _refuse_billing_noop(await billing_service.mark_invoice_resolved(user_id, body.invoice_id))
 
 
 # ---------------------------------------------------------------------------
@@ -539,9 +530,8 @@ async def admin_config_patch(
     request: Request,
     auth: AuthContext = Depends(require_platform_admin),
 ):
-    owner_id = user_id
     # M6 row #13: same S3-profile fan-out as the other two config-patch doors.
-    await config_patch_roster(owner_id, body.patch, None)
+    await config_patch_roster(user_id, body.patch, None)
     return {"status": "patched"}
 
 
@@ -558,9 +548,8 @@ async def admin_agent_delete(
 ):
     from core.services.agent_lifecycle import AgentLifecycleConflict, delete_agent_everywhere
 
-    owner_id = user_id
     try:
-        return await delete_agent_everywhere(owner_id=owner_id, agent_id=agent_id)
+        return await delete_agent_everywhere(owner_id=user_id, agent_id=agent_id)
     except AgentLifecycleConflict as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 

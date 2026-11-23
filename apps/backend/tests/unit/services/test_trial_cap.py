@@ -86,14 +86,13 @@ async def test_trial_block_reason_none_for_a_healthy_trial_and_for_paid(monkeypa
 def test_gate_for_trial_reason_maps_both_reasons_and_passes_none_through():
     from core.services import provision_gate
 
-    assert provision_gate.gate_for_trial_reason(None, "admin") is None
+    assert provision_gate.gate_for_trial_reason(None) is None
 
-    expired = provision_gate.gate_for_trial_reason(trial_cap.TRIAL_EXPIRED, "admin")
+    expired = provision_gate.gate_for_trial_reason(trial_cap.TRIAL_EXPIRED)
     assert expired.code == "trial_expired"
 
-    capped = provision_gate.gate_for_trial_reason(trial_cap.DAILY_CAP, "member")
+    capped = provision_gate.gate_for_trial_reason(trial_cap.DAILY_CAP)
     assert capped.code == "trial_daily_cap"
-    assert capped.owner_role == "member"
 
 
 @pytest.mark.asyncio

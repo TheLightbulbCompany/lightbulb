@@ -172,7 +172,7 @@ async def initial_question(ws: str, task: dict):
     # This Task was already admitted. Its lifetime follows canonical Task/Question authority,
     # not the notes-request TTL or whether FUTURE automatic follow-ups are enabled.
     if (
-        ref.principal_user_id not in await questions._members(ws)
+        ref.principal_user_id != ws  # the tenant is one person
         or not await tasks_access.can_view(task, ref.principal_user_id)
         or not await messaging.still_opens_room(ws, ref.principal_user_id, room_id)
     ):

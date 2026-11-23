@@ -106,7 +106,7 @@ async def test_clarification_keeps_original_source_bounded_and_inviter_policy(wo
     assert "Next occurrence" not in brief and "original-transcript" in brief
     assert ask["kind"] == "question" and ask["attempt"] is None and ask["run_id"] is None and ask["blocking"]
     task = {"ownerUserId": "original-user", "origin": "meeting", "confirmAll": True}
-    answerers, rule, base = await questions.answerers("original-user", task, ask["kind"], ask["subkind"])
+    answerers, rule, base = await questions.answerers("original-user", task, ask["subkind"])
     assert answerers == ["original-user"]
 
 

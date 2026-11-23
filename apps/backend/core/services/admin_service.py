@@ -151,13 +151,11 @@ async def get_overview(user_id: str) -> dict:
     now = datetime.now(timezone.utc)
     period = f"{now.year}-{now.month:02d}"
 
-    owner_id = user_id
-
     clerk, container, billing, usage = await asyncio.gather(
         _with_timeout(clerk_admin.get_user(user_id), "clerk"),
-        _with_timeout(container_repo.get_by_owner_id(owner_id), "ddb_containers"),
-        _with_timeout(billing_repo.get_by_owner_id(owner_id), "ddb_billing"),
-        _with_timeout(usage_repo.get_period_usage(owner_id, period), "ddb_usage"),
+        _with_timeout(container_repo.get_by_owner_id(user_id), "ddb_containers"),
+        _with_timeout(billing_repo.get_by_owner_id(user_id), "ddb_billing"),
+        _with_timeout(usage_repo.get_period_usage(user_id, period), "ddb_usage"),
     )
 
     return {
@@ -311,27 +309,26 @@ async def get_provisioning(user_id: str) -> dict:
     The ``paperclip``/``sfn_execution`` fields keep the raw sentinel on a failed
     read, same convention as ``container``.
     """
-    owner_id = user_id
 
-    container_raw = await _with_timeout(container_repo.get_by_owner_id(owner_id), "ddb_containers")
+    container_raw = await _with_timeout(container_repo.get_by_owner_id(user_id), "ddb_containers")
     container_read_failed = _read_failed(container_raw, label="ddb_containers")
     container = None if container_read_failed else container_raw
 
     status_contract, paperclip_row, gate = await asyncio.gather(
-        _with_timeout(compute_status(owner_id, container=container), "readiness_status"),
+        _with_timeout(compute_status(user_id, container=container), "readiness_status"),
         _with_timeout(
-            _workspace_repo().resolve_owner_row(owner_id, include_inactive=True),
+            _workspace_repo().resolve_owner_row(user_id, include_inactive=True),
             "ddb_paperclip",
         ),
-        _with_timeout(probe_provision_gate(owner_id=owner_id), "provision_gate"),
+        _with_timeout(probe_provision_gate(owner_id=user_id), "provision_gate"),
     )
     paperclip_read_failed = _read_failed(paperclip_row, label="ddb_paperclip")
 
-    sfn = await _with_timeout(running_execution(owner_id), "sfn_execution")
+    sfn = await _with_timeout(running_execution(user_id), "sfn_execution")
     sfn_read_failed = _read_failed(sfn, label="sfn_execution")
 
     return {
-        "owner_id": owner_id,
+        "owner_id": user_id,
         "status_contract": status_contract,
         "container": container_raw if container_read_failed else _narrow_container(container),
         "paperclip": paperclip_row if paperclip_read_failed else _narrow_paperclip(paperclip_row),
@@ -353,9 +350,8 @@ async def list_user_agents(user_id: str, *, cursor: str | None = None, limit: in
     render an admin page. Those owners are answered from ``runtime_rpc.agentcore_agents_list``
     instead — the Paperclip roster the backend already owns.
     """
-    owner_id = user_id
 
-    container_row = await container_repo.get_by_owner_id(owner_id)
+    container_row = await container_repo.get_by_owner_id(user_id)
     if not container_row or container_row.get("status") != "running":
         return {
             "agents": [],
@@ -369,7 +365,7 @@ async def list_user_agents(user_id: str, *, cursor: str | None = None, limit: in
     # the live app -- with zero runtime invokes. `cursor`/`limit` stay on the signature for
     # forward compatibility; the listing is not paginated.
     _ = (cursor, limit)
-    listing = await runtime_rpc.agentcore_agents_list(owner_id)
+    listing = await runtime_rpc.agentcore_agents_list(user_id)
     return {
         "agents": listing.get("agents", []),
         "cursor": None,
@@ -385,16 +381,15 @@ async def get_agent_detail(user_id: str, agent_id: str) -> dict:
     gateway RPCs it replaced.
 
     """
-    owner_id = user_id
 
-    container_row = await container_repo.get_by_owner_id(owner_id)
+    container_row = await container_repo.get_by_owner_id(user_id)
     if not container_row or container_row.get("status") != "running":
         return {
             "error": "container_not_running",
             "container_status": (container_row or {}).get("status", "none"),
         }
 
-    return await _get_agentcore_agent_detail(owner_id, agent_id)
+    return await _get_agentcore_agent_detail(user_id, agent_id)
 
 
 async def _get_agentcore_agent_detail(owner_id: str, agent_id: str) -> dict:

@@ -8,7 +8,7 @@
 import { useState, type ReactElement } from "react";
 import { automationStatusLine, nextRunWords, useAutomation, type AutomationView } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
-import { budgetLine, scheduleWords, useAutomationActions, useAutomationSource, useCanDecide, useCanEdit, useDeliveryWords, useSpecialistLabel, viewerTimeZone, waitingWords } from "./automations";
+import { budgetLine, scheduleWords, useAutomationActions, useAutomationSource, useCanDecide, useCanEdit, useDeliveryWords, useSpecialistLabel, viewerTimeZone } from "./automations";
 
 export function AutomationConfirmCard({ automationId, viewerTz = viewerTimeZone() }: { automationId: string; viewerTz?: string }): ReactElement {
   const { data: a, error, mutate } = useAutomation(useAutomationSource(), automationId);
@@ -52,15 +52,15 @@ export function AutomationConfirmCard({ automationId, viewerTz = viewerTimeZone(
     {next && <p className="text-ui text-muted-foreground">Next: {next}</p>}
     {/* Only On is green; Paused is a state, not a success. */}
     {a.status !== "draft" && <p className={`mt-1 text-ui ${a.status === "active" ? "text-ok" : "text-muted-foreground"}`}>{automationStatusLine(a) ?? "On"}</p>}
-    {/* The server's rules (routers/automations.py): Turn on is an activate, also from paused (room → admin only);
-        Not now is an edit (admin or owner) and only drops a draft. */}
+    {/* The server's rules (routers/automations.py): Turn on is an activate, also from paused;
+        Not now is an edit and only drops a draft. */}
     {a.status !== "active" && (canDecide(a) || (a.status === "draft" && canEdit(a))
       ? <div className="mt-2 flex items-center gap-2">
         {canDecide(a) ? <Button type="button" size="sm" disabled={pending} onClick={() => void run("on")}>Turn on</Button>
-          : <span className="text-ui text-muted-foreground">{waitingWords(a)}</span>}
+          : <span className="text-ui text-muted-foreground">Waiting on its owner</span>}
         {a.status === "draft" && canEdit(a) && <Button type="button" size="sm" variant="ghost" disabled={pending} onClick={() => void run("off")}>Not now</Button>}
       </div>
-      : <p className="mt-1 text-ui text-muted-foreground">{waitingWords(a)}</p>)}
+      : <p className="mt-1 text-ui text-muted-foreground">Waiting on its owner</p>)}
     {note && <p role="alert" className="mt-1 text-ui text-err">{note}</p>}
   </section>;
 }

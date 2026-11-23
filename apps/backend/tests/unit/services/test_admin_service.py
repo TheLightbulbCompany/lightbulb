@@ -557,7 +557,6 @@ async def test_get_provisioning_gate_payload_shape():
         action_label="Manage subscription",
         action_href="/settings/billing",
         action_admin_only=True,
-        owner_role="admin",
     )
 
     with (

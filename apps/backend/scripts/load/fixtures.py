@@ -18,7 +18,6 @@ Never run it without the owner's go for that run.
 from __future__ import annotations
 
 import argparse
-import base64
 import json
 import os
 import re
@@ -76,16 +75,6 @@ def is_ready(status: dict, rooms: list[dict], general_members: list[dict] | None
     if not any((r.get("name") or "").lower() == "general" for r in rooms):
         return False
     return sum(m.get("kind") == "agent" for m in general_members or []) >= STARTER_AGENTS
-
-
-def jwt_org(token: str) -> str | None:
-    """The active org a Clerk session JWT carries (v2 ``o.id``, v1 ``org_id``). Unverified: a preflight only."""
-    try:
-        payload = token.split(".")[1]
-        claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
-    except (IndexError, ValueError):
-        return None
-    return (claims.get("o") or {}).get("id") or claims.get("org_id")
 
 
 def teardown_steps(org: dict, members: list[dict]) -> list[tuple[str, str]]:
@@ -198,12 +187,6 @@ def _api(clerk: Clerk, user_id: str, org_id: str, ttl: int = 3600) -> Api:
     return Api(BapiSession(clerk, user_id, org_id, ttl))
 
 
-def _check_org_claim(api: Api, org_id: str) -> None:
-    got = jwt_org(api.s.token())
-    if got != org_id:
-        raise SystemExit(f"refusing: a fixture JWT carries org {got!r}, expected {org_id}")
-
-
 def setup(args) -> int:
     layout = plan(args.orgs, args.users_per_org)
     total = args.orgs * args.users_per_org
@@ -231,8 +214,6 @@ def setup(args) -> int:
         print(f"{org['name']} = {row['id']} ({len(ids)} users)")
     ttl = min(TOKEN_TTL_MAX, args.ready_timeout + 600)  # one JWT outlives the whole readiness wait
     pending = {o["id"]: _api(clerk, o["creator"], o["id"], ttl) for o in orgs}
-    for org_id, api in pending.items():
-        _check_org_claim(api, org_id)
     deadline = time.monotonic() + args.ready_timeout
     while pending:
         for org_id, api in list(pending.items()):
@@ -303,8 +284,6 @@ def run(args) -> int:
                     raise SystemExit(f"{email} does not exist: run setup first")
                 session = BapiSession(clerk, user["id"], row["id"], args.ttl)
                 api_jwt = session.token()
-                if jwt_org(api_jwt) != row["id"]:
-                    raise SystemExit(f"refusing: a fixture JWT carries org {jwt_org(api_jwt)!r}, expected {row['id']}")
                 users.append(
                     {
                         "userId": user["id"],

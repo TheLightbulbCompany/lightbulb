@@ -213,3 +213,28 @@ async def test_my_bookings_cross_account(client, router_seat, dm):
     assert _pin(client, call, "4821") == {"ok": False}
     assert (await messaging_repo.get_room(call["callId"]))["call"]["ownerMode"] is False
     dm.assert_not_awaited()
+
+
+async def test_an_engine_refusal_opening_the_dm_is_a_refused_pin(client, router_seat):
+    from core.engine.contract import EngineError
+
+    await _set()
+    call = await _start(client)
+    refused = AsyncMock(side_effect=EngineError("refused", 403, {"code": "refused"}))
+    with patch.object(voice_phone.engine, "open_conversation", refused):
+        assert _pin(client, call, "4821") == {"ok": False}
+    assert (await messaging_repo.get_room(call["callId"]))["call"]["ownerMode"] is False
+
+
+async def test_an_engine_refusal_opening_the_call_room_is_the_doors_own_status(client):
+    from core.engine.contract import EngineError
+
+    await voice_phone.put_line(vp.NUMBER, vp.LINE)
+    refused = AsyncMock(side_effect=EngineError("conflict", 409, {"code": "conflict"}))
+    with patch.object(voice_phone.engine, "open_conversation", refused):
+        r = client.post(
+            "/api/v1/internal/voice/calls",
+            json={"calledNumber": vp.NUMBER, "callerNumber": MOBILE, "livekitRoom": "phone-dev-_x_2", "verstat": vp.A},
+            headers=W,
+        )
+    assert r.status_code == 409 and r.json()["detail"] == {"code": "conflict"}

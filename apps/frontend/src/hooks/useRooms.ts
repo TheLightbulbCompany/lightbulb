@@ -38,7 +38,6 @@ export function useRooms(initialAgentId?: string | null, subscribeToRoom = true,
   }, [roomVisible]);
   const platform = useMemo<RoomsPlatform>(() => ({
     userId: isLoaded ? userId ?? null : null,
-    orgId: null, // the account is the signed-in person: the scope is the user id alone
     live,
     isVisible,
     onVisibilityChange,

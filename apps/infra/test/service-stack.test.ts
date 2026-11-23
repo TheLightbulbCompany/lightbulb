@@ -734,7 +734,6 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
       }),
     });
   });
-  });
 });
 
 describe("ServiceStack — openclaw-work consumer Lambda", () => {

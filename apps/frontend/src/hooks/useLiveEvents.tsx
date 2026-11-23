@@ -80,7 +80,7 @@ export function LiveEventsProvider({ children, preloadRooms = false }: { childre
   // The room list gates "Loading chats…". Start it with this provider's first reads instead of
   // when the workspace mounts; useRooms picks up the in-flight request under the same key.
   useEffect(() => {
-    if (preloadRooms && httpReady && userId) void preload(roomsListKey(userId, null), () => messaging.listRooms()).catch(() => undefined);
+    if (preloadRooms && httpReady && userId) void preload(roomsListKey(userId), () => messaging.listRooms()).catch(() => undefined);
   }, [preloadRooms, httpReady, userId, messaging]);
   const { data: liveConfig, error: configError, mutate: refreshConfig } = useSWR(
     httpReady ? ["messaging-live-config", userId, ownerScope] : null,

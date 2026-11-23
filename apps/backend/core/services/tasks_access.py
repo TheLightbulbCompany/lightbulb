@@ -19,14 +19,9 @@ from core.services import questions
 _log = logging.getLogger(__name__)
 
 
-async def _is_workspace_member(ws: str, user_id: str) -> bool:
-    return ws == user_id
-
-
-async def can_view(task: dict, user_id: str, *, member: bool = False) -> bool:
+async def can_view(task: dict, user_id: str) -> bool:
     """DM ⇒ requester; room ⇒ current members of the home room; workspace ⇒ every member; plus anyone in
-    `audience.userIds` (Lane Q adds a Question's answerers there when it opens, contracts §5). `member`: the caller
-    already vouches that `user_id` is the workspace's member (an engine operation's member principal)."""
+    `audience.userIds` (Lane Q adds a Question's answerers there when it opens, contracts §5)."""
     if not user_id:
         return False
     audience = task.get("audience") or {}
@@ -36,7 +31,7 @@ async def can_view(task: dict, user_id: str, *, member: bool = False) -> bool:
     if kind == "room" and audience.get("roomId"):
         return await messaging_repo.get_member(audience["roomId"], "human", user_id) is not None
     if kind == "workspace":
-        return member or await _is_workspace_member(task["pk"].removeprefix("WS#"), user_id)
+        return task["pk"].removeprefix("WS#") == user_id
     return False
 
 

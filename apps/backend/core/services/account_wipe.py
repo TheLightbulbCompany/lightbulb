@@ -748,7 +748,7 @@ async def wipe_account(owner_id: str, *, actor_admin_id: str, clerk_user_deleted
     # tree or access point left) -> delete the containers row (part of spec #11) -> reap the
     # owner's Bedrock footprint. One WipeStep stands in for spec
     # rows #3, #4, #5 and the containers-row slice of #11.
-    # Runs with or without a containers row, like the org wipe: the seam's row-independent cleanups
+    # Runs with or without a containers row: the seam's row-independent cleanups
     # (S3 profile prefix, browser state, Bedrock reap, workspace memory) are keyed by owner id alone and
     # idempotent, and a re-run after a failure late in the seam finds the row already deleted. A missing
     # row skips only what needs it (the runtime session and its row-named handles).

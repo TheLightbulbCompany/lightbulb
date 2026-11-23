@@ -9,7 +9,7 @@ from moto import mock_aws
 
 from core import dynamodb
 from core.repositories.workspace_repo import WorkspaceRepo
-from core.services import agent_registry, workspace_provisioning
+from core.services import agent_registry
 from core.services.workspace_provisioning import STARTER_ROLE_KEYS, provision_org
 from tests.unit.repositories.test_workspace_repo import create_companies_table
 from tests.unit.super_agent.registry.conftest import _create_tasks_table
@@ -78,13 +78,6 @@ async def test_seed_failure_marks_failed(monkeypatch):
         await provision_org(ORG, provisioner="user_1")
     ws = await _repo().get_workspace(ORG)
     assert ws.status == "failed" and "down" in ws.last_error
-
-
-async def test_disable_workspace_sets_purge_timer():
-    await provision_org(ORG, provisioner="user_1")
-    await workspace_provisioning.disable_workspace(ORG)
-    ws = await _repo().get_workspace(ORG)
-    assert ws.status == "disabled" and ws.scheduled_purge_at is not None
 
 
 @pytest.fixture

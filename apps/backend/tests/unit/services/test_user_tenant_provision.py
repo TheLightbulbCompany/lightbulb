@@ -68,7 +68,7 @@ async def test_user_owner_full_provision(ddb, calls, sfn):  # noqa: F811
     assert ws.status == "active" and ws.member_user_ids == {PERSON}
     assert await messaging_repo.get_member(default_room_id(PERSON), "human", PERSON) is not None
 
-    assert await evaluate_provision_gate(owner_id=PERSON, is_admin=True) is None
+    assert await evaluate_provision_gate(owner_id=PERSON) is None
 
 
 async def test_user_owner_container_status_creates_trial(ddb, calls, jwks):  # noqa: F811

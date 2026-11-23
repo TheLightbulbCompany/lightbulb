@@ -52,7 +52,7 @@ const onVisibilityChange = () => () => {};
 const isVisible = () => true;
 const uuid = () => "11111111-1111-4111-8111-111111111111";
 const platform = (over: Partial<RoomsPlatform> = {}): RoomsPlatform => ({
-  userId: "user-a", orgId: "org-a", live, isVisible, onVisibilityChange, uuid, ...over,
+  userId: "user-a", live, isVisible, onVisibilityChange, uuid, ...over,
 });
 const wrapper = ({ children }: { children: ReactNode }) =>
   <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>{children}</SWRConfig>;
@@ -85,7 +85,7 @@ describe("useRooms persistence", () => {
     messaging.listRooms.mockImplementation(never);
     messaging.listMessages.mockImplementation(never);
     messaging.getRoom.mockImplementation(never);
-    const persistence = fakeStore({ "user-a:org-a": snapshot(["room-1"]) });
+    const persistence = fakeStore({ "user-a": snapshot(["room-1"]) });
     const { result } = renderHook(() => useRooms(platform(), { autoSelect: false, persistence }), { wrapper });
     expect(result.current.rooms.map((room) => room.roomId)).toEqual(["room-1"]);
     expect(result.current.roomsLoading).toBe(false);
@@ -98,11 +98,10 @@ describe("useRooms persistence", () => {
   });
 
   it.each([
-    ["another user", { userId: "user-b" }, "user-b:org-a"],
-    ["another workspace", { orgId: "org-b" }, "user-a:org-b"],
+    ["another user", { userId: "user-b" }, "user-b"],
   ])("reads only its own scope, never %s's", (_label, over, scope) => {
     messaging.listRooms.mockImplementation(never);
-    const persistence = fakeStore({ "user-a:org-a": snapshot(["room-1"]) });
+    const persistence = fakeStore({ "user-a": snapshot(["room-1"]) });
     const { result } = renderHook(() => useRooms(platform(over), { autoSelect: false, persistence }), { wrapper });
     expect(persistence.load).toHaveBeenCalledTimes(1);
     expect(persistence.load).toHaveBeenCalledWith(scope);
@@ -110,14 +109,14 @@ describe("useRooms persistence", () => {
   });
 
   it("reads nothing while signed out", () => {
-    const persistence = fakeStore({ "user-a:org-a": snapshot(["room-1"]) });
+    const persistence = fakeStore({ "user-a": snapshot(["room-1"]) });
     renderHook(() => useRooms(platform({ userId: null }), { persistence }), { wrapper });
     expect(persistence.load).not.toHaveBeenCalled();
   });
 
   it("rewrites the snapshot when a fresh list drops a room", async () => {
     messaging.listRooms.mockResolvedValue(list("room-1"));
-    const persistence = fakeStore({ "user-a:org-a": snapshot(["room-1", "room-2"]) });
+    const persistence = fakeStore({ "user-a": snapshot(["room-1", "room-2"]) });
     const { result } = renderHook(() => useRooms(platform(), { autoSelect: false, persistence }), { wrapper });
     await waitFor(() => expect(result.current.rooms).toHaveLength(1));
     await waitFor(() => expect(savedIds(persistence)).toEqual({ rooms: ["room-1"], history: ["room-1"] }));
@@ -130,7 +129,7 @@ describe("useRooms persistence", () => {
     // first and failed when the list had landed (CI, 2026-10-08), because a list that has
     // landed keeps the removed room on screen until its refetch answers.
     messaging.listRooms.mockImplementation(never);
-    const persistence = fakeStore({ "user-a:org-a": snapshot(["room-1", "room-2"]) });
+    const persistence = fakeStore({ "user-a": snapshot(["room-1", "room-2"]) });
     const { result } = renderHook(() => useRooms(platform(), { autoSelect: false, persistence }), { wrapper });
     await waitFor(() => expect(persistence.save).toHaveBeenCalled());
     act(() => { for (const handler of handlers) handler({
@@ -144,7 +143,7 @@ describe("useRooms persistence", () => {
 
   it("drops a removed room from the painted snapshot list before the network answers", async () => {
     messaging.listRooms.mockImplementation(never);
-    const persistence = fakeStore({ "user-a:org-a": snapshot(["room-1", "room-2"]) });
+    const persistence = fakeStore({ "user-a": snapshot(["room-1", "room-2"]) });
     const { result } = renderHook(() => useRooms(platform(), { autoSelect: false, persistence }), { wrapper });
     expect(result.current.rooms).toHaveLength(2);
     act(() => { for (const handler of handlers) handler({

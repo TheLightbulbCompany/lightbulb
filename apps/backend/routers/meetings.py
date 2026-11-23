@@ -16,7 +16,7 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
 
 from core.billing import voice_billing
 from core.config import settings
-from core.engine import engine
+from core.engine import client as engine
 from core.engine.contract import LineIn, Principal
 from core.observability.metrics import put_metric
 from core.repositories import billing_repo

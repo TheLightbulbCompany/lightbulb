@@ -33,7 +33,6 @@ from routers import (
     agent_text,
     apple_iap,
     automations,
-    internal_automations,
     voice_meet,
     voice_owner,
     voice_phone,
@@ -51,7 +50,6 @@ from routers import (
     meet_bot,
     meetings,
     messaging,
-    messaging_internal,
     meta_webhook,
     metronome_webhook,
     oauth,
@@ -370,7 +368,6 @@ async def messaging_validation_error_handler(request, exc: RequestValidationErro
         (
             "/api/v1/messaging",
             "/api/v1/runtime",
-            "/api/v1/internal/messaging",
             # huddles too: a rejected turn would echo a live transcript.
             "/api/v1/internal/huddles",
             "/api/v1/internal/voice",
@@ -502,8 +499,7 @@ app.include_router(ses_inbound.router, prefix="/api/v1/webhooks", tags=["webhook
 
 # Browser/mobile canonical messaging and the guarded HTTP runtime bridge.
 app.include_router(messaging.router, prefix="/api/v1", tags=["messaging"])
-app.include_router(messaging_internal.router, prefix="/api/v1", tags=["messaging"])  # the runtime's callbacks
-# The engine service's calls back into Lightbulb Phone and Meetings (ENGINE_TRANSPORT=http; service bearer).
+# The engine service's calls back into Lightbulb Phone and Meetings (service bearer).
 app.include_router(engine_callbacks.router, prefix="/api/v1/internal/engine", tags=["engine"])
 app.include_router(runtime_rpc.router, prefix="/api/v1/runtime", tags=["messaging"])
 
@@ -555,14 +551,9 @@ app.include_router(connections.oauth_router, prefix="/api/v1", tags=["connection
 # pre-filled webhook-triggered routine) + the Stripe guided-paste whsec_
 # write. See routers/automations.py.
 app.include_router(automations.router, prefix="/api/v1", tags=["automations"])
-app.include_router(internal_automations.router, prefix="/api/v1", tags=["super-agent"])  # lane A: Router proposals
 app.include_router(voice_phone.router, prefix="/api/v1", tags=["voice"])  # the phone receptionist worker
 app.include_router(voice_meet.router, prefix="/api/v1", tags=["voice"])  # the meeting agent worker
 app.include_router(voice_owner.router, prefix="/api/v1", tags=["voice"])  # owner mode: Live in the DM is the Router
-
-from routers import runtime_internal  # noqa: E402
-
-app.include_router(runtime_internal.router, prefix="/api/v1/internal/runtime", tags=["super-agent"])
 
 # Workspace file browser (the agent's S3 Hermes profile)
 app.include_router(workspace_files.router, prefix="/api/v1/container", tags=["container"])

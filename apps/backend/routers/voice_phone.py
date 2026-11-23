@@ -35,7 +35,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from core.dynamodb import get_item, messaging_table, owner_pk, run_in_thread, utc_now_iso
-from core.engine import engine
+from core.engine import client as engine
 from core.engine.contract import EngineError, LineIn, OpenIn, Principal
 from core.engine.contract import QuestionRef as AnswerRef, StartIn as TaskIn
 from core.billing import voice_billing, voice_plan

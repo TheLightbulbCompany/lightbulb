@@ -28,11 +28,9 @@ def _get_worker():
         from core.services.openclaw_work import OpenClawWorkWorker
         from core.temporal.client import connect_and_set
 
-        if settings.ENGINE_TRANSPORT == "http":  # admission asks the products through core.engine.hooks
-            from core.engine import http_hooks as engine_hooks
-        else:
-            from core.voice import engine_hooks
-        engine_hooks.register()
+        from core.engine import http_hooks  # admission asks the products through core.engine.hooks
+
+        http_hooks.register()
 
         # admission signals the Router (bounded; a failed connect makes admits retry)
         _loop.run_until_complete(connect_and_set())

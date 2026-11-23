@@ -1,4 +1,4 @@
-"""The engine's HTTP wire, both directions (`settings.ENGINE_TRANSPORT == "http"`): products to the engine service
+"""The engine's HTTP wire, both directions: products to the engine service
 (`core.engine.client` -> `routers/engine_api.py`) and the engine back to the products (`core.engine.http_hooks` ->
 `routers/engine_callbacks.py`).
 

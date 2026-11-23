@@ -436,12 +436,10 @@ async def test_the_meet_room_closes_even_when_recall_does_not_answer():
 
 @pytest.mark.asyncio
 async def test_wipe_runs_the_engine_delete_in_process_over_http_transport(world, monkeypatch):
-    """With ENGINE_TRANSPORT=http the wipe still deletes the tenant in this process (`core.engine.api`), never over
-    the engine service's DELETE: that call can outlast the internal ALB's 300 s idle timeout and come back a 504."""
-    from core.config import settings
+    """The wipe deletes the tenant in this process (`core.engine.api`), never over the engine service's DELETE: that
+    call can outlast the internal ALB's 300 s idle timeout and come back a 504."""
     from core.engine import client
 
-    monkeypatch.setattr(settings, "ENGINE_TRANSPORT", "http")
     over_http = AsyncMock(side_effect=AssertionError("the wipe sent the tenant delete over HTTP"))
     monkeypatch.setattr(client, "delete_tenant", over_http)
     detail = await account_wipe.wipe_engine_state(A)

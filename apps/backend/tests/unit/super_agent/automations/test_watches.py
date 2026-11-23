@@ -469,7 +469,7 @@ def test_watch_id_is_deterministic():
 
 @pytest.fixture
 def api(monkeypatch):
-    from main import app
+    from engine_main import app
 
     updates: list[tuple] = []
     signals: list[tuple] = []

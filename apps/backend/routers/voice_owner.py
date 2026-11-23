@@ -18,7 +18,7 @@ from pydantic import AwareDatetime, BaseModel, Field
 
 from core.billing import voice_billing
 from core.dynamodb import utc_now_iso
-from core.engine import engine
+from core.engine import client as engine
 from core.engine.contract import LineIn, OpenIn, Principal
 from core.engine.contract import QuestionRef as AnswerRef
 from core.voice import store

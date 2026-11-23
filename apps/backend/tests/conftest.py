@@ -88,12 +88,10 @@ def _engine_hooks():
 
 @pytest.fixture(autouse=True)
 def _engine_over_http(monkeypatch):
-    """Run with ENGINE_TRANSPORT=http: products reach the engine through `engine_main.app` in this process, over the
-    wire's bearer and encoding (`core.engine.client`), so a product suite exercises the HTTP contract."""
+    """Products reach the engine through `engine_main.app` in this process, over the wire's bearer and encoding
+    (`core.engine.client`), so a product suite exercises the HTTP contract."""
     from core.config import settings
 
-    if settings.ENGINE_TRANSPORT != "http":
-        return
     import engine_main
     from core.engine import transport
     from core.voice import engine_hooks
@@ -312,8 +310,13 @@ def mock_jwks() -> dict:
 
 
 @pytest.fixture
-def app():
-    """Create a fresh FastAPI app instance for testing."""
+def app(request):
+    """The backend's app; a module that tests the runtime's callback routes sets `ENGINE_APP = True` for the engine
+    service's app, which alone mounts them."""
+    if getattr(request.module, "ENGINE_APP", False):
+        from engine_main import app as engine_app
+
+        return engine_app
     from main import app as fastapi_app
 
     return fastapi_app

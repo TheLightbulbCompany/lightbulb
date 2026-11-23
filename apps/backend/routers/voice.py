@@ -29,7 +29,7 @@ from boto3.dynamodb.conditions import Key
 from core.auth import AuthContext, get_current_user, is_org_owner_id, require_org_admin, resolve_owner_id
 from core.dynamodb import get_item, messaging_table, owner_pk, query_all, run_in_thread, utc_now_iso
 from core.billing import voice_billing, voice_plan
-from core.engine import engine
+from core.engine import client as engine
 from core.engine.contract import ConversationOut
 from core.repositories import billing_repo, container_repo
 from core.services import agent_registry

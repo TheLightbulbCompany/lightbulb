@@ -1,6 +1,5 @@
 """The engine's three calls into the products over HTTP (`core.engine.hooks`): each POSTs to the product's callback
-routes at `settings.PRODUCT_CALLBACK_URL` (`routers/engine_callbacks.py`). The engine service always registers these;
-the Temporal worker and the work Lambda do when `settings.ENGINE_TRANSPORT == "http"`.
+routes at `settings.PRODUCT_CALLBACK_URL` (`routers/engine_callbacks.py`). The engine service, the Temporal worker and the work Lambda always register these.
 
 A failure raises, as in process: inside an activity it fails the activity (retried; product handlers are idempotent
 on the ids they get), never an empty answer. A call goes again only when it was never sent (`transport.send`): a tool

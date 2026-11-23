@@ -5,7 +5,6 @@ Decision (owner, 2026-10-23):
 - First, get it verified for non-restricted scopes only. That needs no CASA.
 - Start CASA Tier 2 in parallel, then add the restricted scopes to the same app.
 
-Background is in `docs/research/2026-10-23-integrations-mac-identity-audit.md`, Part 3.
 Delete this file when phase 3 ships.
 
 ## Scopes

@@ -8,7 +8,13 @@ from fastapi import HTTPException
 from core.auth import AuthContext
 from routers import billing
 
-LIVE = {"owner_id": "org_1", "stripe_customer_id": "cus_1", "stripe_subscription_status": "active"}
+LIVE = {"owner_id": "user_admin", "stripe_customer_id": "cus_1", "stripe_subscription_status": "active"}
+
+
+@pytest.fixture(autouse=True)
+def no_trial_row(monkeypatch):
+    """The trial row's create-if-absent is the billing store's; these tests mock the billing reads."""
+    monkeypatch.setattr(billing, "_ensure_person_trial", AsyncMock())
 
 
 @pytest.fixture(autouse=True)
@@ -21,7 +27,7 @@ def has_front_desk_agent(monkeypatch):
 
 
 def _admin():
-    return AuthContext(user_id="user_admin", org_id="org_1", org_role="org:admin", email="admin@example.com")
+    return AuthContext(user_id="user_admin", email="admin@example.com", human_session=True)
 
 
 @pytest.mark.asyncio
@@ -38,14 +44,16 @@ async def test_post_on_live_subscription_adds(outcome, monkeypatch):
         result = await billing.create_front_desk(billing.FrontDeskRequest(), auth=_admin())
 
     assert result == {"status": outcome}
-    add.assert_awaited_once_with("org_1")
+    add.assert_awaited_once_with("user_admin")
     checkout.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_post_on_trial_returns_checkout_url(monkeypatch):
     monkeypatch.setattr(
-        billing, "_get_billing_account", AsyncMock(return_value={"owner_id": "org_1", "stripe_customer_id": "cus_1"})
+        billing,
+        "_get_billing_account",
+        AsyncMock(return_value={"owner_id": "user_admin", "stripe_customer_id": "cus_1"}),
     )
     add = AsyncMock()
     checkout = AsyncMock(return_value={"checkout_url": "https://checkout.test/cs_1"})
@@ -57,7 +65,7 @@ async def test_post_on_trial_returns_checkout_url(monkeypatch):
 
     assert result == {"status": "checkout", "url": "https://checkout.test/cs_1"}
     checkout.assert_awaited_once_with(
-        owner_id="org_1", clerk_user_id="user_admin", plan="workspace", return_to="app", front_desk=True
+        owner_id="user_admin", clerk_user_id="user_admin", plan="workspace", return_to="app", front_desk=True
     )
     add.assert_not_awaited()
 
@@ -85,14 +93,6 @@ async def test_post_apple_is_409(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_post_member_is_403():
-    member = AuthContext(user_id="user_member", org_id="org_1", org_role="org:member")
-    with pytest.raises(HTTPException) as exc:
-        await billing.create_front_desk(billing.FrontDeskRequest(), auth=member)
-    assert exc.value.status_code == 403
-
-
-@pytest.mark.asyncio
 async def test_post_without_customer_operations_is_409(monkeypatch, has_front_desk_agent):
     has_front_desk_agent.return_value = MagicMock(starter_agent_ids={"ceo": "agent_ceo"})
     monkeypatch.setattr(billing, "_get_billing_account", AsyncMock(return_value=LIVE))
@@ -116,7 +116,7 @@ async def test_post_on_trial_passes_the_real_plan_check(monkeypatch):
     """The door's plan name must be one create_workspace_checkout accepts (not plan_retired)."""
     from core.services import billing_service
 
-    row = {"owner_id": "org_1", "stripe_customer_id": "cus_1", "subscription_status": "trial_local"}
+    row = {"owner_id": "user_admin", "stripe_customer_id": "cus_1", "subscription_status": "trial_local"}
     monkeypatch.setattr(billing, "_get_billing_account", AsyncMock(return_value=row))
     monkeypatch.setattr(billing_service.settings, "STRIPE_WORKSPACE_PRICE_ID", "price_workspace")
     monkeypatch.setattr(billing_service.settings, "STRIPE_FRONT_DESK_PRICE_ID", "price_fd")
@@ -151,7 +151,7 @@ async def test_already_triggers_ensure_line(monkeypatch):
         patch("core.services.text_lines.ensure_line", new=ensure),
     ):
         assert await billing.create_front_desk(billing.FrontDeskRequest(), auth=_admin()) == {"status": "already"}
-        ensure.assert_awaited_once_with("org_1")
+        ensure.assert_awaited_once_with("user_admin")
         for err in (billing_service.BillingServiceError("line_provision_failed"), photon.PhotonError(500, "x")):
             ensure.side_effect = err
             with pytest.raises(HTTPException) as e:

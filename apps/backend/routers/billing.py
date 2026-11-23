@@ -12,10 +12,8 @@ from pydantic import BaseModel, Field
 
 from core.auth import (
     AuthContext,
-    is_org_owner_id,
     get_current_user,
     resolve_owner_id,
-    require_org_admin,
 )
 from core.config import settings
 from core.billing import voice_billing, voice_plan, voice_plan_checkout
@@ -71,7 +69,6 @@ async def get_voice_plan(auth: AuthContext = Depends(get_current_user)):
 @router.post("/voice-plan/checkout")
 async def checkout_voice_plan(body: VoicePlanEnrollment, auth: AuthContext = Depends(get_current_user)):
     """Accept the plan and open Stripe Checkout for the $250/month subscription (promotion codes allowed)."""
-    require_org_admin(auth)
     if body.expectedOwnerId != resolve_owner_id(auth):
         raise HTTPException(status_code=409, detail={"code": "workspace_changed"})
     try:
@@ -89,7 +86,6 @@ async def checkout_voice_plan(body: VoicePlanEnrollment, auth: AuthContext = Dep
 async def cancel_voice_plan(
     auth: AuthContext = Depends(get_current_user), expectedOwnerId: str = Query(min_length=1, max_length=128)
 ):
-    require_org_admin(auth)
     if expectedOwnerId != resolve_owner_id(auth):
         raise HTTPException(status_code=409, detail={"code": "workspace_changed"})
     try:
@@ -107,13 +103,11 @@ async def _get_billing_account(auth: AuthContext) -> dict | None:
 
 
 async def _ensure_person_trial(auth: AuthContext) -> None:
-    """Before a checkout, a person's tenant gets its trial row (create-if-absent, unarmed, as the provisioning doors
-    write it), so a Stripe customer joins the trial instead of replacing it. An org's row comes from its webhook."""
-    owner_id = resolve_owner_id(auth)
-    if not is_org_owner_id(owner_id):
-        from core.services.user_provision import _ensure_trial_row
+    """Before a checkout, the person's tenant gets its trial row (create-if-absent, unarmed, as the provisioning doors
+    write it), so a Stripe customer joins the trial instead of replacing it."""
+    from core.services.user_provision import _ensure_trial_row
 
-        await _ensure_trial_row(owner_id, actor_user_id=auth.user_id)
+    await _ensure_trial_row(resolve_owner_id(auth), actor_user_id=auth.user_id)
 
 
 # _resolve_owner_account was relocated to core/services/stripe_webhook_handlers.py
@@ -259,7 +253,6 @@ def _future_epoch(value) -> int | None:
 async def create_portal(
     auth: AuthContext = Depends(get_current_user),
 ):
-    require_org_admin(auth)
 
     account = await _get_billing_account(auth)
     if not account:
@@ -298,7 +291,6 @@ async def create_workspace_checkout(
     auth: AuthContext = Depends(get_current_user),
 ):
     """The only subscription Checkout entry point for an active workspace."""
-    require_org_admin(auth)
     owner_id = resolve_owner_id(auth)
     await _ensure_person_trial(auth)
     account = await _get_billing_account(auth)
@@ -309,7 +301,6 @@ async def create_workspace_checkout(
         try:
             await BillingService().create_customer_for_owner(
                 owner_id=owner_id,
-                owner_type="org" if is_org_owner_id(owner_id) else "personal",
                 email=auth.email,
             )
         except Exception as e:  # noqa: BLE001
@@ -349,7 +340,6 @@ async def create_front_desk(
     auth: AuthContext = Depends(get_current_user),
 ):
     """The line itself is provisioned by the Stripe webhook, never by this click."""
-    require_org_admin(auth)
     owner_id = resolve_owner_id(auth)
     await _ensure_person_trial(auth)
     account = await _get_billing_account(auth)
@@ -377,7 +367,6 @@ async def create_front_desk(
         try:
             await BillingService().create_customer_for_owner(
                 owner_id=owner_id,
-                owner_type="org" if is_org_owner_id(owner_id) else "personal",
                 email=auth.email,
             )
         except Exception as e:  # noqa: BLE001

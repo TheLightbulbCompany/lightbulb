@@ -24,11 +24,6 @@ POLICY = {"money_moves": True, "outreach": False, "publishing": True, "provision
 @pytest.fixture
 def ask_api(api, monkeypatch):
     monkeypatch.setattr(questions.billing_repo, "get_capability_policy", AsyncMock(return_value=dict(POLICY)))
-    monkeypatch.setattr(
-        questions.clerk_admin,
-        "list_organization_members",
-        AsyncMock(return_value=[{"user_id": "sam", "role": "org:member"}, {"user_id": "ada", "role": "org:admin"}]),
-    )
     monkeypatch.setattr(ri, "human_display_name", AsyncMock(side_effect=lambda u: u.title()))
     updates = []
 
@@ -86,15 +81,6 @@ async def test_same_ask_again_replays(ask_api):
     first = await ask_api.post(_url(WS), json=await _body(tid), headers=H)
     again = await ask_api.post(_url(WS), json=await _body(tid), headers=H)
     assert first.json() == again.json() and len(ask_api.updates) == 1
-
-
-async def test_approval_ask_goes_to_admins(ask_api):
-    tid = await _task()
-    await _running(tid)
-    options = [{"id": "allow_once", "label": "Allow once"}, {"id": "deny", "label": "Deny"}]
-    body = await _body(tid, "ask-2", kind="approval", subkind="purchase", options=options)
-    resp = await ask_api.post(_url(WS), json=body, headers=H)
-    assert resp.status_code == 200 and resp.json()["waitingLabel"] == "Waiting on Ada"
 
 
 async def test_internal_ask_stale_run_409(ask_api):

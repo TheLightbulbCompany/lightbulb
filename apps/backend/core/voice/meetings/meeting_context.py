@@ -18,7 +18,6 @@ from core.dynamodb import run_in_thread
 from core.engine import client as engine
 from core.engine.hooks import NotAuthorized  # the engine's refusal: raised there when `authorize` answers allow=False
 from core.voice import store
-from core.services import clerk_admin
 from core.voice.meetings import transcripts
 from core.services.service_token import _signing_key
 
@@ -117,11 +116,7 @@ async def _authorize(owner_id: str, trigger: dict, request: dict | None) -> dict
     member = next((m for m in room.members if m.get("kind") == "human" and m.get("id") == principal), None)
     if not member or member.get("role") != "owner":
         raise NotAuthorized("original_inviter_no_longer_authorized")
-    if owner_id.startswith("org_"):
-        members = await clerk_admin.list_organization_members(owner_id, strict=True)
-        if not any(m.get("user_id") == principal for m in members):
-            raise NotAuthorized("original_inviter_left_workspace")
-    elif owner_id != principal:
+    if owner_id != principal:
         raise NotAuthorized("not_workspace_owner")
     return request
 

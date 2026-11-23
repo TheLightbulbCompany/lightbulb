@@ -51,7 +51,7 @@ def dynamodb_table():
 @pytest.mark.asyncio
 async def test_set_plan_writes_and_reads_back(dynamodb_table):
     """set_plan persists the tier + updated_at, and get_by_owner_id reads it back."""
-    await billing_repo.create_if_not_exists("user_plan", "cus_plan", owner_type="personal")
+    await billing_repo.create_if_not_exists("user_plan", "cus_plan")
     await billing_repo.set_plan("user_plan", plan="ultra_pro", now_iso="2026-07-19T00:00:00Z")
 
     row = await billing_repo.get_by_owner_id("user_plan")
@@ -64,7 +64,7 @@ async def test_set_plan_writes_and_reads_back(dynamodb_table):
 @pytest.mark.asyncio
 async def test_set_plan_can_return_to_standard(dynamodb_table):
     """A tier downgrade is a plain re-set to "standard" over an ultra_pro row."""
-    await billing_repo.create_if_not_exists("user_dg", "cus_dg", owner_type="personal")
+    await billing_repo.create_if_not_exists("user_dg", "cus_dg")
     await billing_repo.set_plan("user_dg", plan="ultra_pro", now_iso="2026-07-19T00:00:00Z")
     await billing_repo.set_plan("user_dg", plan="standard", now_iso="2026-07-19T01:00:00Z")
 
@@ -88,7 +88,7 @@ async def test_set_plan_nonexistent_owner_raises(dynamodb_table):
 async def test_row_without_plan_key_defaults_to_standard(dynamodb_table):
     """An old row created before the plan field existed carries no `plan` key;
     the response construction defaults a missing value to "standard"."""
-    await billing_repo.create_if_not_exists("user_old", "cus_old", owner_type="personal")
+    await billing_repo.create_if_not_exists("user_old", "cus_old")
 
     row = await billing_repo.get_by_owner_id("user_old")
     assert "plan" not in row

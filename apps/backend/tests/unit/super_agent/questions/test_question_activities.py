@@ -14,15 +14,14 @@ from core.temporal import task_questions as tq
 
 from .conftest import TASK, WS
 
-SAM, ADA, PRIYA = "user_sam", "user_ada", "user_priya"
+SAM = ADA = WS  # the answerer is the tenant's one person
+PRIYA = "user_priya"  # another tenant's person: never an answerer
 POLICY = {"money_moves": True, "outreach": False, "publishing": True, "provisioning": True}
 
 
 @pytest.fixture
 def world(table, monkeypatch):
     monkeypatch.setattr(questions.billing_repo, "get_capability_policy", AsyncMock(return_value=dict(POLICY)))
-    members = [{"user_id": SAM, "role": "org:member"}, {"user_id": ADA, "role": "org:admin"}]
-    monkeypatch.setattr(questions.clerk_admin, "list_organization_members", AsyncMock(return_value=members))
     return table
 
 
@@ -51,13 +50,13 @@ async def test_open_questions_one_per_proposed_effect(world):
     )
     await effects_repo.put_effect(WS, _effect(call="c3", state="intent"))  # not waiting on anyone
     refs = await _run(tq.open_questions, WS, TASK)
-    assert [r.answerers for r in refs] == [[SAM], [ADA]]
+    assert [r.answerers for r in refs] == [[WS], [WS]]
     rows = {q["qid"]: q for q in await questions_repo.list_for_task(WS, TASK)}
     mail = rows[questions.qid_for(f"{TASK}:1:c1")]
     assert (mail["kind"], mail["subkind"], mail["title"]) == ("review", "send", "send 'Q3 invoice' to acme@example.com")
     assert [o["id"] for o in mail["options"]] == ["send", "allow_always", "request_changes"]
     assert mail["effectIdemKey"] == f"{TASK}:1:c1" and mail["preview"]["subject"] == "Q3 invoice"
-    assert (await tasks_repo.get_task(WS, TASK))["audience"]["userIds"] == [SAM, ADA]
+    assert (await tasks_repo.get_task(WS, TASK))["audience"]["userIds"] == [WS]
     assert len(await _run(tq.open_questions, WS, TASK)) == 2  # idempotent
     assert len(await questions_repo.list_for_task(WS, TASK)) == 2
 
@@ -78,41 +77,6 @@ async def test_open_questions_never_reopens_a_closed_one(world):
     [ref] = await _run(tq.open_questions, WS, TASK)
     await questions_repo.cancel_open(WS, TASK, by=PRIYA, reason="stopped")
     assert await _run(tq.open_questions, WS, TASK) == []
-
-
-async def test_open_questions_no_answerer(world, monkeypatch):
-    """Nobody can answer: the task says so where it was asked (never a silent stop), then NoAnswerer ends it."""
-    from core.services import task_conversation
-
-    monkeypatch.setattr(questions.clerk_admin, "list_organization_members", AsyncMock(return_value=[]))
-    posts = AsyncMock(return_value="m-1")
-    monkeypatch.setattr(task_conversation, "post_as_lightbulb", posts)
-    monkeypatch.setattr(task_conversation, "ensure_task_room", AsyncMock(return_value="task-room"))
-    await effects_repo.put_effect(WS, _effect(kind="purchase"))
-    with pytest.raises(ApplicationError) as err:
-        await _run(tq.open_questions, WS, TASK)
-    assert err.value.type == "NoAnswerer" and err.value.non_retryable
-    assert "Nobody in this workspace can approve this" in posts.await_args.kwargs["text"]
-
-
-@pytest.mark.parametrize("failure", ["raises", "hangs"])
-async def test_no_answerer_survives_a_failed_or_hung_post(world, monkeypatch, failure):
-    """The line is best-effort: a post that fails or hangs past its 10 s cap never replaces the NoAnswerer."""
-    from core.services import task_conversation
-
-    async def post(*a, **k):
-        if failure == "raises":
-            raise RuntimeError("messaging down")
-        await asyncio.sleep(3600)
-
-    monkeypatch.setattr(tq, "_NO_ANSWERER_POST_S", 0.05)
-    monkeypatch.setattr(questions.clerk_admin, "list_organization_members", AsyncMock(return_value=[]))
-    monkeypatch.setattr(task_conversation, "post_as_lightbulb", post)
-    monkeypatch.setattr(task_conversation, "ensure_task_room", AsyncMock(return_value="task-room"))
-    await effects_repo.put_effect(WS, _effect(kind="purchase"))
-    with pytest.raises(ApplicationError) as err:
-        await _run(tq.open_questions, WS, TASK)
-    assert err.value.type == "NoAnswerer"
 
 
 async def test_publish_without_an_app_id_asks_the_admins(world):
@@ -266,37 +230,11 @@ async def test_record_answer_refusals_are_typed(world):
     assert (await effects_repo.get_effect(WS, f"{TASK}:1:c1"))["state"] == "proposed"
 
 
-async def test_record_answer_rechecks_authority_at_answer_time(world, monkeypatch):
-    """Audit item 15: one rule (`can_answer_now`) at answer time, not the list frozen at open."""
-    await effects_repo.put_effect(WS, _effect())
-    [ref] = await _run(tq.open_questions, WS, TASK)
-    assert SAM in ref.answerers
-    # Outreach tightened to admins after the ask: the requester's seat is gone.
-    monkeypatch.setattr(
-        questions.billing_repo, "get_capability_policy", AsyncMock(return_value={**POLICY, "outreach": True})
-    )
-    with pytest.raises(ApplicationError) as err:
-        await _run(tq.record_answer, WS, TASK, tq.AnswerRef(ref.qid, "send", None, SAM, "c-1"))
-    assert err.value.type == "NotAnswerer"
-    assert (await questions_repo.get_question(WS, TASK, ref.qid))["state"] == "open"
-
-
 async def test_cancel_open_questions(world):
     await effects_repo.put_effect(WS, _effect())
     [ref] = await _run(tq.open_questions, WS, TASK)
     assert await _run(tq.cancel_open_questions, WS, TASK, PRIYA, "stopped") == [ref.qid]
     assert (await questions_repo.get_question(WS, TASK, ref.qid))["state"] == "cancelled"
-
-
-async def test_no_answerer_on_a_later_effect_writes_nothing(world, monkeypatch):
-    """Answerer lists are all computed before any row: a refusal on the 2nd effect leaves no 1st question open."""
-    await effects_repo.put_effect(WS, _effect())  # send → Sam
-    await effects_repo.put_effect(WS, _effect(call="c2", kind="purchase", operands={"item": "x"}))  # admins
-    monkeypatch.setattr(questions.clerk_admin, "list_organization_members", AsyncMock(return_value=[]))
-    with pytest.raises(ApplicationError):
-        await _run(tq.open_questions, WS, TASK)
-    assert await questions_repo.list_for_task(WS, TASK) == []
-    assert (await tasks_repo.get_task(WS, TASK))["audience"]["userIds"] == [SAM]  # nobody added
 
 
 async def test_reminder_says_answer_for_a_plain_question(world, relay):
@@ -422,20 +360,10 @@ async def test_relay_rechecks_retirement_after_room_creation(world, relay, monke
 async def test_retirement_during_delivery_suppresses_remaining_deliveries(world, relay, monkeypatch, stage, retire):
     from core.services import messaging, push_service, task_conversation
 
-    monkeypatch.setattr(
-        questions.clerk_admin,
-        "list_organization_members",
-        AsyncMock(
-            return_value=[
-                {"user_id": SAM, "role": "org:admin"},
-                {"user_id": ADA, "role": "org:admin"},
-            ]
-        ),
-    )
     await tasks_repo.subscribe(WS, TASK, "room:00000000-0000-0000-0000-0000000000aa:origin", created_by="router")
     await effects_repo.put_effect(WS, _effect(kind="purchase"))
     [ref] = await _run(tq.open_questions, WS, TASK)
-    assert len(ref.answerers) == 2
+    assert ref.answerers == [WS]
     entered, release = asyncio.Event(), asyncio.Event()
     posts, pushes = [], []
 

@@ -11,7 +11,6 @@ def test_build_owner_facts_trial_local():
     # A REAL trial_local row carries no provider_choice at all — the provider
     # resolves to the internal managed OpenRouter mode.
     facts = owner_facts.build_owner_facts("user_abc", {"subscription_status": "trial_local"})
-    assert facts["owner_kind"] == "personal"
     assert facts["subscription_status"] == "trial_local"
     assert "free" in facts["plan"].lower()
     assert facts["provider_choice"] == "openrouter_managed"
@@ -48,7 +47,6 @@ def test_build_owner_facts_paid_byo_org():
             "byo_provider": "anthropic",
         },
     )
-    assert facts["owner_kind"] == "org"
     assert facts["plan"] == "An older plan that is no longer sold (not the Lightbulb Phone plan)"
     assert facts["provider"] == "BYO Anthropic key"
 
@@ -313,25 +311,6 @@ def test_base_and_trial_are_labelled_as_what_they_are():
     assert base["plan"] == "An older plan that is no longer sold (not the Lightbulb Phone plan)"
     trial = owner_facts.build_owner_facts("org_a", {"subscription_status": "trial_local"})
     assert "DeepSeek" in trial["plan"] and "Bedrock" not in trial["plan"]
-
-
-@pytest.mark.asyncio
-async def test_owner_timezone_is_the_org_creators(monkeypatch):
-    from unittest.mock import AsyncMock
-
-    from core.repositories import user_repo
-    from core.services import clerk_admin
-
-    monkeypatch.setattr(clerk_admin, "get_organization", AsyncMock(return_value={"created_by": "user_owner"}))
-    get_tz = AsyncMock(return_value="Asia/Kolkata")
-    monkeypatch.setattr(user_repo, "get_timezone", get_tz, raising=False)
-    written = {}
-    _facts_env(monkeypatch, owner_facts, None, written)
-
-    await owner_facts.write_owner_facts("org_1")
-
-    get_tz.assert_awaited_once_with("user_owner")
-    assert json.loads(written["content"])["owner_timezone"] == "Asia/Kolkata"
 
 
 @pytest.mark.asyncio

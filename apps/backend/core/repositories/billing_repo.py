@@ -830,33 +830,6 @@ async def try_claim_checkout_slot(owner_id: str, *, ttl_seconds: int = 240) -> s
     return token
 
 
-async def clear_phantom_oauth_connector(owner_id: str, *, expected_user_id: str) -> bool:
-    """REMOVE a recorded connector ONLY if it still equals ``expected_user_id``.
-
-    Recovery half of the phantom-connector fix (see
-    ``oauth_service.maybe_clear_phantom_connector``): the caller has verified
-    via Clerk that the recorded id names no existing user, and CASes the
-    removal on that exact value — a concurrent legitimate claim (or any other
-    writer) changing the field first fails the condition instead of being
-    clobbered. Returns True when this call cleared it, False when the row or
-    the expected value was already gone.
-    """
-    table = _get_table()
-    try:
-        await run_in_thread(
-            table.update_item,
-            Key={"owner_id": owner_id},
-            UpdateExpression="REMOVE oauth_connector_user_id SET updated_at = :t",
-            ExpressionAttributeValues={":old": expected_user_id, ":t": utc_now_iso()},
-            ConditionExpression=("attribute_exists(owner_id) AND oauth_connector_user_id = :old"),
-        )
-    except ClientError as e:
-        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
-            return False
-        raise
-    return True
-
-
 async def release_checkout_slot(owner_id: str, *, token: str) -> None:
     """Release the checkout-slot claim when the request holding it finishes,
     so the next click doesn't wait out the TTL. No-row / stale-token is a
@@ -912,7 +885,6 @@ async def set_plan(owner_id: str, *, plan: str, now_iso: str) -> None:
 async def create_if_not_exists(
     owner_id: str,
     stripe_customer_id: str,
-    owner_type: str = "personal",
 ) -> dict:
     """Atomically create a billing account if one doesn't exist for this owner.
 
@@ -926,7 +898,6 @@ async def create_if_not_exists(
     now = utc_now_iso()
     item = {
         "owner_id": owner_id,
-        "owner_type": owner_type,
         "id": str(uuid.uuid4()),
         "stripe_customer_id": stripe_customer_id,
         "created_at": now,
@@ -948,7 +919,7 @@ async def create_if_not_exists(
 _TRIAL_LOCAL_DURATION_SECONDS = 30 * 24 * 60 * 60
 
 
-async def create_trial_local_if_absent(owner_id: str, owner_type: str, *, trial_end: int | None = None) -> bool:
+async def create_trial_local_if_absent(owner_id: str, *, trial_end: int | None = None) -> bool:
     """Atomically create a card-less local trial billing row if one doesn't
     exist for this owner.
 
@@ -967,7 +938,6 @@ async def create_trial_local_if_absent(owner_id: str, owner_type: str, *, trial_
     now = utc_now_iso()
     item = {
         "owner_id": owner_id,
-        "owner_type": owner_type,
         "subscription_status": "trial_local",
         "created_at": now,
         "updated_at": now,

@@ -13,7 +13,7 @@ from routers.teams import agents as agents_mod  # noqa: E402
 from core.auth import AuthContext, get_current_user  # noqa: E402
 
 AGENT = "a-ceo"
-KEY = f"{hermes_profiles.profile_prefix('org_1', AGENT)}{hermes_profiles.VOICE_NOTES_FILENAME}"
+KEY = f"{hermes_profiles.profile_prefix('user_1', AGENT)}{hermes_profiles.VOICE_NOTES_FILENAME}"
 
 
 @pytest.fixture
@@ -35,7 +35,7 @@ def client(monkeypatch, store):
     monkeypatch.setattr(agents_mod.voice_calls, "send_note_saved", AsyncMock())
     app = FastAPI()
     app.include_router(agents_mod.router)
-    app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id="user_1", org_id="org_1")
+    app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id="user_1", human_session=True)
     return TestClient(app)
 
 
@@ -59,7 +59,7 @@ def test_put_keeps_the_name_line_and_bumps_revision(client, store):
     assert any(k.endswith(".revision") for k in store)
     assert client.get(f"/agents/{AGENT}/voice-notes").json()["notes"] == "Be blunt."
     # C3: an open Live window hears that the note was saved, by whom.
-    agents_mod.voice_calls.send_note_saved.assert_awaited_once_with("org_1", AGENT, "Nova", "Be blunt.", "user_1")
+    agents_mod.voice_calls.send_note_saved.assert_awaited_once_with("user_1", AGENT, "Nova", "Be blunt.", "user_1")
 
 
 @pytest.mark.parametrize("method", ["get", "put"])

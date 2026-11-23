@@ -724,11 +724,11 @@ async def test_workspace_customer_does_not_reuse_another_workspaces_email_custom
     list_customers = MagicMock()
     monkeypatch.setattr(billing_service.stripe.Customer, "list", list_customers)
 
-    account = await service.create_customer_for_owner(owner_id="org_2", owner_type="org", email="owner@example.com")
+    account = await service.create_customer_for_owner(owner_id="org_2", email="owner@example.com")
 
     list_customers.assert_not_called()
     create.assert_called_once_with(
-        metadata={"workspace_id": "org_2", "owner_id": "org_2", "owner_type": "org"},
+        metadata={"workspace_id": "org_2", "owner_id": "org_2"},
         idempotency_key="workspace-customer:v2:org_2",
     )
     assert account["stripe_customer_id"] == "cus_org_2"
@@ -762,7 +762,7 @@ async def test_workspace_customer_backfill_race_keeps_the_existing_row_winner(mo
     delete = MagicMock()
     monkeypatch.setattr(billing_service.stripe.Customer, "delete", delete)
 
-    account = await service.create_customer_for_owner(owner_id="org_2", owner_type="org", email="owner@example.com")
+    account = await service.create_customer_for_owner(owner_id="org_2", email="owner@example.com")
 
     assert account == winner
     delete.assert_called_once_with("cus_loser", idempotency_key="delete_customer:cus_loser")

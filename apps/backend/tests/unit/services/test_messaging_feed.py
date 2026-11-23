@@ -71,12 +71,6 @@ def workspace(table, monkeypatch):  # noqa: F811
     monkeypatch.setattr(messaging, "load_agent_roster", lambda _owner: asyncio.sleep(0, result=roster))
     monkeypatch.setattr(messaging, "human_display_name", lambda user: asyncio.sleep(0, result=f"Name {user}"))
     monkeypatch.setattr(messaging, "_validate_human_in_owner", AsyncMock())
-    monkeypatch.setattr(
-        messaging.clerk_admin,
-        "list_organization_members",
-        AsyncMock(return_value=[{"user_id": "user_A"}, {"user_id": "user_B"}]),
-    )
-    monkeypatch.setattr(messaging.clerk_admin, "get_organization", AsyncMock(return_value={"created_by": "user_A"}))
 
 
 GENERAL = messaging.default_room_id(OWNER)
@@ -140,7 +134,7 @@ async def test_humans_are_never_added_or_removed_in_the_feed_by_hand(workspace):
     from core.auth import AuthContext
 
     await _feed()
-    owner = AuthContext(user_id="user_A", org_id=OWNER)
+    owner = AuthContext(user_id=OWNER, human_session=True)
     with pytest.raises(messaging.ApiProblem) as exc:
         await messaging.remove_member(owner, FEED, "human", "user_B")
     assert exc.value.error.code == "ROOM_FORBIDDEN"
@@ -247,24 +241,6 @@ async def test_post_reason_round_trips_through_the_store(table):  # noqa: F811
 # ---- room guards -----------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_any_member_edits_the_brief_but_nobody_renames_archives_or_leaves(workspace, monkeypatch):
-    from core.auth import AuthContext
-
-    await _feed()
-    monkeypatch.setattr(messaging, "_publish_room_metadata", AsyncMock())
-    member, creator = AuthContext(user_id="user_B", org_id=OWNER), AuthContext(user_id="user_A", org_id=OWNER)
-    detail = await messaging.patch_room(member, FEED, messaging.PatchRoomRequest(topic="Only money."))
-    assert detail.topic == "Only money."
-    for request in (messaging.PatchRoomRequest(name="x"), messaging.PatchRoomRequest(archived=True)):
-        with pytest.raises(messaging.ApiProblem):
-            await messaging.patch_room(creator, FEED, request)
-    with pytest.raises(messaging.ApiProblem):
-        await messaging.leave_room(member, FEED)
-    with pytest.raises(messaging.ApiProblem):
-        await messaging.delete_room(creator, FEED)
-
-
 # ---- round 2: the removal window (#general autojoin) ----------------------------
 
 
@@ -349,26 +325,6 @@ async def test_an_undo_that_cannot_remove_fails_loudly(workspace, monkeypatch):
 # ---- Codex review on #4145: human top-level posts, the member cap, --why with --feed -----
 
 
-@pytest.mark.asyncio
-async def test_a_human_top_level_post_in_the_feed_is_refused_but_a_discuss_reply_is_allowed(workspace):
-    from core.auth import AuthContext
-
-    await _feed()
-    auth = AuthContext(user_id="user_A", org_id=OWNER)
-    welcome = (await repo.list_messages(FEED, 0, 10))[0][0]
-
-    def request(root):
-        return messaging.CreateMessageRequest(
-            client_message_id=uuid.uuid4(), text="hello", reply_to_message_id=None, thread_root_message_id=root
-        )
-
-    with pytest.raises(messaging.ApiProblem) as exc:
-        await messaging.create_human_message(auth, FEED, request(None))
-    assert exc.value.error.code == "ROOM_FORBIDDEN"
-    reply = await messaging.create_human_message(auth, FEED, request(uuid.UUID(welcome["messageId"])))
-    assert reply.text == "hello"
-
-
 BIG_ROSTER = {**STARTERS, **{f"hire{i}": f"20000000-0000-4000-8000-{i:012d}" for i in range(10)}}  # 16 agents
 PEOPLE = [{"user_id": "user_A"}, *({"user_id": f"user_{i:02d}"} for i in range(19))]  # 20 humans
 
@@ -377,7 +333,6 @@ PEOPLE = [{"user_id": "user_A"}, *({"user_id": f"user_{i:02d}"} for i in range(1
 def crowded(workspace, monkeypatch):
     roster = [{"id": agent_id, "name": key.title()} for key, agent_id in BIG_ROSTER.items()]
     monkeypatch.setattr(messaging, "load_agent_roster", lambda _owner: asyncio.sleep(0, result=roster))
-    monkeypatch.setattr(messaging.clerk_admin, "list_organization_members", AsyncMock(return_value=PEOPLE))
 
 
 # ---- owner redesign: agents are the feed's AUTHORS, not its members -----
@@ -417,30 +372,6 @@ def _human_reply(root, mentions=()):
         reply_to_message_id=None,
         thread_root_message_id=root,
     )
-
-
-@pytest.mark.asyncio
-async def test_a_discuss_reply_that_mentions_an_agent_wakes_exactly_that_agent(crowded, table):  # noqa: F811
-    from core.auth import AuthContext
-
-    await _feed()
-    root = uuid.UUID((await repo.list_messages(FEED, 0, 10))[0][0]["messageId"])
-    auth = AuthContext(user_id="user_A", org_id=OWNER)
-    await messaging.create_human_message(auth, FEED, _human_reply(root, [BIG_ROSTER["growth"]]))
-    rows = await _work_rows(table)
-    assert [row["sk"].rsplit("#", 1)[-1] for row in rows] == [BIG_ROSTER["growth"]]
-    assert rows[0]["pk"] == f"ROOM#{FEED}"
-
-
-@pytest.mark.asyncio
-async def test_plain_feed_posts_wake_nobody(crowded, table):  # noqa: F811
-    from core.auth import AuthContext
-
-    await _feed()
-    root = uuid.UUID((await repo.list_messages(FEED, 0, 10))[0][0]["messageId"])
-    await messaging.create_human_message(AuthContext(user_id="user_A", org_id=OWNER), FEED, _human_reply(root))
-    await messaging.post_agent_message(OWNER, _post(roomId=FEED, postReason="why", agentId=CEO, text="@growth look"))
-    assert await _work_rows(table) == []
 
 
 @pytest.mark.asyncio
@@ -502,28 +433,6 @@ async def test_room_agent_stands_in_a_roster_agent_for_the_feed_only(crowded):
     assert await messaging.room_agent(messaging.default_room_id(OWNER), CEO) is None
 
 
-@pytest.mark.asyncio
-async def test_the_work_consumer_wakes_a_feed_author_it_never_seated(crowded):
-    from core.auth import AuthContext
-    from core.services import openclaw_work as work
-
-    await _feed()
-    root = uuid.UUID((await repo.list_messages(FEED, 0, 10))[0][0]["messageId"])
-    growth = BIG_ROSTER["growth"]
-    await messaging.create_human_message(
-        AuthContext(user_id="user_A", org_id=OWNER), FEED, _human_reply(root, [growth])
-    )
-    seq = int((await repo.get_room(FEED))["lastSeq"])
-    worker = work.OpenClawWorkWorker(sqs_client=None)
-    dispatched = AsyncMock(return_value=True)
-    worker._dispatch_message = dispatched
-    await worker._room_dispatch({"roomId": FEED, "agentId": growth, "throughSeq": seq})
-    dispatched.assert_awaited_once()
-    member, message = dispatched.await_args.args[1], dispatched.await_args.args[2]
-    assert member["id"] == growth and message["messageSeq"] == seq
-    assert int((await repo.get_agent_delivery(FEED, growth))["lastSeq"]) == seq
-
-
 # ---- Codex re-review at 1539bbf72 -----
 
 
@@ -570,7 +479,7 @@ async def test_nobody_changes_feed_membership_by_hand(crowded, kind):
     from core.auth import AuthContext
 
     await _feed()
-    auth = AuthContext(user_id="user_A", org_id=OWNER)  # the feed's owner
+    auth = AuthContext(user_id=OWNER, human_session=True)  # the feed's owner
     member_id = CEO if kind == "agent" else "user_05"
     listen = "active" if kind == "agent" else None
     with pytest.raises(messaging.ApiProblem) as exc:

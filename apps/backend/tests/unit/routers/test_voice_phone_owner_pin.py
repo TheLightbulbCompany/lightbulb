@@ -196,7 +196,7 @@ async def test_the_right_pin_flips_the_call_and_the_next_line_is_the_members_own
         assert _turn(client, call, n=3).json() == {"messageId": "m-owner"}
     auth, room, request = sent.await_args.args
     # the orb's owner path (voice_owner.turn): the member's message in their DM, which wakes the DM's Router
-    assert (auth.user_id, auth.org_id, room) == ("user_owner", None, DM)
+    assert (auth.user_id, room) == ("user_owner", DM)
     assert request.text == "What's on my calendar today?" and sent.await_args.kwargs == {"via": "voice", "wake": True}
     enq.assert_not_awaited()  # no caller trigger
     with patch.object(engine_api, "_agent_lines", AsyncMock(return_value={"messages": [], "after": 7})) as lines:

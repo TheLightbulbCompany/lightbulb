@@ -65,7 +65,7 @@ async def test_archive_emits_conversation_archived(seen, monkeypatch):
     closed = AsyncMock()
     monkeypatch.setattr(livekit_huddles, "close_room", closed)
     await messaging.patch_room(
-        AuthContext(user_id="admin", org_id=OWNER), "chan", messaging.PatchRoomRequest(archived=True)
+        AuthContext(user_id=OWNER, human_session=True), "chan", messaging.PatchRoomRequest(archived=True)
     )
     [e] = seen["events"]
     assert (e.type, e.tenant_id, e.conversation_id) == ("conversation.archived", OWNER, "chan")
@@ -83,7 +83,7 @@ async def test_archive_survives_an_unregistered_product(monkeypatch, caplog):
     monkeypatch.setattr(hooks, "_registered", None)
     with caplog.at_level(logging.WARNING, logger=messaging.logger.name):
         await messaging.patch_room(
-            AuthContext(user_id="admin", org_id=OWNER), "chan", messaging.PatchRoomRequest(archived=True)
+            AuthContext(user_id=OWNER, human_session=True), "chan", messaging.PatchRoomRequest(archived=True)
         )
     [record] = [r for r in caplog.records if "conversation.archived" in r.getMessage()]
     assert record.levelno == logging.WARNING and record.exc_info[0] is hooks.HookNotRegistered
@@ -95,13 +95,13 @@ async def test_member_removal_emits_member_removed(seen, table, monkeypatch):
     room_id = repo.deterministic_room_id(OWNER, USER_A, "c-room")
     await _create(room_id)
 
-    await messaging.remove_member(AuthContext(user_id=USER_A, org_id=OWNER), room_id, "human", USER_B)
+    await messaging.remove_member(AuthContext(user_id=OWNER, human_session=True), room_id, "human", USER_B)
 
     assert await repo.get_member(room_id, "human", USER_B) is None  # the member still loses room access
     [e] = seen["events"]
     assert (e.type, e.conversation_id, e.member_id) == ("member.removed", room_id, USER_B)
     removed.assert_awaited_once_with(room_id, USER_B)
-    await messaging.remove_member(AuthContext(user_id=USER_A, org_id=OWNER), room_id, "agent", FRIDAY)
+    await messaging.remove_member(AuthContext(user_id=OWNER, human_session=True), room_id, "agent", FRIDAY)
     assert len(seen["events"]) == 1  # agents are never in the LiveKit room
 
 

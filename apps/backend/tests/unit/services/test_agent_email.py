@@ -125,31 +125,9 @@ async def test_ensure_team_address_refuses_another_owners_row(monkeypatch, team)
 
 
 @pytest.mark.asyncio
-async def test_ensure_team_address_slug_derives_from_workspace_name(monkeypatch, team):
-    """No slug yet: allocated from the workspace name."""
-    monkeypatch.setattr(ae.company_slug_repo, "get_by_owner", AsyncMock(return_value=None))
-    monkeypatch.setattr(ae, "workspace_name", AsyncMock(return_value="Renamed By Friday"))
-    slug = AsyncMock(return_value="renamed")
-    monkeypatch.setattr(ae, "allocate_company_slug", slug)
-    monkeypatch.setattr(ae.agent_email_repo, "get_by_address", AsyncMock(return_value={"owner_id": "org_o"}))
-    assert await ae.ensure_team_address("org_o", None) == ("agents@renamed.thelightbulb.company", "ok")
-    assert slug.await_args.kwargs["name"] == "Renamed By Friday"
-
-
-@pytest.mark.asyncio
-async def test_ensure_team_address_reasons(monkeypatch, team):
-    monkeypatch.setattr(ae.company_slug_repo, "get_by_owner", AsyncMock(return_value=None))
-    monkeypatch.setattr(ae, "allocate_company_slug", AsyncMock(return_value=None))
-    assert await ae.ensure_team_address("org_o", None) == (None, "slug_allocation_failed")
-    monkeypatch.setattr(ae.settings, "AGENT_EMAIL_DOMAIN", "")
-    assert await ae.ensure_team_address("org_o", None) == (None, "disabled")
-
-
-@pytest.mark.asyncio
 async def test_ensure_team_address_mints_nothing_for_a_person(monkeypatch, team):
     """A person who has not claimed a slug has no team address: no slug is allocated and no row is written."""
     slug, put = AsyncMock(return_value="solo"), AsyncMock()
-    monkeypatch.setattr(ae, "allocate_company_slug", slug)
     monkeypatch.setattr(ae.agent_email_repo, "put", put)
     monkeypatch.setattr(ae.company_slug_repo, "get_by_owner", AsyncMock(return_value=None))
     assert await ae.ensure_team_address("user_o", "o@x.y") == (None, "disabled")
@@ -161,7 +139,6 @@ async def test_ensure_team_address_mints_nothing_for_a_person(monkeypatch, team)
 async def test_ensure_team_address_answers_a_persons_claimed_slug(monkeypatch, team):
     """A person's claimed slug is their address; nothing new is allocated for it."""
     slug = AsyncMock()
-    monkeypatch.setattr(ae, "allocate_company_slug", slug)
     monkeypatch.setattr(ae.agent_email_repo, "get_by_address", AsyncMock(return_value={"owner_id": "user_o"}))
     assert await ae.ensure_team_address("user_o", "o@x.y") == (TEAM, "ok")
     slug.assert_not_awaited()
@@ -179,23 +156,6 @@ async def test_from_header_is_the_agent_on_the_team_address(monkeypatch, team):
 async def test_agent_mail_from_uses_registry_name(monkeypatch, team):
     monkeypatch.setattr(ae.agent_registry, "get", _registry({("o", "a1"): {"agentId": "a1", "name": "Ada"}}))
     assert await ae.from_header("o", "a1", TEAM) == formataddr(("Ada · Acme agents", TEAM))
-
-
-@pytest.mark.asyncio
-async def test_team_address_minted_for_workspace_without_company_id(monkeypatch):
-    """A workspace provisioned natively has no company_id and maybe no saved name: the slug
-    comes from the owner id and the address is still minted."""
-    monkeypatch.setattr(ae.settings, "AGENT_EMAIL_DOMAIN", "thelightbulb.company")
-    monkeypatch.setattr(ae.company_slug_repo, "get_by_owner", AsyncMock(return_value=None))
-    from core.services import workspace_name as wn
-
-    monkeypatch.setattr(wn.WorkspaceRepo, "get_workspace", AsyncMock(return_value=None))
-    monkeypatch.setattr(wn.clerk_admin, "get_organization", AsyncMock(return_value=None))
-    slug = AsyncMock(return_value="org-1")
-    monkeypatch.setattr(ae, "allocate_company_slug", slug)
-    monkeypatch.setattr(ae.agent_email_repo, "get_by_address", AsyncMock(return_value={"owner_id": "org_1"}))
-    assert await ae.ensure_team_address("org_1", None) == ("agents@org-1.thelightbulb.company", "ok")
-    assert slug.await_args.kwargs["name"] == "org_1"
 
 
 @pytest.mark.asyncio

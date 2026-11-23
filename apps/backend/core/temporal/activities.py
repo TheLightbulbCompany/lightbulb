@@ -701,11 +701,6 @@ async def end_attempt(ws: str, task_id: str, n: int, outcome: str, error: str | 
                 logger.warning("end_attempt: origin room refused the result task=%s attempt=%s", task_id, n)
     if to:
         await _announce(ws, task_id, to, reason)
-    if room and outcome == "completed" and att.get("output"):
-        try:
-            await messaging.ask_who_should_see(ws, {"roomId": room}, "completed")
-        except messaging.ApiProblem:
-            logger.warning("end_attempt: invite ask not posted task=%s attempt=%s", task_id, n)
     if not first:
         return
     if outcome in ("failed", "refused", "unavailable", "checkpoint_failed") and requester:

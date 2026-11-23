@@ -299,7 +299,7 @@ async def test_voice_start_requester_from_context(monkeypatch):
     from routers.internal_automations import VoiceStartIn, voice_start
 
     asks = []
-    answer = ContextAnswer(conversation_id="room-1", requester_user_id="user_sam", agent_id="ceo-1")
+    answer = ContextAnswer(conversation_id="room-1", requester_user_id=WS, agent_id="ceo-1")
 
     async def context(ask):
         asks.append(ask)
@@ -315,11 +315,11 @@ async def test_voice_start_requester_from_context(monkeypatch):
     out = await voice_start(WS, body, None)
     assert [(a.purpose, a.tenant_id, a.run_id) for a in asks] == [("voice_run", WS, "run-1")]
     trigger = enqueue.await_args.args[1]
-    assert trigger.actor_user_id == "user_sam" and trigger.lane == ts.router_lane_key("user_sam")
+    assert trigger.actor_user_id == WS and trigger.lane == ts.router_lane_key(WS)
     assert trigger.ref["agentId"] == "ceo-1" and out["created"] is True
     for wrong, status, code in (
         (ContextAnswer(), 404, "unknown_run"),
-        (ContextAnswer(conversation_id="room-2", requester_user_id="user_sam"), 404, "unknown_run"),
+        (ContextAnswer(conversation_id="room-2", requester_user_id=WS), 404, "unknown_run"),
         (ContextAnswer(conversation_id="room-1"), 403, "no_requester"),
     ):
         answer = wrong

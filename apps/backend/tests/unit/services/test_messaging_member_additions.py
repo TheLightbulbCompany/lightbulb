@@ -73,37 +73,9 @@ def _wire_add(
 async def test_any_group_chat_member_may_add_an_existing_workspace_person(monkeypatch):
     upsert, _ = _wire_add(monkeypatch, room_kind="group-dm")
 
-    await messaging.upsert_member(AuthContext(user_id="user_a", org_id=OWNER), ROOM, _request())
+    await messaging.upsert_member(AuthContext(user_id=OWNER, human_session=True), ROOM, _request())
 
     assert upsert.await_args.kwargs["room_id"] == ROOM
-
-
-@pytest.mark.asyncio
-async def test_adding_to_a_dm_starts_a_new_group_chat_and_leaves_the_dm_alone(monkeypatch):
-    """Founder ruling (7 Nov 2026): like Slack, the DM stays private; the new chat holds everyone plus the newcomer."""
-    upsert, _ = _wire_add(monkeypatch, room_kind="dm")
-    lightbulb = {"kind": "agent", "id": AGENT, "role": "member", "listenMode": "active"}
-    monkeypatch.setattr(
-        messaging.messaging_repo,
-        "list_members",
-        AsyncMock(return_value=[{"kind": "human", "id": "user_a", "role": "owner", "listenMode": None}, lightbulb]),
-    )
-    create = AsyncMock(return_value="new group chat")
-    monkeypatch.setattr(messaging, "create_room", create)
-    auth = AuthContext(user_id="user_a", org_id=OWNER)
-
-    detail = await messaging.upsert_member(auth, ROOM, _request(kind="human", member_id="user_b"))
-
-    assert detail == "new group chat"
-    upsert.assert_not_awaited()  # the DM gains nobody: the newcomer never reads it
-    request = create.await_args.args[1]
-    assert request.kind == "group-dm" and request.name is None
-    assert {(m.kind, m.id) for m in request.members} == {("agent", AGENT), ("human", "user_b")}
-    # A retry (or the same add later) lands on the same chat; a different person makes a different one.
-    await messaging.upsert_member(auth, ROOM, _request(kind="human", member_id="user_b"))
-    assert create.await_args.args[1].client_room_id == request.client_room_id
-    await messaging.upsert_member(auth, ROOM, _request(kind="human", member_id="user_c"))
-    assert create.await_args.args[1].client_room_id != request.client_room_id
 
 
 @pytest.mark.asyncio
@@ -119,7 +91,7 @@ async def test_group_chat_rejects_admin_role_even_from_owner(monkeypatch):
 
     with pytest.raises(messaging.ApiProblem) as exc:
         await messaging.upsert_member(
-            AuthContext(user_id="user_a", org_id=OWNER),
+            AuthContext(user_id=OWNER, human_session=True),
             ROOM,
             _request(kind="human", member_id="user_b", role="admin"),
         )
@@ -138,7 +110,7 @@ async def test_new_human_receives_room_list_invalidation(monkeypatch):
     )
 
     await messaging.upsert_member(
-        AuthContext(user_id="user_a", org_id=OWNER),
+        AuthContext(user_id=OWNER, human_session=True),
         ROOM,
         _request(kind="human", member_id="user_b"),
     )
@@ -165,7 +137,7 @@ async def test_existing_humans_receive_room_list_invalidation(monkeypatch):
         ),
     )
 
-    await messaging.upsert_member(AuthContext(user_id="user_a", org_id=OWNER), ROOM, _request())
+    await messaging.upsert_member(AuthContext(user_id=OWNER, human_session=True), ROOM, _request())
 
     notified = {call.args[1] for call in publish_user.await_args_list}
     assert notified == {"user_a", "user_c"}
@@ -194,7 +166,7 @@ async def test_one_failed_invalidation_does_not_skip_the_rest(monkeypatch):
     publish_metadata = AsyncMock()
     monkeypatch.setattr(messaging, "_publish_room_metadata", publish_metadata)
 
-    await messaging.upsert_member(AuthContext(user_id="user_a", org_id=OWNER), ROOM, _request())
+    await messaging.upsert_member(AuthContext(user_id=OWNER, human_session=True), ROOM, _request())
 
     assert {call.args[1] for call in publish_user.await_args_list} == {"user_a", "user_c"}
     publish_metadata.assert_awaited_once()
@@ -210,7 +182,7 @@ async def test_retrying_an_addition_that_already_committed_is_allowed(monkeypatc
     )
 
     await messaging.upsert_member(
-        AuthContext(user_id="user_a", org_id=OWNER), ROOM, _request(kind="human", member_id="user_b")
+        AuthContext(user_id=OWNER, human_session=True), ROOM, _request(kind="human", member_id="user_b")
     )
 
     upsert.assert_awaited_once()

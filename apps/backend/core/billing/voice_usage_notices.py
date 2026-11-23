@@ -14,7 +14,6 @@ from datetime import UTC, datetime
 
 from botocore.exceptions import ClientError
 
-from core.auth import is_org_owner_id
 from core.billing import voice_billing, voice_plan
 from core.config import settings
 from core.dynamodb import run_in_thread, utc_now_iso
@@ -100,22 +99,12 @@ async def _finish(
 
 
 async def _owner_email(owner_id: str) -> str | None:
-    """Resolve only the current admin who accepted the paid voice plan.
-
-    Provisioning records and org creators can be stale or unrelated to billing.
-    The accepted-by id is written by the authenticated admin-only enrollment
-    flow, and Clerk membership is checked again at delivery time.
-    """
+    """Resolve only the person who accepted the paid voice plan: the tenant itself."""
     account = await billing_repo.get_by_owner_id(owner_id, consistent_read=True) or {}
     accepted_by = account.get("voice_plan_accepted_by")
     if not isinstance(accepted_by, str) or not accepted_by:
         return None
-    if is_org_owner_id(owner_id):
-        members = await clerk_admin.list_organization_members(owner_id, strict=True)
-        payer = next((member for member in members if member.get("user_id") == accepted_by), None)
-        if not payer or payer.get("role") != "org:admin":
-            return None
-    elif accepted_by != owner_id:
+    if accepted_by != owner_id:
         return None
     user = await clerk_admin.get_user_strict(accepted_by)
     if not user:

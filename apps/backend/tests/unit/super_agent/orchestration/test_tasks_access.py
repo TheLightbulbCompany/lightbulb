@@ -1,5 +1,5 @@
 """`can_view` is the one visibility rule (contracts §5); `summarize` is the one TaskSummary (C15, §4).
-Review focus 4: Priya (room member) never sees Sam's DM-born task; an ex-member loses a room task."""
+Review focus 4: Priya (room member) never sees Sam's DM-born task; someone no longer seated loses a room task."""
 
 import pytest
 
@@ -30,19 +30,14 @@ def _task(audience, **over):
 
 @pytest.fixture
 def world(monkeypatch):
-    """Room r1 has priya now (ex was removed); org_1 has sam and priya; ann is an answerer (in audience.userIds)."""
+    """Room r1 has priya and sam now (ex was removed); ann is an answerer (in audience.userIds)."""
     room = {("r1", "priya"), ("r1", "sam")}
-    orgs = {"sam": {WS}, "priya": {WS}, "ex": set()}
 
     async def get_member(room_id, kind, member_id):
         assert kind == "human"
         return {"id": member_id} if (room_id, member_id) in room else None
 
-    async def orgs_of(user_id):
-        return orgs.get(user_id, set())
-
     monkeypatch.setattr(ta.messaging_repo, "get_member", get_member)
-    monkeypatch.setattr(ta, "_user_org_ids", orgs_of)
 
 
 @pytest.mark.parametrize(
@@ -51,13 +46,12 @@ def world(monkeypatch):
         ({"kind": "person", "userIds": ["sam"]}, "sam", True),
         ({"kind": "person", "userIds": ["sam"]}, "priya", False),
         ({"kind": "person", "userIds": ["sam", "ann"]}, "ann", True),  # answerer added by Q when a question opens
-        # A DM task carries the DM's id (Tasks pane); priya, now a member of r1 (the DM became a group chat), still
-        # never sees sam's DM task.
+        # A DM task carries the DM's id (Tasks pane); priya, now a member of r1, still never sees sam's DM task.
         ({"kind": "person", "userIds": ["sam"], "roomId": "r1"}, "sam", True),
         ({"kind": "person", "userIds": ["sam"], "roomId": "r1"}, "priya", False),
         ({"kind": "room", "roomId": "r1", "userIds": []}, "priya", True),
-        ({"kind": "room", "roomId": "r1", "userIds": []}, "ex", False),
-        ({"kind": "workspace", "userIds": []}, "priya", True),
+        ({"kind": "room", "roomId": "r1", "userIds": []}, "ex", False),  # no longer seated: loses the room task
+        ({"kind": "workspace", "userIds": []}, WS, True),  # the tenant's own person
         ({"kind": "workspace", "userIds": []}, "outsider", False),
         ({"kind": "workspace", "userIds": []}, "", False),
     ],

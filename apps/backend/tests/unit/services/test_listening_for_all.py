@@ -20,7 +20,7 @@ def _no_front_seat(monkeypatch):
     monkeypatch.setattr(messaging, "_front_agent_id", AsyncMock(return_value=None))
 
 
-OWNER = "org_1"
+OWNER = "user_owner"
 USER = "user_owner"
 AGENT = str(uuid.UUID(int=1))
 ROOM = str(uuid.UUID(int=9))
@@ -47,6 +47,7 @@ def _seed_fixture(monkeypatch):
         AsyncMock(return_value=[{"id": agent_id, "name": key} for key, agent_id in starter_ids.items()]),
     )
     monkeypatch.setattr(messaging, "human_display_name", AsyncMock(return_value="Owner"))
+    monkeypatch.setattr(messaging, "saved_name", AsyncMock(return_value=None))
     monkeypatch.setattr(messaging.messaging_repo, "ensure_user_stream", AsyncMock())
     create_room = AsyncMock(return_value={"kind": "channel"})
     monkeypatch.setattr(messaging.messaging_repo, "create_room", create_room)
@@ -102,7 +103,7 @@ async def test_a_trial_owner_sets_listening_on_a_channel(monkeypatch):
     upsert = _upsert_fixture(monkeypatch, room_kind="channel")
     read = _billing(monkeypatch, TRIAL)
 
-    await messaging.upsert_member(AuthContext(user_id=USER, org_id=OWNER), ROOM, _member("active"))
+    await messaging.upsert_member(AuthContext(user_id=USER, human_session=True), ROOM, _member("active"))
 
     assert upsert.call_args.kwargs["member"]["listenMode"] == "active"
     read.assert_not_awaited()
@@ -117,7 +118,7 @@ async def test_any_member_of_a_trial_workspace_changes_an_agents_mode(monkeypatc
     upsert = _upsert_fixture(monkeypatch, room_kind="channel", role="member", existing=IN_ROOM)
     _billing(monkeypatch, TRIAL)
 
-    await messaging.upsert_member(AuthContext(user_id=USER, org_id=OWNER), ROOM, _member(mode))
+    await messaging.upsert_member(AuthContext(user_id=USER, human_session=True), ROOM, _member(mode))
 
     assert upsert.call_args.kwargs["member"]["listenMode"] == mode
 
@@ -137,7 +138,7 @@ async def test_a_vendor_side_member_cannot_change_the_customers_agents_mode(monk
     )
 
     with pytest.raises(messaging.ApiProblem) as exc:
-        await messaging.upsert_member(AuthContext(user_id=USER, org_id="org_lightbulb"), ROOM, _member("active"))
+        await messaging.upsert_member(AuthContext(user_id=USER, human_session=True), ROOM, _member("active"))
 
     assert exc.value.error.code == "ROOM_FORBIDDEN"
     upsert.assert_not_awaited()
@@ -148,7 +149,7 @@ async def test_a_member_still_cannot_add_an_agent(monkeypatch):
     upsert = _upsert_fixture(monkeypatch, room_kind="channel", role="member", existing=None)
 
     with pytest.raises(messaging.ApiProblem) as exc:
-        await messaging.upsert_member(AuthContext(user_id=USER, org_id=OWNER), ROOM, _member("mentions"))
+        await messaging.upsert_member(AuthContext(user_id=USER, human_session=True), ROOM, _member("mentions"))
 
     assert exc.value.error.code == "ROOM_FORBIDDEN"
     upsert.assert_not_awaited()
@@ -167,7 +168,7 @@ async def test_a_non_member_cannot_change_a_mode(monkeypatch):
     monkeypatch.setattr(messaging.messaging_repo, "upsert_member", upsert)
 
     with pytest.raises(messaging.ApiProblem) as exc:
-        await messaging.upsert_member(AuthContext(user_id=USER, org_id=OWNER), ROOM, _member("active"))
+        await messaging.upsert_member(AuthContext(user_id=USER, human_session=True), ROOM, _member("active"))
 
     assert exc.value.error.code == "ROOM_FORBIDDEN"
     upsert.assert_not_awaited()
@@ -201,9 +202,7 @@ def _welcome_text(monkeypatch) -> str:
 async def test_a_trial_workspace_gets_the_first_message_with_its_name(monkeypatch):
     _seed_fixture(monkeypatch)
     _billing(monkeypatch, TRIAL)
-    monkeypatch.setattr(
-        messaging.clerk_admin, "get_organization", AsyncMock(return_value={"name": "Anna's Frozen Treats"})
-    )
+    monkeypatch.setattr(messaging, "saved_name", AsyncMock(return_value="Anna's Frozen Treats"))
 
     await messaging.ensure_default_room(OWNER, USER)
 
@@ -216,7 +215,7 @@ async def test_a_trial_workspace_gets_the_first_message_with_its_name(monkeypatc
 async def test_the_first_message_falls_back_when_clerk_has_no_name(monkeypatch):
     _seed_fixture(monkeypatch)
     _billing(monkeypatch, TRIAL)
-    monkeypatch.setattr(messaging.clerk_admin, "get_organization", AsyncMock(return_value=None))
+    monkeypatch.setattr(messaging, "saved_name", AsyncMock(return_value=None))
 
     await messaging.ensure_default_room(OWNER, USER)
 
@@ -231,22 +230,22 @@ async def test_the_welcome_is_resolved_before_the_room_exists(monkeypatch):
     _billing(monkeypatch, TRIAL)
     order: list[str] = []
 
-    async def get_organization(_owner_id):
-        order.append("clerk")
-        return {"name": "Anna's Frozen Treats"}
+    async def saved_name(_owner_id):
+        order.append("name")
+        return "Anna's Frozen Treats"
 
     create_room.side_effect = lambda **_kwargs: order.append("room") or {"kind": "channel"}
-    monkeypatch.setattr(messaging.clerk_admin, "get_organization", get_organization)
+    monkeypatch.setattr(messaging, "saved_name", saved_name)
 
     await messaging.ensure_default_room(OWNER, USER)
 
-    assert order == ["clerk", "room"]
+    assert order == ["name", "room"]
 
 
 @pytest.mark.asyncio
 async def test_an_admin_set_mode_is_marked_as_the_users_choice(monkeypatch):
     upsert = _upsert_fixture(monkeypatch, room_kind="channel")
 
-    await messaging.upsert_member(AuthContext(user_id=USER, org_id=OWNER), ROOM, _member("mentions"))
+    await messaging.upsert_member(AuthContext(user_id=USER, human_session=True), ROOM, _member("mentions"))
 
     assert upsert.call_args.kwargs["member"]["modeSetBy"] == "user"

@@ -23,9 +23,9 @@ def _q(qid="q-1", kind="approval", **over):
         "text": "acme.dev, one year",
         "options": [{"id": "allow_once", "label": "Allow once"}, {"id": "deny", "label": "Deny"}],
         "askedBy": {"kind": "worker", "attempt": 1},
-        "answerers": ["user_sam"],
+        "answerers": ["org_1"],
         "answererRule": "requester",
-        "baseAnswerers": ["user_sam"],
+        "baseAnswerers": ["org_1"],
     } | over
 
 
@@ -40,8 +40,8 @@ def feed_world(table, monkeypatch):
     monkeypatch.setattr(activity, "_room_gates", AsyncMock(return_value={}))
 
 
-async def _feed(user="user_sam"):
-    page = await activity.list_activity(AuthContext(user_id=user, org_id=WS), cursor=None, limit=30)
+async def _feed(user="org_1"):
+    page = await activity.list_activity(AuthContext(user_id=user, human_session=True), cursor=None, limit=30)
     return page.model_dump(by_alias=True, mode="json")
 
 
@@ -54,7 +54,7 @@ async def test_task_question_item_renders_and_counts(feed_world):
     assert item["summary"]["links"] == [{"kind": "task", "id": TASK, "label": "buy a domain for $12"}]
     assert [a["navigate"] for a in item["actions"]] == [{"kind": "task", "id": TASK, "roomId": None}]
     assert page["attentionCount"] == 1 and page["unseenCount"] == 1
-    assert await activity.unseen_counts(WS, "user_sam") == {"approval": 1}
+    assert await activity.unseen_counts(WS, "org_1") == {"approval": 1}
 
 
 async def test_only_answerers_see_it(feed_world):
@@ -65,7 +65,7 @@ async def test_only_answerers_see_it(feed_world):
 async def test_item_gone_after_answer(feed_world):
     await questions_repo.open_question(WS, _q())
     await questions_repo.record_answer(
-        WS, TASK, "q-1", option_id="deny", trigger_id=None, by="user_sam", client_answer_id="c", expected_version=None
+        WS, TASK, "q-1", option_id="deny", trigger_id=None, by="org_1", client_answer_id="c", expected_version=None
     )
     page = await _feed()
     assert page["items"] == [] and page["attentionCount"] == 0

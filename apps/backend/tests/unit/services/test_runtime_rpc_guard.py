@@ -119,22 +119,6 @@ def _rpc_request(method: str):
     return RuntimeRpcRequest(request_id=uuid.uuid4(), method=method, params={})
 
 
-@pytest.mark.parametrize("method", ["config.get", "config.patch"])
-async def test_a_member_cannot_read_or_write_the_profile_config(monkeypatch, method):
-    from fastapi import HTTPException
-
-    from core.auth import AuthContext
-
-    async def _must_not_run(**_kwargs):
-        raise AssertionError("a member's config call reached execute_sync")
-
-    monkeypatch.setattr(rpc, "execute_sync", _must_not_run)
-    member = AuthContext(user_id="u_member", org_id="org_a", org_role="org:member")
-    with pytest.raises(HTTPException) as exc_info:
-        await rpc.execute(member, _rpc_request(method))
-    assert exc_info.value.status_code == 403
-
-
 @pytest.mark.parametrize("method", ["config.get", "config.patch", "agents.list"])
 async def test_an_admin_and_a_member_reading_agents_are_admitted(monkeypatch, method):
     from core.auth import AuthContext
@@ -147,8 +131,7 @@ async def test_an_admin_and_a_member_reading_agents_are_admitted(monkeypatch, me
 
     monkeypatch.setattr(rpc, "execute_sync", _execute_sync)
     monkeypatch.setattr(rpc.container_repo, "touch_last_interactive", _touch)
-    role = "org:member" if method == "agents.list" else "org:admin"
-    status, response = await rpc.execute(AuthContext(user_id="u1", org_id="org_a", org_role=role), _rpc_request(method))
+    status, response = await rpc.execute(AuthContext(user_id="org_a", human_session=True), _rpc_request(method))
     assert status == 200
     assert response.payload == {"method": method}
 

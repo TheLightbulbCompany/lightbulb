@@ -30,7 +30,7 @@ import time
 import uuid
 
 
-from core.auth import is_org_owner_id, is_internal_email
+from core.auth import is_internal_email
 from core.config import settings
 from core.observability.metrics import put_metric
 from core.observability.product_analytics import capture_product_event
@@ -196,13 +196,7 @@ async def resolve_internal_owner(owner_id: str) -> bool:
     cached = _internal_cache.get(owner_id)
     if cached is not None and (now - cached[1]) < _INTERNAL_TTL_S:
         return cached[0]
-    user_id = owner_id
-    if is_org_owner_id(owner_id):
-        org = await clerk_admin.get_organization(owner_id)
-        user_id = (org or {}).get("created_by")
-        if not user_id:
-            raise RuntimeError(f"run_analytics: org {owner_id} has no resolvable created_by")
-    email = await clerk_admin.get_primary_email(user_id)
+    email = await clerk_admin.get_primary_email(owner_id)
     result = is_internal_email(email)
     _internal_cache[owner_id] = (result, now)
     while len(_internal_cache) > _INTERNAL_CACHE_CAP:

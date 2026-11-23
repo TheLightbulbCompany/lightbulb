@@ -8,7 +8,7 @@ calls where a door writes them), carrying MARKER; then B, signed in, makes the c
   * token only: B's call succeeds, and no AWS call it makes names A either (B reads and writes only B's keys).
 `ok` overrides the expected statuses for a door whose answer to B is something else (the reason is beside it);
 `says` names the text that makes a refusal the tenant check rather than a generic one.
-Each case runs twice (`tenants`): as personal accounts (no `o` claim) and as two orgs.
+Each case runs twice (`tenants`): with plain session tokens, and with tokens that carry a leftover `o` claim naming the other person.
 
 `test_every_tenant_door_has_a_case` walks the app: a new door with no case fails (no sampling);
 `test_every_router_seeds_a`: a router whose doors find nothing of A's fails unless NO_SEED says why."""
@@ -16,13 +16,13 @@ Each case runs twice (`tenants`): as personal accounts (no `o` claim) and as two
 import json
 import uuid
 from urllib.parse import parse_qs, urlsplit
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from unittest.mock import AsyncMock
 
 import httpx
 import pytest
-import stripe
 from fastapi import HTTPException
+import stripe
 from fastapi.routing import _IncludedRouter
 from fastapi.security import HTTPAuthorizationCredentials
 from httpx import ASGITransport, AsyncClient
@@ -33,7 +33,6 @@ from core.auth import (
     get_current_user,
     get_human_session,
     get_optional_human_session,
-    require_org_admin,
     require_platform_admin,
     resolve_owner_id,
 )
@@ -134,7 +133,7 @@ async def billing_rows(a: Tenant, b: Tenant, *, b_paid: bool = True) -> None:
     """A is a paying Stripe customer; B has a customer, and a live subscription when `b_paid`."""
 
     for t, customer in ((a, f"cus_{MARKER}"), (b, "cus_bbb")):
-        await billing_repo.create_if_not_exists(t.tenant, customer, owner_type="org" if t.org_id else "personal")
+        await billing_repo.create_if_not_exists(t.tenant, customer)
         if t is a or b_paid:
             await billing_repo.set_subscription(owner_id=t.tenant, subscription_id=f"sub_{customer}", status="active")
 
@@ -293,24 +292,18 @@ async def seed_workspace_files(a, b, mp, calls) -> dict:
 async def seed_memory(a, b, mp, calls) -> dict:
     await workspaces(a, b)
     draft = {"id": "d-a", "user_id": a.user_id, "kind": "lesson", "text": f"{MARKER} lesson", "evidence": []}
-    draft |= {"status": "proposed", "created": "2026-11-20T00:00:00+00:00", "mirrored": bool(a.org_id)}
+    draft |= {"status": "proposed", "created": "2026-11-20T00:00:00+00:00", "mirrored": False}
     await put_row({"pk": f"DRAFTS#{a.user_id}", "sk": "D#d-a", **draft})
-    if a.org_id:
-        await put_row({"pk": f"WDRAFTS#{a.org_id}", "sk": f"D#{a.user_id}#d-a", "workspace_id": a.org_id, **draft})
     return {"draft": "d-a"}
 
 
 def clerk(mp, a: Tenant, b: Tenant) -> None:
-    """Clerk as the two tenants: each person is the only member of their own org (when they have one)."""
+    """Clerk with no organisations: every person is only their own tenant."""
 
-    async def orgs_of(user_id, **kwargs):
-        return [{"id": t.org_id, "name": t.org_id} for t in (a, b) if t.user_id == user_id and t.org_id]
+    async def no_orgs(*args, **kwargs):
+        return []
 
-    async def members_of(org_id, **kwargs):
-        return [{"user_id": t.user_id, "role": "org:admin"} for t in (a, b) if t.org_id == org_id]
-
-    mp.setattr("core.services.clerk_admin.list_user_organizations", orgs_of)
-    mp.setattr("core.services.clerk_admin.list_organization_members", members_of)
+    mp.setattr("core.services.clerk_admin.list_user_organizations", no_orgs)
 
 
 async def _mail(t: Tenant, slug: str) -> str:
@@ -861,44 +854,52 @@ async def test_live_config_cross_account(tenants, calls, ddb, monkeypatch):
     assert not mentions(" ".join(snapshot(ddb, f"WORKSPACE#{mine['workspaceId']}")), [b.user_id])
 
 
-@pytest.mark.parametrize(  # as the doors with no org build them from a person's own session
-    "ctx",
-    [
-        AuthContext(user_id="user_x", human_session=True),
-        AuthContext("user_x", None, verified_issuer="i", human_session=True),
-    ],
-)
-def test_admin_without_org_is_own_tenant_only(ctx):
-    """A signed-in person with no org is their own tenant and its admin, and nobody else's."""
-    assert resolve_owner_id(ctx) == ctx.user_id
-    assert ctx.is_org_admin and require_org_admin(ctx) is ctx
-    synthetic = AuthContext(user_id="user_x", org_id="org_t")  # an internal door's org context, no role
-    assert resolve_owner_id(synthetic) == "org_t" and not synthetic.is_org_admin
+def test_resolve_owner_id_is_sub():
+    """The tenant is a session token's person; a context that is not a first-party session has no tenant."""
+    assert resolve_owner_id(AuthContext(user_id="user_x", human_session=True)) == "user_x"
+    assert resolve_owner_id(AuthContext("user_x", verified_issuer="i", human_session=True)) == "user_x"
     with pytest.raises(HTTPException) as refused:
-        require_org_admin(synthetic)
-    assert refused.value.status_code == 403
+        resolve_owner_id(AuthContext(user_id="user_x"))
+    assert refused.value.status_code == 403 and refused.value.detail == {"code": "session_required"}
 
 
-@pytest.mark.parametrize("token", ["oauth", "template"])
-async def test_non_session_token_without_org_has_no_tenant(token, tenants):
-    """An OAuth access token or a JWT-template token with no org is refused on tenant resolution as before this
-    task (409 workspace_required); with an org it is that org's, as before."""
-    _, b = tenants
-    r = await call(replace(b, token=token), "GET", "/api/v1/voice/timeline")
-    if b.org_id:
-        assert r.status_code == 200
-    else:
-        assert r.status_code == 409 and r.json()["detail"]["code"] == "workspace_required"
-
-
-async def test_org_claim_still_wins_interim(tenants):
-    """Interim rule: a session token carrying an org claim (`o.id`) is that org's; without one, the person's."""
-    _, b = tenants
+@pytest.mark.parametrize("role", ["admin", None])
+async def test_org_claim_is_ignored(role, ddb, jwks, calls):
+    """A session token whose `o.id` names another person's tenant (with a role in the claim, or without) acts on its
+    own `sub` and cannot see A's rows (Review Focus 3)."""
+    a, b = Tenant("user_a", None), Tenant("user_b", "user_a", role=role)
+    await workspaces(a, b)
+    await ok(
+        a,
+        "POST",
+        "/api/v1/messaging/rooms",
+        {"clientRoomId": str(uuid.uuid4()), "name": f"{MARKER} room", "kind": "channel", "members": []},
+    )
     ctx = await get_current_user(
         HTTPAuthorizationCredentials(scheme="Bearer", credentials=b.headers["Authorization"][7:])
     )
-    assert (ctx.user_id, ctx.org_id) == (b.user_id, b.org_id)
-    assert resolve_owner_id(ctx) == (b.org_id or b.user_id)
+    assert resolve_owner_id(ctx) == b.user_id
+    mine = await ok(a, "GET", "/api/v1/messaging/live-config")
+    theirs = await ok(b, "GET", "/api/v1/messaging/live-config")
+    assert theirs["workspaceId"] != mine["workspaceId"]
+    rooms = await ok(b, "GET", "/api/v1/messaging/rooms")
+    assert MARKER not in json.dumps(rooms)
+
+
+@pytest.mark.parametrize("token", ["oauth", "template"])
+async def test_non_session_token_is_refused_at_a_tenant_door(token, ddb, jwks, calls):
+    """An OAuth access token or a JWT-template token, even carrying an org claim, has no tenant: 403, nothing written."""
+    a, b = Tenant("user_a", None), Tenant("user_b", "user_a", token=token)
+    await workspaces(a, b)
+    before = snapshot(ddb, a.user_id, b.user_id)
+    r = await call(
+        b,
+        "POST",
+        "/api/v1/messaging/rooms",
+        {"clientRoomId": str(uuid.uuid4()), "name": "x", "kind": "channel", "members": []},
+    )
+    assert r.status_code == 403 and r.json()["detail"] == {"code": "session_required"}
+    assert snapshot(ddb, a.user_id, b.user_id) == before
 
 
 # The doors that still refuse a person on their own tenant, and what they answer: the ChatGPT sign-in needs the
@@ -1050,7 +1051,7 @@ async def test_person_who_opens_checkout_and_never_pays_keeps_the_free_trial(ddb
         assert (await ok(person, "POST", "/api/v1/billing/voice-plan/checkout", plan))["status"] == "checkout"
     row = await billing_repo.get_by_owner_id(person.user_id, consistent_read=True)
     assert row["subscription_status"] == "trial_local" and "trial_end" not in row and row["stripe_customer_id"]
-    assert row["owner_type"] == "personal"
+    assert "owner_type" not in row
     assert (await ok(person, "GET", "/api/v1/billing/voice-plan"))["status"] == "not_enrolled"
 
 
@@ -1243,20 +1244,7 @@ async def test_person_workspace_checkout_bills_no_seats_and_never_reads_an_org_r
     (session,) = _stripe_posts(calls, "/v1/checkout/sessions")
     assert "price_seat" not in session.values() and session["metadata[workspace_id]"] == person.user_id
     row = await billing_repo.get_by_owner_id(person.user_id, consistent_read=True)
-    assert row["subscription_status"] == "trial_local" and row["owner_type"] == "personal"
-
-
-async def test_org_takes_the_shared_line_only_when_no_tenant_holds_it(ddb, calls, jwks, monkeypatch):
-    """The bodyless `POST /voice/number` gives the environment's one shared line to the first org; B then gets 409
-    and A's line is unchanged. A person is refused that door (REFUSED)."""
-    a, b = Tenant("user_a", "org_a"), Tenant("user_b", "org_b")
-    monkeypatch.setattr(settings, "VOICE_LINE_NUMBER", "+15550100009")
-    await workspaces(a, b)
-    assert (await ok(a, "POST", "/api/v1/voice/number", {}))["number"] == "+15550100009"
-    before = snapshot(ddb, a.tenant, a.user_id, "+15550100009")
-    r = await call(b, "POST", "/api/v1/voice/number", {})
-    assert r.status_code == 409, r.text[:300]
-    assert snapshot(ddb, a.tenant, a.user_id, "+15550100009") == before
+    assert row["subscription_status"] == "trial_local"
 
 
 @pytest.mark.parametrize("paid", [False, True])
@@ -1276,18 +1264,6 @@ async def test_a_free_person_cannot_widen_their_mailbox_and_a_paid_one_can(paid,
     assert (await agent_email_repo.get_by_address(address)).get("send_to_anyone", False) is paid
     assert (await ok(person, "PATCH", "/api/v1/agent-mail/address", {"footer_enabled": False}))["address"] == address
     assert (await ok(person, "PATCH", "/api/v1/agent-mail/address", {"send_to_anyone": False}))["address"] == address
-
-
-async def test_a_free_org_still_widens_its_mailbox(ddb, calls, jwks, monkeypatch):
-    """An organization's mailbox settings are unchanged: a free org may still send to anyone."""
-    monkeypatch.setattr("routers.agent_mail._owner_email", AsyncMock(return_value=None))
-    org, other = Tenant("user_a", "org_a"), Tenant("user_b", "org_b")
-    await workspaces(org, other)
-    await billing_rows(other, org, b_paid=False)
-    address = await _mail(org, "acme-a")
-    await agent_email_repo.update_settings(address, send_to_anyone=False)
-    assert (await ok(org, "PATCH", "/api/v1/agent-mail/address", {"send_to_anyone": True}))["address"] == address
-    assert (await agent_email_repo.get_by_address(address))["send_to_anyone"] is True
 
 
 async def test_pending_oauth_states_are_deleted_for_exactly_one_owner(ddb, calls, jwks, monkeypatch):

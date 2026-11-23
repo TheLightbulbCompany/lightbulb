@@ -15,7 +15,7 @@ def _app(monkeypatch, content_type: str, file_name: str) -> FastAPI:
     app = FastAPI()
     app.include_router(messaging_router.router, prefix="/api/v1")
     app.dependency_overrides[get_current_user] = lambda: AuthContext(
-        user_id="user_1", org_id="org_1", email="u@example.com"
+        user_id="org_1", email="u@example.com", human_session=True
     )
     meta = ({"ownerId": "org_1"}, None)
     attachment = SimpleNamespace(content_type=content_type, file_name=file_name)
@@ -77,7 +77,7 @@ async def test_head_returns_only_the_first_bytes_by_a_ranged_read(monkeypatch):
     app = FastAPI()
     app.include_router(messaging_router.router, prefix="/api/v1")
     app.dependency_overrides[get_current_user] = lambda: AuthContext(
-        user_id="user_1", org_id="org_1", email="u@example.com"
+        user_id="org_1", email="u@example.com", human_session=True
     )
     monkeypatch.setattr(
         messaging_router.service, "require_room_member", AsyncMock(return_value=({"ownerId": "org_1"}, None))

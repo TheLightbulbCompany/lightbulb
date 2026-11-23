@@ -16,7 +16,7 @@ async def test_growth_route_wraps_envelope():
     app = FastAPI()
     app.include_router(ops.router, prefix="/api/v1/ops")
     app.dependency_overrides[require_platform_admin] = lambda: AuthContext(
-        user_id="u", email="a@isol8.co"
+        user_id="u", email="a@isol8.co", human_session=True
     )  # match the real ctor
     with patch(
         "core.services.ops.growth.compute",

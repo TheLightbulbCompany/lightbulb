@@ -69,9 +69,7 @@ def client():
                 "start_task",
                 AsyncMock(return_value=StartOut(trigger_id="t", task_id="k", created=True)),
             ) as sw,
-            patch.object(
-                voice_phone.clerk_admin, "get_organization", AsyncMock(return_value={"name": "Maya's Nail Studio"})
-            ),
+            patch.object(voice_phone, "saved_name", AsyncMock(return_value=None)),
         ):
             from main import app
 

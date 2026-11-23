@@ -99,7 +99,6 @@ async def test_a_new_workspace_gets_no_runtime_role_or_boot_secret(shared, monke
     monkeypatch.setattr(
         "core.services.container_provision.resolve_provider_choice", AsyncMock(return_value=("bedrock_claude", None))
     )
-    monkeypatch.setattr(hp, "_ensure_network_member", AsyncMock())
     assert await hp.prepare_hermes_workspace("org_new") is False
 
 

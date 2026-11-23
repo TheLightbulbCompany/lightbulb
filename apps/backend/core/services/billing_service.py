@@ -35,9 +35,7 @@ class BillingServiceError(Exception):
 
 
 class BillingService:
-    async def create_customer_for_owner(
-        self, owner_id: str, owner_type: str = "personal", email: str | None = None
-    ) -> dict:
+    async def create_customer_for_owner(self, owner_id: str, email: str | None = None) -> dict:
         """Resolve a Stripe customer for one workspace billing row only.
 
         A human can administer multiple workspaces, so their email is display
@@ -51,7 +49,7 @@ class BillingService:
 
         with timing("stripe.api.latency", {"op": "customers.create"}):
             customer = stripe.Customer.create(
-                metadata={"workspace_id": owner_id, "owner_id": owner_id, "owner_type": owner_type},
+                metadata={"workspace_id": owner_id, "owner_id": owner_id},
                 idempotency_key=f"workspace-customer:v2:{owner_id}",
             )
         customer_id = customer.id
@@ -80,7 +78,6 @@ class BillingService:
             return await billing_repo.create_if_not_exists(
                 owner_id=owner_id,
                 stripe_customer_id=customer_id,
-                owner_type=owner_type,
             )
         except billing_repo.AlreadyExistsError:
             # Lost the DDB race for this workspace. Delete the Stripe customer

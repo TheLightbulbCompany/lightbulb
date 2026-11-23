@@ -30,7 +30,7 @@ def _no_activity_hint(monkeypatch):
 
 def _auth():
     auth = MagicMock()
-    auth.org_id, auth.user_id = "org_1", "user_1"
+    auth.user_id = "user_1"
     return auth
 
 
@@ -111,7 +111,7 @@ async def test_abort_of_a_run_the_bridge_no_longer_has_closes_the_ledger():
 
     with _common(response=runtime_transport.RuntimeResponse(404, "", {})):
         assert (await abort_run("run-1", auth=_auth())).state == "already-terminal"
-    captured_close[-1].assert_awaited_once_with("org_1", "run-1")
+    captured_close[-1].assert_awaited_once_with("user_1", "run-1")
 
 
 @pytest.mark.asyncio
@@ -199,8 +199,8 @@ async def test_abort_goes_through_the_runtime_transport_seam():
     # Accepted is not stopped: the run stays open for the bridge's run.ended(aborted), with a
     # grace deadline and a timer that force-closes it if that never comes.
     close.assert_not_awaited()
-    request_abort.assert_awaited_once_with("org_1", "run-1", stopped_by="user_1", stop_after_s=None)
-    force_later.assert_called_once_with("org_1", "run-1")
+    request_abort.assert_awaited_once_with("user_1", "run-1", stopped_by="user_1", stop_after_s=None)
+    force_later.assert_called_once_with("user_1", "run-1")
     assert result == AbortRunResponse(run_id="run-1", state="aborting")
     assert captured["container"] is agentcore_container
     assert captured["path"] == "/plugins/lightbulb-channel/runs/run-1/abort"
@@ -229,9 +229,9 @@ async def test_close_aborted_run_ends_the_ledger_and_tells_the_room_once():
         patch.object(service.messaging_repo, "end_run", AsyncMock(side_effect=[ended, None])) as end_run,
         patch.object(service, "get_live_event_publisher", return_value=publisher),
     ):
-        await service.close_aborted_run("org_1", "run-1")
-        await service.close_aborted_run("org_1", "run-1")  # a second Stop: already closed, no frame
-    end_run.assert_awaited_with("org_1", "run-1", outcome="aborted")
+        await service.close_aborted_run("user_1", "run-1")
+        await service.close_aborted_run("user_1", "run-1")  # a second Stop: already closed, no frame
+    end_run.assert_awaited_with("user_1", "run-1", outcome="aborted")
     publisher.publish_room.assert_awaited_once()
     room_id, event = publisher.publish_room.await_args.args
     assert room_id == ROOM_ID
@@ -249,9 +249,9 @@ async def test_a_stop_the_bridge_never_confirms_is_force_closed_after_the_grace(
     monkeypatch.setattr(router.messaging_repo, "RUN_ABORT_GRACE_S", 0)
     close = AsyncMock()
     monkeypatch.setattr(router.service, "close_aborted_run", close)
-    router._force_close_later("org_1", "run-1")
+    router._force_close_later("user_1", "run-1")
     await asyncio.gather(*router._abort_timers)
-    close.assert_awaited_once_with("org_1", "run-1", forced=True)
+    close.assert_awaited_once_with("user_1", "run-1", forced=True)
 
 
 @pytest.mark.asyncio
@@ -264,7 +264,7 @@ async def test_a_forced_close_tells_the_room_the_agent_may_still_be_finishing():
         patch.object(service.messaging_repo, "end_run", AsyncMock(return_value=ended)),
         patch.object(service, "get_live_event_publisher", return_value=publisher),
     ):
-        await service.close_aborted_run("org_1", "run-1", forced=True)
+        await service.close_aborted_run("user_1", "run-1", forced=True)
     event = publisher.publish_room.await_args.args[1]
     payload = event.payload if hasattr(event, "payload") else event["payload"]
     frame = payload["frame"] if isinstance(payload, dict) else payload.frame
@@ -275,14 +275,16 @@ async def test_a_forced_close_tells_the_room_the_agent_may_still_be_finishing():
 async def test_the_sweeper_closes_an_unconfirmed_stop_as_aborted_not_failed(monkeypatch):
     from core.services import run_ledger
 
-    row = {**ROW, "ownerId": "org_1", "deadlineAt": 1, "abortRequestedAt": "2026-09-25T20:20:33Z"}
+    row = {**ROW, "ownerId": "user_1", "deadlineAt": 1, "abortRequestedAt": "2026-09-25T20:20:33Z"}
     close, end_run = AsyncMock(), AsyncMock()
     monkeypatch.setattr(
-        run_ledger.messaging_repo, "list_overdue_runs", AsyncMock(return_value=[{"ownerId": "org_1", "runId": "run-1"}])
+        run_ledger.messaging_repo,
+        "list_overdue_runs",
+        AsyncMock(return_value=[{"ownerId": "user_1", "runId": "run-1"}]),
     )
     monkeypatch.setattr(run_ledger.messaging_repo, "get_run", AsyncMock(return_value=row))
     monkeypatch.setattr(run_ledger.messaging_repo, "end_run", end_run)
     monkeypatch.setattr(run_ledger, "close_aborted_run", close)
     assert await run_ledger.sweep_runs_once() == 1
-    close.assert_awaited_once_with("org_1", "run-1", forced=True)
+    close.assert_awaited_once_with("user_1", "run-1", forced=True)
     end_run.assert_not_awaited()  # no error outcome, no failure message

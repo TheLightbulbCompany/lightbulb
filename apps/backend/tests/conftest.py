@@ -253,24 +253,13 @@ def mock_current_user(mock_auth_context):
 @pytest.fixture
 def mock_org_admin_context() -> AuthContext:
     """Mock auth context for org admin."""
-    return AuthContext(
-        user_id="user_test_123",
-        org_id="org_test_456",
-        org_role="org:admin",
-        org_slug="test-org",
-        org_permissions=["org:billing:manage"],
-    )
+    return AuthContext(user_id="user_test_123", human_session=True)
 
 
 @pytest.fixture
 def mock_org_member_context() -> AuthContext:
     """Mock auth context for org member (non-admin)."""
-    return AuthContext(
-        user_id="user_test_789",
-        org_id="org_test_456",
-        org_role="org:member",
-        org_slug="test-org",
-    )
+    return AuthContext(user_id="user_test_123", human_session=True)
 
 
 @pytest.fixture
@@ -350,7 +339,7 @@ async def async_client(app, mock_current_user) -> AsyncGenerator:
 
 @pytest.fixture
 async def async_client_org_admin(app, mock_org_admin_user) -> AsyncGenerator:
-    """Async test client authenticated as org admin (user_test_123 in org_test_456)."""
+    """Async test client authenticated as org admin (user_test_123 in user_test_123)."""
     from core.auth import get_current_user
 
     app.dependency_overrides[get_current_user] = mock_org_admin_user
@@ -363,7 +352,7 @@ async def async_client_org_admin(app, mock_org_admin_user) -> AsyncGenerator:
 
 @pytest.fixture
 async def async_client_org_member(app, mock_org_member_user) -> AsyncGenerator:
-    """Async test client authenticated as org member (user_test_789 in org_test_456)."""
+    """Async test client authenticated as org member (user_test_789 in user_test_123)."""
     from core.auth import get_current_user
 
     app.dependency_overrides[get_current_user] = mock_org_member_user

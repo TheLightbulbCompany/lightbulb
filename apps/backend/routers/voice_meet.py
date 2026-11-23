@@ -44,7 +44,7 @@ def announcement(name: str, company: str) -> str:
 async def _meeting(room_id: str, body: RoomBody, *, with_members: bool = False) -> tuple[str, ConversationOut, dict]:
     room_id = _room_id(room_id)
     _require_room_token(body.roomToken, room_id, body.ownerId)
-    conv = await engine.get_conversation(body.ownerId, room_id, with_members=with_members)
+    conv = await engine.http(engine.get_conversation(body.ownerId, room_id, with_members=with_members))
     if not conv or not conv.annotations.get("meeting"):
         raise _problem(404, "meeting_not_found")
     return room_id, conv, conv.annotations["meeting"]
@@ -75,7 +75,7 @@ async def start(room_id: str, body: StartIn) -> dict:
     return {
         "assistantName": name,
         "title": meeting.get("title") or "Meeting",
-        "after": (await engine.read_lines(body.ownerId, room_id, None))["after"],
+        "after": (await engine.http(engine.read_lines(body.ownerId, room_id, None)))["after"],
         "notTranscribed": meeting.get("notTranscribed") or [],
     }
 
@@ -107,15 +107,17 @@ async def ask(room_id: str, body: AskIn) -> dict:
             lambda m: {"askSpeakers": {**dict(list((m.get("askSpeakers") or {}).items())[-49:]), client_id: pid}},
         )
     # an answer to the question just said is still the chat's line, but wakes nobody: the answer is the input
-    line = await engine.append_line(
-        LineIn(
-            tenant_id=body.ownerId,
-            conversation_id=room_id,
-            principal=Principal(kind="member", id=member),
-            text=f"{who} said in the meeting: {body.text}",
-            idempotency_key=key,
-            via="voice",
-            answers=SaidQuestion(task_id=body.answers.taskId, qid=body.answers.qid) if body.answers else None,
+    line = await engine.http(
+        engine.append_line(
+            LineIn(
+                tenant_id=body.ownerId,
+                conversation_id=room_id,
+                principal=Principal(kind="member", id=member),
+                text=f"{who} said in the meeting: {body.text}",
+                idempotency_key=key,
+                via="voice",
+                answers=SaidQuestion(task_id=body.answers.taskId, qid=body.answers.qid) if body.answers else None,
+            )
         )
     )
     out = {"posted": True, "messageId": line.message_id}
@@ -130,7 +132,7 @@ class EventsIn(RoomBody):
 async def events(room_id: str, body: EventsIn) -> dict:
     """The agent messages the meeting's room got after `after`: the voice says each one in the meeting."""
     room_id, _conv, meeting = await _meeting(room_id, body)
-    lines = await engine.read_lines(body.ownerId, room_id, body.after)
+    lines = await engine.http(engine.read_lines(body.ownerId, room_id, body.after))
     return {**lines, "notTranscribed": meeting.get("notTranscribed") or []}
 
 

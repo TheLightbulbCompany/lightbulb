@@ -14,7 +14,7 @@ from moto import mock_aws
 
 from core.repositories import messaging_repo as repo
 
-OWNER = "org_1"
+OWNER = "user_A"  # the tenant is the person
 USER_A = "user_A"
 USER_B = "user_B"
 FRIDAY = "11111111-1111-4111-8111-111111111111"
@@ -1354,8 +1354,8 @@ def _switch_on(monkeypatch, org_name="Acme"):
     monkeypatch.setattr(messaging, "load_agent_roster", lambda _owner: asyncio.sleep(0, result=roster))
     monkeypatch.setattr(messaging, "human_display_name", lambda _user: asyncio.sleep(0, result="Workspace Owner"))
     monkeypatch.setattr(agent_registry, "roster", AsyncMock(return_value=roster))
-    org = AsyncMock(return_value={"name": org_name})
-    monkeypatch.setattr(messaging.clerk_admin, "get_organization", org)
+    org = AsyncMock(return_value=org_name)
+    monkeypatch.setattr(messaging, "saved_name", org)
     return messaging, ceo, org
 
 
@@ -1378,7 +1378,7 @@ async def test_with_the_switch_the_welcome_and_chips_go_to_the_owners_lightbulb_
         "firstRun": True,
         "frontAgentId": ceo,
     }  # one atomic write
-    org.return_value = {"name": "Acme Renamed"}
+    org.return_value = "Acme Renamed"
     for _ in range(2):
         (welcome,), _ = await repo.list_messages(dm, 0, 100)
         assert (welcome["text"], welcome["kind"], welcome["author"]["displayName"]) == (

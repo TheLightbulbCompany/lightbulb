@@ -12,7 +12,6 @@ from fastapi import APIRouter, Depends, HTTPException
 from core.auth import (
     AuthContext,
     get_current_user,
-    require_org_admin,
     resolve_owner_id,
 )
 from core.services.runtime_rpc import _config_get_roster_map, config_patch_roster
@@ -44,20 +43,11 @@ def _patch_touches_channels(patch: dict) -> bool:
 @router.get(
     "",
     summary="Read the caller's roster config",
-    description=(
-        "Returns the merged config of the caller's agent roster. Org callers must be "
-        "org_admin — the config carries shared secrets (future MCP env, etc.) that "
-        "non-admin members shouldn't see."
-    ),
+    description=("Returns the merged config of the caller's agent roster."),
 )
 async def get_config(
     auth: AuthContext = Depends(get_current_user),
 ):
-    # Mirror patch_config's gate. The shared org config carries secrets
-    # only the admin set up; without this, a non-admin member could read
-    # MCP env via this endpoint or the Overview Configuration button even
-    # though they can't manage them via PATCH /config.
-    require_org_admin(auth)
     owner_id = resolve_owner_id(auth)
     roster_map = await _config_get_roster_map(owner_id)
     return {"owner_id": owner_id, "config": roster_map["config"], "hash": roster_map["hash"]}
@@ -67,17 +57,13 @@ async def get_config(
     "",
     summary="Patch the caller's roster config",
     description=(
-        "Fans the patch out to every roster profile. Derives owner_id from the auth "
-        "context (org_id if org, else user_id). Requires org_admin for org callers."
+        "Fans the patch out to every roster profile. Derives owner_id from the auth context (the caller's user_id)."
     ),
 )
 async def patch_config(
     body: ConfigPatchRequest,
     auth: AuthContext = Depends(get_current_user),
 ):
-    # Org admin check (personal context passes through)
-    require_org_admin(auth)
-
     owner_id = resolve_owner_id(auth)
 
     # Channels have no Hermes equivalent yet (task-9-scan.md rows #10/#11, LATER/M5) --

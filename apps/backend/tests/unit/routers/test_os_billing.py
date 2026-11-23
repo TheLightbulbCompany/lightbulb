@@ -954,13 +954,6 @@ async def test_delete_without_an_org_removes_everything_and_the_clerk_user(ddb, 
     assert gone.deleted == ["user_a"] and gone.events.count("account_deleted") == 1
 
 
-async def test_delete_with_an_org_keeps_the_clerk_user(ddb, clock, fake, gone):
-    gone.orgs = [{"id": "org_1", "role": "org:admin"}]
-    await a_spark_account(ddb, fake)
-    assert (await req("DELETE", "/os/account", A)).status_code == 204
-    assert spark_keys(ddb) == {"os_deleted_at"} and gone.deleted == []
-
-
 async def test_delete_twice_is_204_both_times(ddb, clock, fake, gone):
     await a_spark_account(ddb, fake)
     assert (await req("DELETE", "/os/account", A)).status_code == 204

@@ -8,11 +8,9 @@ user, then polls /poll until status flips from "pending" to
 "completed". On completion the backend has already pre-staged the
 auth.json on EFS via the provision flow.
 
-ChatGPT OAuth is available to both personal owners and org owners. The
-connection binds to the workspace OWNER (one ChatGPT account ↔ one
+The connection binds to the person's workspace (one ChatGPT account ↔ one
 container), recorded set-once on the billing row as
-``oauth_connector_user_id``. For personal owners the connector IS the
-Clerk user; for orgs it is the admin who completed the device-code flow.
+``oauth_connector_user_id``; the connector IS the Clerk user.
 """
 
 from __future__ import annotations
@@ -21,7 +19,7 @@ import logging
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from core.auth import AuthContext, get_current_user, require_org_admin, resolve_owner_id
+from core.auth import AuthContext, get_current_user, resolve_owner_id
 from core.repositories import billing_repo
 from core.services.container_auth import (
     push_oauth_credential_to_container,
@@ -33,11 +31,9 @@ from core.services.oauth_service import (
     OAuthAlreadyActiveError,
     OAuthBoundElsewhereError,
     OAuthExchangeFailedError,
-    caller_may_manage_connector,
     get_decrypted_tokens_consistent,
     poll_device_code,
     request_device_code,
-    resolve_token_owner,
     revoke_user_oauth,
 )
 
@@ -45,32 +41,6 @@ from core.services.oauth_service import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/oauth/chatgpt", tags=["oauth"])
-
-
-async def _require_org_oauth_owner(ctx: AuthContext) -> None:
-    """403 unless the caller may manage the org's ChatGPT connection.
-
-    The connection is bound to the workspace OWNER (one ChatGPT account ↔
-    one container, set-once). An org row with no recorded owner yet admits
-    any admin — that first sign-in claims ownership (legacy-row backfill
-    and the normal first-connect path are the same flow).
-    """
-    require_org_admin(ctx)
-    row = await billing_repo.get_by_owner_id(resolve_owner_id(ctx))
-    if not caller_may_manage_connector(row, ctx.user_id):
-        # Phantom-connector self-heal: a recorded id naming no Clerk user
-        # wedges every real admin here with no recovery path. Clear it (CAS
-        # on the exact phantom value) and let this caller's normal flow
-        # proceed; a real owner keeps their 403 below.
-        from core.services.oauth_service import maybe_clear_phantom_connector
-
-        owner_id = resolve_owner_id(ctx)
-        if await maybe_clear_phantom_connector(owner_id, row):
-            return
-        raise HTTPException(
-            status_code=403,
-            detail="Only the workspace owner who connected ChatGPT can manage this connection.",
-        )
 
 
 @router.get(
@@ -82,24 +52,16 @@ async def _require_org_oauth_owner(ctx: AuthContext) -> None:
         "on file (e.g. they completed in another tab, or the page "
         "remounted between /poll and the next gate refresh). Returns "
         "200 with {connected, account_id}; never raises for missing-row. "
-        "In org context this resolves the WORKSPACE's connection (bound to "
-        "the recorded owner), so any org member sees the same answer."
     ),
 )
 async def status(ctx: AuthContext = Depends(get_current_user)):
-    # Org context resolves the connection bound to the workspace owner — any
-    # member reading /status sees the shared container's connection, not their
-    # own (a member never completes the device-code flow). Personal owners ARE
-    # their own connector, so the resolution is a no-op for them.
     owner_id = resolve_owner_id(ctx)
-    token_owner = await resolve_token_owner(owner_id=owner_id) if ctx.is_org_context else ctx.user_id
     # Strongly-consistent read so the wizard sees its own write from /poll
     # without an eventual-consistency stutter. ``bound_to`` is the workspace
     # owner whose container consumes these tokens: a row the connector
-    # claimed for a DIFFERENT workspace (e.g. they connected for an org, then
-    # opened a personal workspace under the same Clerk user) reads as
-    # disconnected here, so the personal gate can never silently reuse it.
-    tokens = await get_decrypted_tokens_consistent(user_id=token_owner, bound_to=owner_id)
+    # claimed for a DIFFERENT workspace reads as disconnected here, so the
+    # gate can never silently reuse it.
+    tokens = await get_decrypted_tokens_consistent(user_id=ctx.user_id, bound_to=owner_id)
     return {
         "connected": tokens is not None,
         "account_id": (tokens or {}).get("account_id"),
@@ -112,14 +74,10 @@ async def status(ctx: AuthContext = Depends(get_current_user)):
     description=(
         "Returns the user-facing fields needed to complete OAuth in the "
         "browser: user_code (typed at verification_uri) and the polling "
-        "interval. Returns 409 if the user already has an active session. "
-        "In org context, only the workspace owner who connected (or an "
-        "admin on a not-yet-claimed workspace) may start a session."
+        "interval. Returns 409 if the user already has an active session."
     ),
 )
 async def start(ctx: AuthContext = Depends(get_current_user)):
-    if ctx.is_org_context:
-        await _require_org_oauth_owner(ctx)
     # Starting a ChatGPT sign-in needs a paid plan: 402 plan_required unless is_paid_subscription(billing row), checked
     # BEFORE any OpenAI device code is requested. Only /start is gated; /status, /poll and /disconnect, and connections
     # already made, are untouched.
@@ -132,8 +90,7 @@ async def start(ctx: AuthContext = Depends(get_current_user)):
         )
     try:
         # Bind the session to the workspace it is being started for, decided
-        # HERE under the owner gate (org_id in org context, the user's own id
-        # personally). The binding rides the pending row through to completion;
+        # HERE (the user's own id). The binding rides the pending row through to completion;
         # /poll cannot re-derive it from the polling caller's context.
         result = await request_device_code(user_id=ctx.user_id, bound_owner_id=resolve_owner_id(ctx))
     except OAuthAlreadyActiveError as e:
@@ -165,10 +122,6 @@ async def start(ctx: AuthContext = Depends(get_current_user)):
     ),
 )
 async def poll(ctx: AuthContext = Depends(get_current_user)):
-    # Re-check current membership and connector ownership before exchanging or
-    # saving tokens. A session started by a former admin is no longer authorized.
-    if ctx.is_org_context:
-        await _require_org_oauth_owner(ctx)
     try:
         result = await poll_device_code(user_id=ctx.user_id, authorized_owner_id=resolve_owner_id(ctx))
     except OAuthBoundElsewhereError as e:
@@ -206,13 +159,10 @@ async def poll(ctx: AuthContext = Depends(get_current_user)):
     description=(
         "Deletes the persisted OAuth row AND the staged root auth.json so "
         "the runtime can no longer use the tokens. After this, /start can "
-        "be called again to begin a new OAuth session. In org context, only the "
-        "workspace owner who connected may disconnect."
+        "be called again to begin a new OAuth session."
     ),
 )
 async def disconnect(ctx: AuthContext = Depends(get_current_user)):
-    if ctx.is_org_context:
-        await _require_org_oauth_owner(ctx)
     owner_id = resolve_owner_id(ctx)
     # The root auth.json IS the live credential, so revoke it BEFORE deleting the DDB token row
     # that gives this request retry ownership. The helper raises rather than reporting a clean
@@ -225,18 +175,15 @@ async def disconnect(ctx: AuthContext = Depends(get_current_user)):
             status_code=502,
             detail="Could not remove the ChatGPT credential — try disconnecting again.",
         ) from e
-    # The owner gate above guarantees the caller IS the recorded connector in
-    # org context, so revoking on ctx.user_id revokes the tokens that back the
-    # container. One ChatGPT account ↔ one container, so this fully revokes for
-    # both personal and org owners.
+    # The caller IS the connector, so revoking on ctx.user_id revokes the tokens
+    # that back the container. One ChatGPT account ↔ one container.
     await revoke_user_oauth(user_id=ctx.user_id)
     # Clear provider_choice so the next /chat visit routes the owner back to
     # onboarding to pick a provider. Without this, the wizard sees
     # provider_choice=chatgpt_oauth on a billing row with no auth.json and the
     # container starts but cannot run inference. clear_provider_choice also
     # REMOVEs oauth_connector_user_id, so a later re-connect re-claims
-    # ownership from scratch — the disconnect is total for personal and org
-    # owners alike.
+    # ownership from scratch.
     try:
         await billing_repo.clear_provider_choice(owner_id)
     except Exception:

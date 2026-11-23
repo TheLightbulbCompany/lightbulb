@@ -47,7 +47,7 @@ class TestGetBillingAccount:
     async def test_get_billing_account_active_subscription(self, mock_repo, mock_get_summary, async_client):
         mock_repo.get_by_owner_id = AsyncMock(
             return_value={
-                "owner_id": "org_test_456",
+                "owner_id": "user_test_123",
                 "stripe_customer_id": "cus_billing_test",
                 "stripe_subscription_id": "sub_123",
                 "subscription_status": "active",
@@ -82,7 +82,7 @@ class TestGetBillingAccount:
 
         monkeypatch.setattr(settings, "STRIPE_FRONT_DESK_PRICE_ID", "price_fd")
         mock_get_summary.return_value = {"total_spend": 0, "lifetime_spend": 0}
-        row = {"owner_id": "org_test_456", "subscription_status": "active"}
+        row = {"owner_id": "user_test_123", "subscription_status": "active"}
         mock_repo.get_by_owner_id = AsyncMock(return_value={**row, "front_desk": True})
         data = (await async_client.get("/api/v1/billing/account")).json()
         assert data["front_desk"] is True
@@ -102,7 +102,7 @@ class TestGetBillingAccount:
         free-tier card with a Subscribe CTA, never "Active subscription")."""
         mock_repo.get_by_owner_id = AsyncMock(
             return_value={
-                "owner_id": "org_test_456",
+                "owner_id": "user_test_123",
                 "subscription_status": "trial_local",
                 "trial_end": None,
             }

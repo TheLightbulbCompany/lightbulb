@@ -1,4 +1,3 @@
-import base64
 import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -1071,56 +1070,3 @@ async def test_the_roster_fan_out_reads_the_line_once(monkeypatch):
     line.assert_awaited_once_with("owner_1")
     numbers = [c.kwargs["inputs"].front_desk_number_for(c.args[1]["id"]) for c in write.await_args_list]
     assert numbers == [None, "+1555", None, None, None, None]
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("legacy_seed", [False, True])
-async def test_pool_preparation_preserves_network_identity_and_refreshes_sessions(monkeypatch, legacy_seed):
-    """prepare_hermes_workspace gives every workspace a cloud member: the boot secret gets a
-    member key and ``<owner>/network/sessions.json`` is written (empty roster before step 0
-    seeds it; write_profiles republishes it after)."""
-    import json
-
-    import boto3
-    from moto import mock_aws
-
-    _patch_owner_aws(monkeypatch, existing_row=None)
-    objects: dict[str, bytes] = {}
-    monkeypatch.setattr(hermes_provisioning.settings, "OWNER_STATE_BUCKET", "bucket")
-    monkeypatch.setattr("core.services.hermes_profiles.put_owner_object", lambda k, b: objects.__setitem__(k, b))
-    monkeypatch.setattr("core.services.hermes_profiles.get_owner_object", lambda k: objects.get(k))
-    monkeypatch.setattr(
-        "core.services.hermes_profiles.owner_object_size", lambda k: len(objects[k]) if k in objects else None
-    )
-    monkeypatch.setattr("core.services.clerk_admin.get_organization", AsyncMock(return_value={"name": "Acme"}))
-    monkeypatch.setattr("core.services.messaging.load_agent_roster", AsyncMock(return_value=[]))
-    monkeypatch.setattr("core.services.network_member._arm_wake", AsyncMock())  # its own test: test_network_member.py
-    # The members list the sessions file carries (no Paperclip workspace in this test).
-    monkeypatch.setattr("core.services.website_logins._humans_to_ask", AsyncMock(return_value=[]))
-
-    with mock_aws():
-        sm = boto3.client("secretsmanager", region_name="us-east-1")
-        from core.services.agentcore_runtime import network_seed_sync
-
-        secret_name = hermes_provisioning.boot_secret_name("org_a")
-        if legacy_seed:
-            sm.create_secret(
-                Name=secret_name,
-                SecretString=json.dumps({"networkKey": base64.b64encode(bytes(range(32))).decode()}),
-            )
-        seed = network_seed_sync("org_a", "row-new")
-        assert seed
-        assert await hermes_provisioning.prepare_hermes_workspace("org_a") is False
-        assert json.loads(objects["org_a/network/sessions.json"]) == {
-            "workspace": "Acme",
-            "sessions": [],
-            "members": [],
-            "revoked_keys": [],
-        }
-
-        # A reconcile keeps the key and refreshes sessions.json (#4359: workspaces always carry members).
-        objects["org_a/network/sessions.json"] = b'{"workspace": "Acme", "sessions": [], "kept": true}'
-        assert await hermes_provisioning.prepare_hermes_workspace("org_a") is False
-        assert network_seed_sync("org_a", "row-new") == seed
-        assert len(sm.list_secrets()["SecretList"]) == (1 if legacy_seed else 0)
-        assert "kept" not in json.loads(objects["org_a/network/sessions.json"])

@@ -152,7 +152,6 @@ async def compute_status(owner_id: str, *, container: Any = _NOT_GIVEN, onboardi
     if onboarding is _NOT_GIVEN:
         onboarding = await resolve_onboarding_state(owner_id)
 
-    is_org = owner_id.startswith("org_")
     provider_choice = (account or {}).get("provider_choice")
     subscription_status = (account or {}).get("subscription_status")
     sub_active = is_subscription_active(account)
@@ -164,18 +163,9 @@ async def compute_status(owner_id: str, *, container: Any = _NOT_GIVEN, onboardi
     if container is None:
         runtime_phase = "provisioning"
         if not sub_active:
-            # Personal: no billing row (or an inactive one) means "never
-            # started signup" / "needs to re-subscribe" -- the picker.
-            # Org: the free tier is personal-only (trial_local never
-            # applies to an org_ owner), so an inactive/absent org billing
-            # row is the workspace billing paywall, folded into "blocked"
-            # here -- the router's own evaluate_provision_gate call still
-            # supplies the precise blocked-gate payload (team_billing_required
-            # vs subscription_required vs payment_past_due); this composer
-            # only needs to name the COARSE lifecycle bucket.
-            lifecycle = "blocked" if is_org else "needs_signup"
-        elif is_org and subscription_status != "trial_local" and provider_choice is None:
-            lifecycle = "provider_selection_required"
+            # No billing row (or an inactive one) means "never started signup" / "needs to
+            # re-subscribe" -- the picker.
+            lifecycle = "needs_signup"
         else:
             lifecycle = "provisioning"
     else:
@@ -247,7 +237,6 @@ async def compute_status(owner_id: str, *, container: Any = _NOT_GIVEN, onboardi
         "provider": {
             "choice": provider_choice,
             "byo_provider": (account or {}).get("byo_provider"),
-            "is_org": is_org,
             "subscription_status": subscription_status,
         },
         "teams_state": onboarding.get("teams_state"),

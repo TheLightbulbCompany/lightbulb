@@ -49,54 +49,9 @@ def create_mock_httpx_client(jwks_response: dict = None, error: Exception = None
 class TestAuthContext:
     """Tests for AuthContext data class."""
 
-    def test_auth_context_creation_personal(self):
-        """AuthContext can be created for personal context (no org)."""
-        ctx = AuthContext(user_id="user_123")
-        assert ctx.user_id == "user_123"
-        assert ctx.org_id is None
-        assert ctx.org_role is None
-        assert ctx.org_slug is None
-        assert ctx.org_permissions == []
-
-    def test_auth_context_creation_with_org(self):
-        """AuthContext can be created with organization claims."""
-        ctx = AuthContext(
-            user_id="user_123",
-            org_id="org_456",
-            org_role="org:admin",
-            org_slug="acme-corp",
-            org_permissions=["org:read", "org:write"],
-        )
-        assert ctx.user_id == "user_123"
-        assert ctx.org_id == "org_456"
-        assert ctx.org_role == "org:admin"
-        assert ctx.org_slug == "acme-corp"
-        assert ctx.org_permissions == ["org:read", "org:write"]
-
-    def test_is_org_context_true_when_org_id_present(self):
-        """is_org_context returns True when org_id is set."""
-        ctx = AuthContext(user_id="user_123", org_id="org_456")
-        assert ctx.is_org_context is True
-
-    def test_is_org_context_false_when_no_org_id(self):
-        """is_org_context returns False when org_id is None."""
-        ctx = AuthContext(user_id="user_123")
-        assert ctx.is_org_context is False
-
-    def test_is_org_admin_true_for_admin_role(self):
-        """is_org_admin returns True for org:admin role."""
-        ctx = AuthContext(user_id="user_123", org_id="org_456", org_role="org:admin")
-        assert ctx.is_org_admin is True
-
-    def test_is_org_admin_false_for_member_role(self):
-        """is_org_admin returns False for org:member role."""
-        ctx = AuthContext(user_id="user_123", org_id="org_456", org_role="org:member")
-        assert ctx.is_org_admin is False
-
-    def test_is_org_admin_false_when_no_role(self):
-        """is_org_admin returns False when no role is set."""
-        ctx = AuthContext(user_id="user_123", org_id="org_456")
-        assert ctx.is_org_admin is False
+    def test_auth_context_creation(self):
+        ctx = AuthContext(user_id="user_123", email="a@b.co")
+        assert (ctx.user_id, ctx.email, ctx.verified_issuer) == ("user_123", "a@b.co", None)
 
 
 class TestGetCurrentUser:
@@ -262,11 +217,10 @@ class TestGetCurrentUser:
 
             assert isinstance(result, AuthContext)
             assert result.user_id == "user_123"
-            assert result.is_org_context is False
 
     @pytest.mark.asyncio
-    async def test_returns_auth_context_with_org_claims(self, mock_credentials, valid_jwks):
-        """get_current_user returns AuthContext with org claims from JWT."""
+    async def test_ignores_org_claims(self, mock_credentials, valid_jwks):
+        """A leftover organisation claim changes nothing: the context is the person's."""
         # Use Clerk v2 compact format with nested 'o' object
         payload = {
             "sub": "user_123",
@@ -298,9 +252,3 @@ class TestGetCurrentUser:
 
             assert isinstance(result, AuthContext)
             assert result.user_id == "user_123"
-            assert result.org_id == "org_456"
-            assert result.org_role == "org:admin"
-            assert result.org_slug == "acme-corp"
-            assert result.org_permissions == ["org:read", "org:write"]
-            assert result.is_org_context is True
-            assert result.is_org_admin is True

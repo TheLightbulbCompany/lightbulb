@@ -59,7 +59,7 @@ def test_add_member_acts_as_the_requester(client, monkeypatch, seated):
     response = client.post(URL, json=ADD, headers=_bearer("user_ana"))
     assert response.status_code == 200 and response.json() == {"roomId": ROOM}
     auth, room_id, request = upsert.await_args.args
-    assert (auth.user_id, auth.org_id, room_id) == ("user_ana", None, ROOM)
+    assert (auth.user_id, room_id) == ("user_ana", ROOM)
     assert (request.kind, request.id, request.role) == ("agent", "atlas", "member")
 
 

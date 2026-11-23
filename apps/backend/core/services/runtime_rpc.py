@@ -11,7 +11,7 @@ from typing import Any
 
 import botocore.exceptions
 
-from core.auth import AuthContext, require_org_admin, resolve_owner_id
+from core.auth import AuthContext, resolve_owner_id
 from core.dynamodb import run_in_thread
 from core.observability.metrics import put_metric
 from core.repositories import container_repo, messaging_repo
@@ -72,10 +72,6 @@ _MUTATING_METHODS = frozenset(
         "config.patch",
     }
 )
-# The profile config carries owner-level settings and secrets references (MCP servers, the
-# auxiliary base_url), so reading or writing it is admin-only -- the same gate as the REST twin,
-# routers/config.py. agents.* stay open to members, matching routers/teams/agents.py.
-_ADMIN_METHODS = frozenset({"config.get", "config.patch"})
 _RPC_TIMEOUT_S = 30.0
 #: M4-R1 (Task 13a): served from the profile in S3 + the Paperclip roster, never forwarded to
 #: the runtime.
@@ -291,8 +287,6 @@ async def execute(
     owner_id = resolve_owner_id(auth)
     params = dict(request.params)
     _guard_method(request.method)
-    if request.method in _ADMIN_METHODS:
-        require_org_admin(auth)
     if request.method in _MUTATING_METHODS:
         # Clear a racing idle-stop claim before any durable or external effect.
         await container_repo.touch_last_interactive(owner_id)

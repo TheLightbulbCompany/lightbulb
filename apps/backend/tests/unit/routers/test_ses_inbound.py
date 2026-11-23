@@ -1127,47 +1127,6 @@ def _team(monkeypatch, members):
     return put, deliver
 
 
-def test_a_strangers_invite_to_the_team_address_is_ceo_mail(client, monkeypatch):
-    _enable(monkeypatch)
-    _dedup_recorded(monkeypatch)
-    put, deliver = _team(monkeypatch, [{"email": "member@acme.com"}])
-
-    resp = _post(client, _body(to=[TEAM_ADDRESS], calendar=INVITE))
-
-    assert resp.json()["status"] == "delivered"
-    put.assert_not_awaited()
-    deliver.assert_awaited_once()
-    assert deliver.await_args.kwargs["agent_id"] == CEO_ID
-
-
-def test_a_members_invite_to_the_team_address_is_a_meeting(client, monkeypatch):
-    _enable(monkeypatch)
-    _dedup_recorded(monkeypatch)
-    put, deliver = _team(monkeypatch, [{"email": SENDER}])
-
-    resp = _post(client, _body(to=[TEAM_ADDRESS], calendar=INVITE))  # From: SENDER, a member
-
-    assert resp.json()["status"] == "meeting_scheduled"
-    put.assert_awaited_once()
-    deliver.assert_not_awaited()
-
-
-@pytest.mark.parametrize(
-    "bad",
-    [("UID:evt-1", "SEQUENCE:abc\r\nUID:evt-1"), ("DTSTART:20361003T190000Z", "DTSTART;TZID=America:20361003T190000")],
-)
-def test_a_members_malformed_invite_is_ceo_mail_not_5xx(client, monkeypatch, bad):
-    _enable(monkeypatch)
-    _dedup_recorded(monkeypatch)
-    put, deliver = _team(monkeypatch, [{"email": SENDER}])
-
-    resp = _post(client, _body(to=[TEAM_ADDRESS], calendar=INVITE.replace(*bad)))
-
-    assert resp.status_code == 200 and resp.json()["status"] == "delivered"
-    put.assert_not_awaited()
-    assert deliver.await_args.kwargs["agent_id"] == CEO_ID
-
-
 def test_team_mail_without_a_ceo_is_dropped(client, monkeypatch):
     _enable(monkeypatch)
     _dedup_recorded(monkeypatch)

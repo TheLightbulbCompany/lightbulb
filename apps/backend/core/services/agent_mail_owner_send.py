@@ -27,7 +27,6 @@ Clerk org name, then the owner id), so a rename before the first send shapes the
 import logging
 from datetime import datetime, timezone
 
-from core.auth import is_org_owner_id
 from core.config import settings
 from core.observability.metrics import put_metric
 from core.repositories import agent_mail_inbox_repo, container_repo
@@ -171,10 +170,7 @@ async def send_to_owner(
             if not await container_repo.try_consume_daily_email_send(owner_id, day=day, cap=DAILY_SEND_CAP):
                 return await _fail("daily_cap_exhausted", "rate_limited")
 
-        owner_email = await lookup_owner_email(
-            org_id=owner_id if is_org_owner_id(owner_id) else None,
-            fallback_user_id=onboarding.get("user_id") or owner_id,
-        )
+        owner_email = await lookup_owner_email(onboarding.get("user_id") or owner_id)
         if not owner_email:
             return await _fail("no_owner_email", "error")
 

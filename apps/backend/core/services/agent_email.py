@@ -19,11 +19,9 @@ import logging
 import re
 from email.utils import formataddr
 
-from core.auth import is_org_owner_id
 from core.config import settings
 from core.repositories import agent_email_repo, company_slug_repo
 from core.services import agent_registry
-from core.services.company_identity import allocate_company_slug
 from core.services.workspace_name import workspace_name
 
 logger = logging.getLogger(__name__)
@@ -153,12 +151,7 @@ async def ensure_team_address(owner_id: str, owner_email: str | None) -> tuple[s
             return None, "disabled"
         address = await team_address(owner_id)
         if not address:
-            if not is_org_owner_id(owner_id):
-                return None, "disabled"
-            slug = await allocate_company_slug(owner_id=owner_id, name=await workspace_name(owner_id))
-            if not slug:
-                return None, "slug_allocation_failed"
-            address = f"agents@{slug}.{_domain()}"
+            return None, "disabled"
         row = await agent_email_repo.get_by_address(address)
         if not row:
             seed = strictest(await agent_email_repo.query_by_owner(owner_id))

@@ -408,7 +408,7 @@ class TestListConnections:
         assert by_key["stripe"]["paste_fields"] is None
 
         # Status now comes from the secret-free integrations index.
-        mock_repo.list_for_owner.assert_awaited_once_with("org_test_456")
+        mock_repo.list_for_owner.assert_awaited_once_with("user_test_123")
 
     @pytest.mark.asyncio
     @patch("routers.connections.integrations_repo")
@@ -861,16 +861,16 @@ class TestConnectPaste:
         # Credential persisted to Secrets Manager with the pasted token.
         mock_store.put.assert_awaited_once()
         put_args = mock_store.put.await_args
-        assert put_args.args[0] == "org_test_456"
+        assert put_args.args[0] == "user_test_123"
         assert put_args.args[1] == "vercel_cli"
         assert put_args.args[2] == {"token": "vc_test_abc123"}
 
         # Wiring engine invoked with (owner, provider, credential).
-        mock_apply.apply_connection.assert_awaited_once_with("org_test_456", "vercel_cli", {"token": "vc_test_abc123"})
+        mock_apply.apply_connection.assert_awaited_once_with("user_test_123", "vercel_cli", {"token": "vc_test_abc123"})
 
         # Status row written ONLY after a successful apply.
         assert mock_repo.put_status.await_count == 1
-        assert mock_repo.put_status.await_args.args == ("org_test_456", "vercel_cli", "connected")
+        assert mock_repo.put_status.await_args.args == ("user_test_123", "vercel_cli", "connected")
 
         # Load-bearing ordering: store secret -> wire container -> mark connected.
         # A put_status written before apply would falsely report "connected"
@@ -918,7 +918,7 @@ class TestConnectPaste:
         response = await async_client.post("/api/v1/connections/vercel_cli", json={"token": "vc_test_abc123"})
         assert response.status_code == 200
         publish.assert_awaited_once()
-        assert publish.await_args.args[0] == "org_test_456"
+        assert publish.await_args.args[0] == "user_test_123"
         assert publish.await_args.args[1]["payload"]["resource"] == "activity"
 
     @pytest.mark.asyncio
@@ -961,7 +961,7 @@ class TestConnectPaste:
 
         # The secret was stored, then rolled back out of Secrets Manager.
         mock_store.put.assert_awaited_once()
-        mock_store.delete.assert_awaited_once_with("org_test_456", "parallel")
+        mock_store.delete.assert_awaited_once_with("user_test_123", "parallel")
         # Status is written only after a clean apply -> never on the failure path.
         mock_repo.put_status.assert_not_called()
         # parallel rides openclaw_paths (no materializer) -> the projection rollback is a no-op.
@@ -1001,7 +1001,7 @@ class TestConnectPaste:
         assert response.status_code == 422
         assert "RUNTIME_UNSUPPORTED" in response.json()["detail"]
         mock_store.put.assert_awaited_once()
-        mock_store.delete.assert_awaited_once_with("org_test_456", "synth")
+        mock_store.delete.assert_awaited_once_with("user_test_123", "synth")
         mock_repo.put_status.assert_not_called()
 
     @pytest.mark.asyncio
@@ -1028,48 +1028,6 @@ class TestConnectionWriteOrgAdminGate:
     @patch("routers.connections.integration_secret_store")
     @patch("routers.connections.integrations_repo")
     @patch("routers.connections._validate_token", new_callable=AsyncMock)
-    async def test_connect_paste_non_admin_member_forbidden(
-        self, mock_validate, mock_repo, mock_store, mock_apply, async_client_org_member
-    ):
-        mock_validate.return_value = True
-        mock_store.put = AsyncMock()
-        mock_repo.put_status = AsyncMock()
-        mock_apply.apply_connection = AsyncMock()
-
-        response = await async_client_org_member.post("/api/v1/connections/stripe", json={"token": "sk_test_abc123"})
-        assert response.status_code == 403
-        # Gate fires before any persistence / wiring.
-        mock_store.put.assert_not_called()
-        mock_apply.apply_connection.assert_not_called()
-        mock_repo.put_status.assert_not_called()
-
-    @pytest.mark.asyncio
-    @patch("routers.connections.oauth_dance")
-    async def test_authorize_non_admin_member_forbidden(self, mock_dance, async_client_org_member):
-        mock_dance.start = AsyncMock()
-
-        response = await async_client_org_member.get("/api/v1/connections/google/authorize")
-        assert response.status_code == 403
-        # OAuth dance never started for a non-admin member.
-        mock_dance.start.assert_not_called()
-
-    @pytest.mark.asyncio
-    @patch("routers.connections.integration_secret_store")
-    @patch("routers.connections.integrations_repo")
-    async def test_disconnect_non_admin_member_forbidden(self, mock_repo, mock_store, async_client_org_member):
-        mock_repo.delete = AsyncMock()
-        mock_store.delete = AsyncMock()
-        response = await async_client_org_member.delete("/api/v1/connections/stripe")
-        assert response.status_code == 403
-        # Nothing deleted / unwired for a non-admin member.
-        mock_repo.delete.assert_not_called()
-        mock_store.delete.assert_not_called()
-
-    @pytest.mark.asyncio
-    @patch("routers.connections.apply_connection")
-    @patch("routers.connections.integration_secret_store")
-    @patch("routers.connections.integrations_repo")
-    @patch("routers.connections._validate_token", new_callable=AsyncMock)
     async def test_connect_paste_org_admin_allowed(
         self, mock_validate, mock_repo, mock_store, mock_apply, async_client_org_admin
     ):
@@ -1083,10 +1041,10 @@ class TestConnectionWriteOrgAdminGate:
         assert response.status_code == 200
         assert response.json() == {"status": "connected", "provider": "vercel_cli"}
         put_args = mock_store.put.await_args
-        assert put_args.args[0] == "org_test_456"
-        mock_apply.apply_connection.assert_awaited_once_with("org_test_456", "vercel_cli", {"token": "vc_test_abc123"})
+        assert put_args.args[0] == "user_test_123"
+        mock_apply.apply_connection.assert_awaited_once_with("user_test_123", "vercel_cli", {"token": "vc_test_abc123"})
         assert mock_repo.put_status.await_count == 1
-        assert mock_repo.put_status.await_args.args == ("org_test_456", "vercel_cli", "connected")
+        assert mock_repo.put_status.await_args.args == ("user_test_123", "vercel_cli", "connected")
 
     @pytest.mark.asyncio
     @patch("routers.connections.integrations_repo")
@@ -1096,7 +1054,7 @@ class TestConnectionWriteOrgAdminGate:
 
         response = await async_client_org_member.get("/api/v1/connections")
         assert response.status_code == 200
-        mock_repo.list_for_owner.assert_awaited_once_with("org_test_456")
+        mock_repo.list_for_owner.assert_awaited_once_with("user_test_123")
 
 
 class TestDisconnect:
@@ -1144,8 +1102,8 @@ class TestDisconnect:
 
         assert response.status_code == 200
         assert response.json()["status"] == "disconnected"
-        mock_store.delete.assert_awaited_once_with("org_test_456", "gone_provider")
-        mock_repo.delete.assert_awaited_once_with("org_test_456", "gone_provider")
+        mock_store.delete.assert_awaited_once_with("user_test_123", "gone_provider")
+        mock_repo.delete.assert_awaited_once_with("user_test_123", "gone_provider")
 
     @pytest.mark.asyncio
     async def test_shopify_is_live_again_not_retired(self):
@@ -1179,18 +1137,18 @@ class TestDisconnect:
         # Whole-keyring remove: provider-level disconnect_all + the account
         # inventory, so gog revokes each grant at Google before the wipe.
         hermes_clear.assert_awaited_once_with(
-            "org_test_456", "google", "gog_cli", {"disconnect_all": True, "accounts": ["a@x.com", "b@x.com"]}
+            "user_test_123", "google", "gog_cli", {"disconnect_all": True, "accounts": ["a@x.com", "b@x.com"]}
         )
         # Provider-level status row + secret dropped.
-        mock_repo.delete.assert_awaited_once_with("org_test_456", "google")
+        mock_repo.delete.assert_awaited_once_with("user_test_123", "google")
         # Every inventory account removed.
         removed = {c.args[1] for c in mock_accounts.remove_account.await_args_list}
         assert removed == {"a@x.com", "b@x.com"}
         # Every assignment removed.
-        mock_accounts.remove_assignment.assert_awaited_once_with("org_test_456", "agent_1")
+        mock_accounts.remove_assignment.assert_awaited_once_with("user_test_123", "agent_1")
         # Each un-assigned agent re-seeded so its IDENTITY.md gog-account block
         # is removed (the account it named is gone).
-        mock_seed.assert_awaited_once_with("org_test_456", "agent_1")
+        mock_seed.assert_awaited_once_with("user_test_123", "agent_1")
 
     @pytest.mark.asyncio
     @patch("routers.connections.seed_agent_google_identity", new_callable=AsyncMock)
@@ -1219,17 +1177,17 @@ class TestDisconnect:
         assert response.json() == {"status": "disconnected", "provider": "google", "account": "a@x.com"}
 
         # Per-account remove: gog run against a scratch copy, with the single email.
-        hermes_clear.assert_awaited_once_with("org_test_456", "google", "gog_cli", {"email": "a@x.com"})
+        hermes_clear.assert_awaited_once_with("user_test_123", "google", "gog_cli", {"email": "a@x.com"})
         # Only that account removed from inventory.
-        mock_accounts.remove_account.assert_awaited_once_with("org_test_456", "a@x.com")
+        mock_accounts.remove_account.assert_awaited_once_with("user_test_123", "a@x.com")
         # Only the assignment pointing at a@x.com dropped; agent_2 (b@x.com) kept.
-        mock_accounts.remove_assignment.assert_awaited_once_with("org_test_456", "agent_1")
+        mock_accounts.remove_assignment.assert_awaited_once_with("user_test_123", "agent_1")
         # agent_1 is re-seeded so its block goes with its account; agent_2 is re-seeded
         # because the projection's cli-env.json is provider-keyed, so this disconnect wiped
         # its GOG_ACCOUNT too (see the disconnect-A-keeps-B test below).
         assert [c.args for c in mock_seed.await_args_list] == [
-            ("org_test_456", "agent_1"),
-            ("org_test_456", "agent_2"),
+            ("user_test_123", "agent_1"),
+            ("user_test_123", "agent_2"),
         ]
         # Provider-level status row + secret NOT dropped on a single-account disconnect.
         mock_repo.delete.assert_not_called()
@@ -1259,7 +1217,7 @@ class TestDisconnect:
         assert response.status_code == 200
 
         mock_accounts.remove_assignment.assert_not_called()
-        mock_seed.assert_awaited_once_with("org_test_456", "agent_2")
+        mock_seed.assert_awaited_once_with("user_test_123", "agent_2")
 
     @pytest.mark.asyncio
     @patch("routers.connections.google_accounts_repo")
@@ -1283,7 +1241,7 @@ class TestDisconnect:
         # Account absent -> no keyring remove attempted.
         hermes_clear.assert_not_awaited()
         # remove_account is still issued (a delete of an absent row is itself a no-op).
-        mock_accounts.remove_account.assert_awaited_once_with("org_test_456", "a@x.com")
+        mock_accounts.remove_account.assert_awaited_once_with("user_test_123", "a@x.com")
 
     @pytest.mark.asyncio
     @patch("routers.connections.google_accounts_repo")
@@ -1319,8 +1277,8 @@ class TestDisconnect:
 
         assert response.status_code == 200
         assert response.json() == {"status": "disconnected", "provider": "google"}
-        mock_store.delete.assert_awaited_once_with("org_test_456", "google")
-        mock_repo.delete.assert_awaited_once_with("org_test_456", "google")
+        mock_store.delete.assert_awaited_once_with("user_test_123", "google")
+        mock_repo.delete.assert_awaited_once_with("user_test_123", "google")
 
     @pytest.mark.asyncio
     @patch("routers.connections.integration_secret_store")
@@ -1355,7 +1313,7 @@ class TestDisconnect:
 
         assert response.status_code == 200
         assert response.json() == {"status": "disconnected", "provider": "fakemcp"}
-        assert refreshed == ["org_test_456"]
+        assert refreshed == ["user_test_123"]
 
     @pytest.mark.asyncio
     @patch("routers.connections.integration_secret_store")
@@ -1384,7 +1342,7 @@ class TestDisconnect:
 
         assert response.status_code == 200
         assert response.json() == {"status": "disconnected", "provider": "parallel"}
-        assert cleared == [("org_test_456", "parallel")]
+        assert cleared == [("user_test_123", "parallel")]
         mock_reconcile.assert_not_awaited()  # openclaw_paths never reaches the MCP reconcile branch
 
 
@@ -1407,7 +1365,7 @@ class TestAuthorize:
         # Dance started with the server-derived redirect_uri.
         mock_dance.start.assert_awaited_once()
         call = mock_dance.start.await_args
-        assert call.args[0] == "org_test_456"
+        assert call.args[0] == "user_test_123"
         assert call.args[1] == "x"
         assert call.kwargs["redirect_uri"].endswith("/api/v1/oauth/x/callback")
 
@@ -2016,7 +1974,7 @@ class TestByoApp:
         mock_put.assert_awaited_once()
         # Stored under (owner, provider) with the submitted client credentials.
         put_call = mock_put.await_args
-        assert put_call.args[0] == "org_test_456"
+        assert put_call.args[0] == "user_test_123"
         assert put_call.args[1] == "x"
         assert put_call.kwargs["client_id"] == "cid"
         assert put_call.kwargs["client_secret"] == "csec"
@@ -2065,7 +2023,7 @@ class TestByoApp:
         # disconnect a live connection — only the app credentials are removed.
         resp = await async_client.delete("/api/v1/connections/x/byo-app")
         assert resp.status_code == 200
-        mock_delete.assert_awaited_once_with("org_test_456", "x")
+        mock_delete.assert_awaited_once_with("user_test_123", "x")
 
     @pytest.mark.asyncio
     @patch("routers.connections.oauth_app_store.delete", new_callable=AsyncMock)
@@ -2221,18 +2179,6 @@ class TestAwsSetup:
         # stripe is paste_token, not aws_sts -> rejected at this AWS surface.
         response = await async_client.get("/api/v1/connections/stripe/aws-setup")
         assert response.status_code == 400
-
-    @pytest.mark.asyncio
-    @patch("routers.connections.aws_cfn")
-    @patch("routers.connections.integration_secret_store")
-    async def test_aws_setup_non_admin_member_forbidden(self, mock_store, mock_cfn, async_client_org_member):
-        mock_store.get = AsyncMock()
-        mock_store.put = AsyncMock()
-        response = await async_client_org_member.get("/api/v1/connections/aws/aws-setup")
-        assert response.status_code == 403
-        # Gate fires before any ExternalId mint / persistence.
-        mock_cfn.gen_external_id.assert_not_called()
-        mock_store.put.assert_not_called()
 
 
 class TestAwsComplete:
@@ -2502,7 +2448,7 @@ class TestAwsComplete:
         assert _h.sha256(applied["cli_token"].encode()).hexdigest() == stored["cli_token_hash"]
 
         assert mock_repo.put_status.await_count == 1
-        assert mock_repo.put_status.await_args.args == ("org_test_456", "aws", "connected")
+        assert mock_repo.put_status.await_args.args == ("user_test_123", "aws", "connected")
 
     @pytest.mark.asyncio
     @patch("routers.connections.bedrock_aip")
@@ -2558,7 +2504,7 @@ class TestAwsComplete:
         # The secret is reset to the pending {external_id}-only record, NOT fully
         # deleted -> ExternalId survives for a retry.
         mock_store.delete.assert_not_called()
-        assert mock_store.put.await_args_list[-1].args == ("org_test_456", "aws", {"external_id": "ext_abc"})
+        assert mock_store.put.await_args_list[-1].args == ("user_test_123", "aws", {"external_id": "ext_abc"})
         # Never reports a false "connected".
         mock_repo.put_status.assert_not_called()
 
@@ -2591,7 +2537,7 @@ class TestAwsComplete:
         )
         assert resp.status_code == 502
         # Despite the artifact-removal step raising, the remaining teardown ran:
-        assert mock_store.put.await_args_list[-1].args == ("org_test_456", "aws", {"external_id": "ext_abc"})
+        assert mock_store.put.await_args_list[-1].args == ("user_test_123", "aws", {"external_id": "ext_abc"})
         # Secret never fully deleted; status never flips to connected.
         mock_store.delete.assert_not_called()
         mock_repo.put_status.assert_not_called()
@@ -2612,27 +2558,6 @@ class TestAwsComplete:
         )
         assert resp.status_code == 400
         mock_apply.apply_connection.assert_not_called()
-
-    @pytest.mark.asyncio
-    @patch("routers.connections.bedrock_aip")
-    @patch("routers.connections.apply_connection")
-    @patch("routers.connections.integration_secret_store")
-    @patch("routers.connections.integrations_repo")
-    async def test_aws_complete_non_admin_member_forbidden(
-        self, mock_repo, mock_store, mock_apply, mock_aip, async_client_org_member
-    ):
-        mock_aip.OUR_ACCOUNT_ID = "877352799272"
-        mock_store.get = AsyncMock(return_value={"external_id": "ext_abc"})
-        mock_apply.apply_connection = AsyncMock()
-        mock_repo.put_status = AsyncMock()
-
-        resp = await async_client_org_member.post(
-            "/api/v1/connections/aws/aws-complete",
-            json={"role_arn": self._GOOD_ARN},
-        )
-        assert resp.status_code == 403
-        mock_apply.apply_connection.assert_not_called()
-        mock_repo.put_status.assert_not_called()
 
     # --- Trust-pin gate: a role IN OUR account is allowed ONLY if its trust
     # policy pins the platform trust principal (our account root) + THIS
@@ -2682,7 +2607,7 @@ class TestAwsComplete:
         assert resp.status_code == 200
         mock_apply.apply_connection.assert_awaited_once()
         assert mock_repo.put_status.await_count == 1
-        assert mock_repo.put_status.await_args.args == ("org_test_456", "aws", "connected")
+        assert mock_repo.put_status.await_args.args == ("user_test_123", "aws", "connected")
 
     @pytest.mark.asyncio
     @patch("routers.connections.aws_cfn.platform_trust_principal_arn", return_value=_PLATFORM_PRINCIPAL)
@@ -2846,7 +2771,7 @@ class TestAwsComplete:
         assert resp.status_code == 200
         mock_apply.apply_connection.assert_awaited_once()
         assert mock_repo.put_status.await_count == 1
-        assert mock_repo.put_status.await_args.args == ("org_test_456", "aws", "connected")
+        assert mock_repo.put_status.await_args.args == ("user_test_123", "aws", "connected")
 
     @pytest.mark.asyncio
     @patch("routers.connections.aws_cfn.platform_trust_principal_arn", return_value=_PLATFORM_PRINCIPAL)
@@ -3013,15 +2938,15 @@ class TestDisconnectAws:
 
         # aws_cli projection cleared (drops the ~/.aws bundle from every profile).
         hermes_clear.assert_awaited_once_with(
-            "org_test_456",
+            "user_test_123",
             "aws",
             "aws_cli",
             {"role_arn": "arn:aws:iam::123456789012:role/ro", "external_id": "e", "region": "us-east-1"},
         )
         # Secret delete IS the revocation: the cli_token_hash goes with it, so
         # the vend endpoint 401s the container's next fetch. Status row too.
-        mock_store.delete.assert_awaited_once_with("org_test_456", "aws")
-        mock_repo.delete.assert_awaited_once_with("org_test_456", "aws")
+        mock_store.delete.assert_awaited_once_with("user_test_123", "aws")
+        mock_repo.delete.assert_awaited_once_with("user_test_123", "aws")
 
 
 class TestAwsCredentialsEndpoint:

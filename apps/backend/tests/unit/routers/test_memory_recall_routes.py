@@ -19,21 +19,9 @@ PAGE = {"asOf": "2026-10-27T00:00:00+00:00", "usedEvidenceTokens": 5, "results":
 @pytest.fixture
 def member(monkeypatch):
     monkeypatch.setattr(memory_api.settings, "AGENTCORE_MEMORY_ID", "mem-1", raising=False)
-    app.dependency_overrides[get_current_user] = lambda: AuthContext(
-        user_id="user_me", org_id="org_a", org_role="org:member"
-    )
+    app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id="user_me", human_session=True)
     yield TestClient(app)
     app.dependency_overrides.clear()
-
-
-def test_recall_requires_member():
-    app.dependency_overrides.clear()
-    assert TestClient(app).post("/api/v1/memory/recall", json={"question": "x"}).status_code in (401, 403)
-    app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id="user_me", org_id=None, org_role=None)
-    try:
-        assert TestClient(app).post("/api/v1/memory/recall", json={"question": "x"}).status_code == 409
-    finally:
-        app.dependency_overrides.clear()
 
 
 def test_recall_starts_the_team_sync_and_recalls(member):
@@ -45,9 +33,9 @@ def test_recall_starts_the_team_sync_and_recalls(member):
     ):
         r = member.post("/api/v1/memory/recall", json={"question": "what port?", "as_of": "2026-10-01T00:00:00Z"})
     assert r.status_code == 200 and r.json() == PAGE
-    ns = workspace_memory.namespaces_for("org_a", "user_me")
-    assert sync.call_args.args == ("org_a",)
-    assert sync.call_args.kwargs["namespaces"] == workspace_memory.namespaces_for("org_a", None)
+    ns = workspace_memory.namespaces_for("user_me", "user_me")
+    assert sync.call_args.args == ("user_me",)
+    assert sync.call_args.kwargs["namespaces"] == workspace_memory.namespaces_for("user_me", None)
     kw = rec.await_args.kwargs
     assert kw["namespaces"] == ns and kw["include_private"] is True and kw["question"] == "what port?"
     assert kw["budget_tokens"] == 8000 and kw["limit"] == 100
@@ -69,7 +57,7 @@ async def test_recall_returns_without_waiting_for_the_sync(monkeypatch):
         patch.object(memory_api.memory_sync, "sync_if_stale", slow_sync),
         patch.object(memory_api.memory_recall, "recall", AsyncMock(return_value=PAGE)),
     ):
-        page = await asyncio.wait_for(memory_api.recall_page("org_a", None, "q"), timeout=1)
+        page = await asyncio.wait_for(memory_api.recall_page("user_me", None, "q"), timeout=1)
         assert page == PAGE
         await asyncio.wait_for(started.wait(), timeout=1)  # it was started, not awaited
         (task,) = memory_api._syncs
@@ -87,7 +75,7 @@ async def test_a_failed_background_sync_is_logged_not_raised(monkeypatch, caplog
         patch.object(memory_api.memory_recall, "recall", AsyncMock(return_value=PAGE)),
         caplog.at_level("WARNING", logger="core.services.memory_api"),
     ):
-        assert await memory_api.recall_page("org_a", None, "q") == PAGE
+        assert await memory_api.recall_page("user_me", None, "q") == PAGE
         for _ in range(3):
             await asyncio.sleep(0)
     assert "memory sync failed error=RuntimeError" in caplog.text and not memory_api._syncs
@@ -125,8 +113,8 @@ def test_forget_queues_when_parked():
     ):
         import asyncio
 
-        asyncio.run(memory_api.forget("org_a", "e7"))
-    queue.assert_awaited_once_with("org_a", "memory.forget", {"entry": "e7"})
+        asyncio.run(memory_api.forget("user_me", "e7"))
+    queue.assert_awaited_once_with("user_me", "memory.forget", {"entry": "e7"})
 
 
 # --- the Hermes plugin's channel --------------------------------------------------------------
@@ -152,8 +140,8 @@ def test_internal_recall_runs_as_the_workspace(hook):
         patch.object(memory_api.memory_sync, "sync_if_stale", AsyncMock()),
         patch.object(memory_api.memory_recall, "recall", rec),
     ):
-        r = client.post("/api/v1/internal/memory/recall/org_a", json={"question": "q", "budget_tokens": 400})
-    assert r.json() == PAGE and seen == ["org_a"]
+        r = client.post("/api/v1/internal/memory/recall/user_me", json={"question": "q", "budget_tokens": 400})
+    assert r.json() == PAGE and seen == ["user_me"]
     kw = rec.await_args.kwargs
     assert kw["include_private"] is False and "private" not in kw["namespaces"] and kw["budget_tokens"] == 400
     assert kw["use_expand"] is False and kw["use_rerank"] is False  # no model call before the Router's
@@ -166,20 +154,20 @@ def test_internal_recall_in_a_dm_adds_that_persons_private_scope(hook):
         patch.object(memory_api.memory_sync, "sync_if_stale", AsyncMock()),
         patch.object(memory_api.memory_recall, "recall", rec),
     ):
-        r = client.post("/api/v1/internal/memory/recall/org_a", json={"question": "q", "member": "user_ana"})
+        r = client.post("/api/v1/internal/memory/recall/user_me", json={"question": "q", "member": "user_ana"})
         assert r.status_code == 200
         kw = rec.await_args.kwargs
-        assert kw["include_private"] is True and kw["namespaces"]["private"] == "/owners/org_a:user_ana/"
+        assert kw["include_private"] is True and kw["namespaces"]["private"] == "/owners/user_me:user_ana/"
         for bad in ("Ana", "user_a/../x", "user_a:b"):
-            r = client.post("/api/v1/internal/memory/recall/org_a", json={"question": "q", "member": bad})
+            r = client.post("/api/v1/internal/memory/recall/user_me", json={"question": "q", "member": bad})
             assert r.status_code == 422, bad
 
 
 def test_internal_routes_refuse_without_the_hook_token(monkeypatch):
-    assert TestClient(app).post("/api/v1/internal/memory/recall/org_a", json={"question": "q"}).status_code == 401
+    assert TestClient(app).post("/api/v1/internal/memory/recall/user_me", json={"question": "q"}).status_code == 401
     assert (
         TestClient(app)
-        .post("/api/v1/internal/memory/remember/org_a", json={"subject": "s", "fact": "f", "kind": "fact"})
+        .post("/api/v1/internal/memory/remember/user_me", json={"subject": "s", "fact": "f", "kind": "fact"})
         .status_code
         == 401
     )
@@ -194,7 +182,7 @@ def test_internal_remember_takes_on_behalf_of_from_the_payload(hook):
         patch("core.services.effect_doors.live_attempts", AsyncMock(return_value=[])),  # no phone caller's task
     ):
         r = client.post(
-            "/api/v1/internal/memory/remember/org_a",
+            "/api/v1/internal/memory/remember/user_me",
             json={"subject": "s", "fact": "f", "kind": "lesson", "scope": "team", "on_behalf_of": "Ana"},
         )
     assert r.json() == {"queued": False, "neighbours": []}
@@ -207,8 +195,8 @@ async def test_forget_queues_when_the_call_raises():
         patch.object(memory_api.network_member, "call_op", AsyncMock(side_effect=OSError("boom"))),
         patch.object(memory_api.network_member, "queue_op", queue),
     ):
-        await memory_api.forget("org_a", "e7")
-    queue.assert_awaited_once_with("org_a", "memory.forget", {"entry": "e7"})
+        await memory_api.forget("user_me", "e7")
+    queue.assert_awaited_once_with("user_me", "memory.forget", {"entry": "e7"})
 
 
 def test_recall_treats_a_naive_as_of_as_utc(member):

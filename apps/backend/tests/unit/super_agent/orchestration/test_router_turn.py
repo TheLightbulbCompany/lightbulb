@@ -2037,8 +2037,6 @@ async def test_completion_ask_creates_waiting_canonical_question_not_a_worker_or
     from core.temporal import task_questions
     from core.repositories import questions_repo
 
-    monkeypatch.setattr(questions.clerk_admin, "list_organization_members", AsyncMock(return_value=[{"user_id": SAM}]))
-
     async def update(ws, task_id, name, ref):
         assert name == "ask"
         return await ActivityEnvironment().run(task_questions.open_asked_question, ws, task_id, ref)

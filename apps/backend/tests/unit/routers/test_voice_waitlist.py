@@ -76,9 +76,3 @@ async def test_owner_sees_and_removes_waitlist_entries(repos, async_client_org_a
     assert (await async_client_org_admin.delete("/api/v1/voice/waitlist/2026-11-19/z")).status_code == 404  # not theirs
     left = (await async_client_org_admin.get("/api/v1/voice/waitlist")).json()["entries"]
     assert [e["name"] for e in left] == ["Priya"]
-
-
-@pytest.mark.asyncio
-async def test_a_member_reads_but_cannot_remove(repos, async_client_org_member):  # noqa: F811
-    assert (await async_client_org_member.get("/api/v1/voice/waitlist")).status_code == 200
-    assert (await async_client_org_member.delete("/api/v1/voice/waitlist/2026-11-19/b")).status_code == 403

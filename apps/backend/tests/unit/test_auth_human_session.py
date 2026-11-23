@@ -11,7 +11,7 @@ from fastapi.security import HTTPAuthorizationCredentials
 import core.auth as auth
 from core.auth import AuthContext
 
-ALICE = AuthContext(user_id="user_alice", org_id="org_1")
+ALICE = AuthContext(user_id="org_1")
 
 
 def token(claims: dict, headers: dict | None = None) -> HTTPAuthorizationCredentials:

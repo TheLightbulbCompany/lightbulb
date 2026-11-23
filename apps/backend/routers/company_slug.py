@@ -78,7 +78,7 @@ async def stash_source(body: SourceBody, auth: Annotated[AuthContext, Depends(ge
         last_touch=body.last_touch,
         door=body.door or "sign_up",
     )
-    if not auth.org_id and await billing_repo.get_by_owner_id(auth.user_id):
+    if await billing_repo.get_by_owner_id(auth.user_id):
         await workspace_source.adopt_for_workspace(auth.user_id, auth.user_id)
     return {"ok": True}
 

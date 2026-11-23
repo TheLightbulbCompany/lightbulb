@@ -48,7 +48,6 @@ def no_clerk_orgs(monkeypatch):
     """A person has no organization: Clerk answers no org (404) and lists no members."""
     monkeypatch.setattr("core.services.clerk_admin.get_organization", AsyncMock(return_value=None))
     monkeypatch.setattr("core.services.clerk_admin.list_organization_members", AsyncMock(return_value=[]))
-    monkeypatch.setattr("core.services.welcome_email.send_owner_welcome", AsyncMock())
 
 
 @pytest.fixture
@@ -65,7 +64,7 @@ def sfn(monkeypatch):
 async def test_user_owner_full_provision(ddb, calls, sfn, no_clerk_orgs):  # noqa: F811
     await user_provision.ensure_workspace_trial_default(_session(PERSON), PERSON)
     row = await billing_repo.get_by_owner_id(PERSON)
-    assert (row["subscription_status"], row["owner_type"]) == ("trial_local", "personal")
+    assert row["subscription_status"] == "trial_local" and "owner_type" not in row
 
     assert await provision_dispatch.dispatch_provision(PERSON) is True
     assert [s["name"].startswith(f"provision-{PERSON}-") for s in sfn] == [True]

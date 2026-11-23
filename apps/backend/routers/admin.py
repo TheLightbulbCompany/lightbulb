@@ -20,7 +20,7 @@ import time
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
-from core.auth import AuthContext, is_org_owner_id, require_platform_admin
+from core.auth import AuthContext, require_platform_admin
 from core.repositories import (  # noqa: F401 — admin_actions_repo is patch target for tests
     admin_actions_repo,
     container_repo,
@@ -710,7 +710,7 @@ async def admin_wipe_execute(
     # for an org id: clerk_admin.get_user 404s on org_... and there's no users
     # row, so the match below would always fail first. preview_wipe already
     # refuses orgs before anything else; mirror that here.)
-    if is_org_owner_id(owner_id):
+    if owner_id.startswith("org_"):  # a Clerk organization id; `/workspaces/{org_id}/wipe` is its door
         raise HTTPException(status_code=400, detail="org_wipe_unsupported")
 
     # Authoritative email(s) from Clerk (the users-row email is written by an

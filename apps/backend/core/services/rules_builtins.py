@@ -19,10 +19,7 @@ _ANY = frozenset({"draft", "active", "paused_system"})
 
 
 async def _member_emails(ws: str) -> dict[str, str]:
-    if ws.startswith("user_"):
-        return {(await clerk_admin.get_primary_email(ws)).lower(): ws}
-    members = await clerk_admin.list_organization_members(ws, strict=True)
-    return {m["email"].lower(): m["user_id"] for m in members if m.get("email")}
+    return {(await clerk_admin.get_primary_email(ws)).lower(): ws}
 
 
 async def ensure_invite_prep(ws: str) -> list[str]:

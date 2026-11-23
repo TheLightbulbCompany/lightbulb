@@ -20,7 +20,7 @@ BODY = {"runId": RUN, "callId": CALL, "roomId": ROOM, "title": "Draft the launch
 
 @pytest.fixture
 def api(table, monkeypatch):
-    rows = {RUN: {"runId": RUN, "roomId": ROOM, "agentId": "ceo-1", "requesterUserId": "user_sam"}}
+    rows = {RUN: {"runId": RUN, "roomId": ROOM, "agentId": "ceo-1", "requesterUserId": "org_1"}}
     meta = {"roomId": ROOM, "kind": "channel", "ownerId": WS}
 
     async def get_voice_run(owner_id, run_id):
@@ -54,7 +54,7 @@ async def test_voice_start_is_deterministic_task_in_room(api):
     assert r.json()["taskId"] == ts.router_task_id(trigger_id, 0, 0)
     row = await tasks_repo.get_trigger(WS, trigger_id)
     assert row["source"] == "voice" and row["admission"] == "respond" and row["lane"] == "shared"
-    assert row["actorUserId"] == "user_sam"  # the VOICERUN row's verified requester, not the model's word
+    assert row["actorUserId"] == "org_1"  # the VOICERUN row's verified requester, not the model's word
     assert row["ref"]["deliverRoomId"] == ROOM and row["ref"]["agentId"] == "ceo-1"
     start = row["ref"]["start"]
     assert (
@@ -76,7 +76,7 @@ async def test_same_utterance_twice_one_task(api):
 async def test_dm_call_uses_the_requesters_private_lane(api):
     api.meta["kind"] = "dm"
     r = _post(api)
-    assert (await tasks_repo.get_trigger(WS, r.json()["triggerId"]))["lane"] == ts.router_lane_key("user_sam")
+    assert (await tasks_repo.get_trigger(WS, r.json()["triggerId"]))["lane"] == ts.router_lane_key("org_1")
 
 
 async def test_a_guest_cannot_start_work(api):
@@ -121,7 +121,7 @@ async def _voice_work(api, origin: str, run=RUN) -> str:
 
     out = await engine.start_task(
         StartIn(
-            tenant_id=WS, principal=Principal(kind="member", id="user_owner"), conversation_id="call-1",
+            tenant_id=WS, principal=Principal(kind="member", id="org_1"), conversation_id="call-1",
             trigger_id=ts.trigger_id("voice", "call-1", run), source="voice", title="Find a Tuesday slot",
             brief="Caller asks.", origin=origin, product_ref={"callId": "call-1", "utteranceId": run},
         )
@@ -135,7 +135,7 @@ async def _router_child(parent: dict, trigger_id: str) -> dict:
 
     await tasks_repo.put_trigger(
         WS, {"triggerId": trigger_id, "source": "chat", "ref": {"text": "go"}, "admission": "respond",
-             "lane": "shared", "actorUserId": "user_owner", "receivedAt": "2026-11-07T00:00:00Z"},
+             "lane": "shared", "actorUserId": "org_1", "receivedAt": "2026-11-07T00:00:00Z"},
     )  # fmt: skip
     return await acts._ensure_task(
         WS, ts.new_task_id(), await tasks_repo.get_trigger(WS, trigger_id), "shared", "queued", title="child",
@@ -154,7 +154,7 @@ async def test_grandchild_inherits_contact_origin(api, made):
     (POST /voice-start, which sets no origin of its own)."""
     child = await _router_child(await made(await _voice_work(api, "phone_contact")), "chat:c1")
     room = ts.task_room_id(child["taskId"])
-    api.rows[RUN] = {"runId": RUN, "roomId": room, "agentId": "ceo-1", "requesterUserId": "user_owner"}
+    api.rows[RUN] = {"runId": RUN, "roomId": room, "agentId": "ceo-1", "requesterUserId": "org_1"}
     api.meta.update({"roomId": room, "task": {"taskId": child["taskId"]}})
     r = _post(api, BODY | {"roomId": room, "callId": "huddle-1"})
     assert r.status_code == 202, r.text
@@ -176,7 +176,7 @@ async def test_meeting_origin_grandchild_gets_confirm_all(api, made):
     room's task, and so gets the meeting safeguard (every spend, send or publish is carded)."""
     child = await _router_child(await made(await _voice_work(api, "meeting", run="m1")), "chat:m-child")
     room = ts.task_room_id(child["taskId"])
-    api.rows[RUN] = {"runId": RUN, "roomId": room, "agentId": "ceo-1", "requesterUserId": "user_owner"}
+    api.rows[RUN] = {"runId": RUN, "roomId": room, "agentId": "ceo-1", "requesterUserId": "org_1"}
     api.meta.update({"roomId": room, "task": {"taskId": child["taskId"]}})
     r = _post(api, BODY | {"roomId": room, "callId": "huddle-1"})
     assert r.status_code == 202, r.text

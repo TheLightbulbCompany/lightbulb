@@ -18,12 +18,7 @@ def mock_auth_context(mock_org_admin_context):
 
 def _workspace_auth(user_id: str = "user_x", email: str = "u@example.com") -> AuthContext:
     """Organization-admin AuthContext for supported workspace requests."""
-    return AuthContext(
-        user_id=user_id,
-        org_id="org_x",
-        org_role="org:admin",
-        email=email,
-    )
+    return AuthContext(user_id="org_x", email=email, human_session=True)
 
 
 def _org_member_auth(
@@ -32,12 +27,7 @@ def _org_member_auth(
     email: str = "m@example.com",
 ) -> AuthContext:
     """Org-member AuthContext. is_org_admin returns False because role != org:admin."""
-    return AuthContext(
-        user_id=user_id,
-        org_id=org_id,
-        org_role="org:member",
-        email=email,
-    )
+    return AuthContext(user_id=org_id, email=email, human_session=True)
 
 
 def _org_admin_auth(
@@ -46,12 +36,7 @@ def _org_admin_auth(
     email: str = "a@example.com",
 ) -> AuthContext:
     """Org-admin AuthContext. is_org_context + is_org_admin are derived properties."""
-    return AuthContext(
-        user_id=user_id,
-        org_id=org_id,
-        org_role="org:admin",
-        email=email,
-    )
+    return AuthContext(user_id=org_id, email=email, human_session=True)
 
 
 @pytest.fixture(autouse=True)
@@ -323,8 +308,8 @@ class TestContainerStatusGate:
 
         rows: dict = {}
 
-        async def create(*, owner_id, owner_type, trial_end):
-            rows[owner_id] = {"owner_id": owner_id, "owner_type": owner_type, "subscription_status": "trial_local"}
+        async def create(*, owner_id, trial_end):
+            rows[owner_id] = {"owner_id": owner_id, "subscription_status": "trial_local"}
             return True
 
         async def gate(**kwargs):
@@ -346,18 +331,6 @@ class TestContainerStatusGate:
         assert result["runtime_phase"] == "provisioning"
         assert result["container_status"] is None
         dispatch.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_no_container_org_member_gets_202_and_dispatches_nothing(self):
-        from routers.container import container_status
-
-        with (
-            patch("routers.container.container_repo.get_by_owner_id", new=AsyncMock(return_value=None)),
-            patch("routers.container.evaluate_provision_gate", new=AsyncMock(return_value=None)),
-            pytest.raises(HTTPException) as exc,
-        ):
-            await container_status(_org_member_auth())
-        assert exc.value.status_code == 202
 
     @pytest.mark.asyncio
     async def test_no_container_with_gate_raises_402_structured(self):
@@ -454,16 +427,6 @@ class TestContainerStatusGate:
         # (cancel/resubscribe) shouldn't 402 a user with a live container.
         mock_gate.assert_not_called()
         assert result["container_status"] == "running"
-
-    @pytest.mark.asyncio
-    async def test_non_session_token_without_org_has_no_status(self):
-        from routers.container import container_status
-
-        with pytest.raises(HTTPException) as exc_info:
-            await container_status(AuthContext(user_id="user_x"))
-
-        assert exc_info.value.status_code == 409
-        assert exc_info.value.detail["code"] == "workspace_required"
 
     @pytest.mark.asyncio
     async def test_org_admin_no_billing_returns_team_billing_required_402(self):

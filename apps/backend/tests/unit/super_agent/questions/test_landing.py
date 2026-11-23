@@ -21,7 +21,7 @@ from core.temporal.workflows import WORKFLOWS, TaskWorkflow
 from .conftest import TASK, WS
 from .test_task_questions_workflow import QFakes, _press, _until
 
-SAM = "user_sam"
+SAM = WS  # the answerer is the tenant's one person
 POLICY = {"money_moves": True, "outreach": False, "publishing": True, "provisioning": True}
 IDEM = f"{TASK}:1:c1"
 
@@ -29,11 +29,6 @@ IDEM = f"{TASK}:1:c1"
 @pytest.fixture
 def world(table, monkeypatch):
     monkeypatch.setattr(questions.billing_repo, "get_capability_policy", AsyncMock(return_value=dict(POLICY)))
-    monkeypatch.setattr(
-        questions.clerk_admin,
-        "list_organization_members",
-        AsyncMock(return_value=[{"user_id": SAM, "role": "org:member"}]),
-    )
     sends = []
 
     async def mail(owner, operands, by):

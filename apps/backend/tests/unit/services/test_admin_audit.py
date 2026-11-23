@@ -27,7 +27,7 @@ os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 def fake_auth():
     from core.auth import AuthContext
 
-    return AuthContext(user_id="admin_alice", email="alice@isol8.co")
+    return AuthContext(user_id="admin_alice", email="alice@isol8.co", human_session=True)
 
 
 @pytest.fixture

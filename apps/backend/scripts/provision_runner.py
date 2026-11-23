@@ -46,25 +46,14 @@ async def _seed_owner_workspace(owner_id: str) -> int:
     the runtime work. Returns an exit code from the runner's ABI (0 ok / 10 deterministic /
     11 transient).
 
-    The provisioner is the person for a user tenant, and for an org the Clerk org CREATOR
-    (``get_organization().created_by``): always an admin, and a stable per-org choice (the
-    dispatch carries only ``owner_id``). A missing creator is a Clerk blip, so transient. A seed
-    failure is classified like a runtime failure (``classify_provision_error``).
+    The provisioner is the person. A seed failure is classified like a runtime failure
+    (``classify_provision_error``).
     """
-    from core.auth import is_org_owner_id
     from core.repositories.container_repo import classify_provision_error
-    from core.services import clerk_admin
-    from core.services.user_provision import _ensure_workspace_for_org
+    from core.services.user_provision import _ensure_owner_workspace
 
     try:
-        creator_user_id = owner_id
-        if is_org_owner_id(owner_id):
-            org = await clerk_admin.get_organization(owner_id)
-            creator_user_id = (org or {}).get("created_by")
-            if not creator_user_id:
-                logger.warning("seed step 0: org %s has no resolvable Clerk creator — deferring (transient)", owner_id)
-                return EXIT_TRANSIENT
-        await _ensure_workspace_for_org(org_id=owner_id, user_id=creator_user_id, is_admin=True)
+        await _ensure_owner_workspace(owner_id=owner_id, owner_user_id=owner_id)
     except Exception as exc:  # noqa: BLE001 — classified into the exit-code ABI
         logger.exception("seed step 0 (owner workspace) failed for owner %s", owner_id)
         _, retryable = classify_provision_error(exc)

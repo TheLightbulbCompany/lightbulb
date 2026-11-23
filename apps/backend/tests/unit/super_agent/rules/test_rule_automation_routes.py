@@ -74,35 +74,6 @@ async def test_create_rule_needs_room_membership(api):
     assert r.status_code == 409 and r.json()["detail"]["code"] == "room_not_member"
 
 
-async def test_turn_on_room_rule_needs_admin(api):
-    view = _as(api, PRIYA, admin=False).post(BASE, json=RULE).json()
-    r = _as(api, PRIYA, admin=False).post(f"{BASE}/{view['id']}/activate")
-    assert r.status_code == 403
-    r = _as(api, SAM).post(f"{BASE}/{view['id']}/activate")
-    assert r.status_code == 200 and (r.json()["status"], r.json()["mode"]) == ("active", "observe")
-    row = await repo.get_schedule(WS, view["id"])
-    assert ("upsert", view["id"], "active") not in api.calls  # no cron: a rule has no Temporal Schedule
-    assert row["mode"] == "observe"
-
-
-async def test_turn_on_calendar_rule_owner_only(api):
-    view = _as(api, PRIYA, admin=False).post(BASE, json=CAL).json()
-    assert _as(api, SAM).post(f"{BASE}/{view['id']}/activate").status_code == 404  # an admin does not even see it
-    r = _as(api, PRIYA, admin=False).post(f"{BASE}/{view['id']}/activate")
-    assert r.status_code == 200 and r.json()["mode"] == "observe"
-    assert [v["id"] for v in _as(api, SAM).get(BASE).json()["automations"]] == []
-
-
-async def test_room_rule_cap(api):
-    ids = [_as(api, PRIYA, admin=False).post(BASE, json={**RULE, "name": f"r{i}"}).json()["id"] for i in range(6)]
-    for sid in ids[:5]:
-        assert _as(api).post(f"{BASE}/{sid}/activate").status_code == 200
-    r = _as(api).post(f"{BASE}/{ids[5]}/activate")
-    assert r.status_code == 409 and r.json()["detail"]["code"] == "room_rule_cap"
-    r = _as(api, PRIYA, admin=False).post(BASE, json={**RULE, "name": "r7"})
-    assert r.status_code == 409 and r.json()["detail"]["code"] == "room_rule_cap"
-
-
 async def test_text_edit_drops_to_observe_and_resets_count(api):
     view = _as(api).post(BASE, json=RULE).json()
     sid = view["id"]

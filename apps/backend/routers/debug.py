@@ -9,7 +9,7 @@ import logging
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from core.auth import AuthContext, get_current_user, require_org_admin, resolve_owner_id
+from core.auth import AuthContext, get_current_user, resolve_owner_id
 from core.config import settings
 from core.dynamodb import run_in_thread
 from core.observability.metrics import put_metric
@@ -75,7 +75,6 @@ async def provision_container(
     auth: AuthContext = Depends(get_current_user),
 ):
     owner_id = resolve_owner_id(auth)
-    require_org_admin(auth)
 
     existing = await container_repo.get_by_owner_id(owner_id)
     if existing and existing.get("status") in ("running", "provisioning"):
@@ -109,7 +108,6 @@ async def redeploy_container(
     auth: AuthContext = Depends(get_current_user),
 ):
     owner_id = resolve_owner_id(auth)
-    require_org_admin(auth)
 
     container = await container_repo.get_by_owner_id(owner_id)
     if not container:
@@ -147,7 +145,6 @@ async def remove_container(
     auth: AuthContext = Depends(get_current_user),
 ):
     owner_id = resolve_owner_id(auth)
-    require_org_admin(auth)
 
     try:
         # NOT delete_profiles: this is a routine reprovision door, and destroying a migrated
@@ -179,17 +176,7 @@ async def remove_container(
 async def delete_user_data(auth: AuthContext = Depends(get_current_user)):
     assert_debug_enabled("user-data")
 
-    # Mirror /debug/provision DELETE — non-admin org members must not be able
-    # to wipe shared org-scoped state (containers, billing, api-keys, etc.)
-    # via this endpoint just because dev/staging exposes it. Personal context
-    # passes through (require_org_admin no-ops when not in org).
-    require_org_admin(auth)
-
     owner_id = resolve_owner_id(auth)
-    # In an org context resolve_owner_id returns the org_id, but the `users`
-    # and `ws-connections` tables are keyed by the Clerk user_id directly.
-    # Without this split, org E2E teardown would target the org id for both,
-    # leaving the Clerk user row + WS connection rows behind on every run.
     user_id = auth.user_id
     deleted: dict = {"runtime": False, "ddb": []}
     # Track failures so we can return 500 at the end. Test cleanup needs to

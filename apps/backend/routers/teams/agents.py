@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from types import SimpleNamespace
 
 from typing import Annotated
 
@@ -30,7 +29,6 @@ from core.services.agent_lifecycle import (
 )
 from core.services.person_label import NEW_MEMBER, is_relay_email
 
-from .deps import TeamsContext
 from .schemas import PatchAgentBody
 
 logger = logging.getLogger(__name__)
@@ -146,55 +144,6 @@ async def get_starter_agent_ids(*, owner_id: str, repo: WorkspaceRepo) -> set[st
     return set(row.starter_agent_ids.values()) if row and row.starter_agent_ids else set()
 
 
-def _resolve_owner_id(ctx) -> str:
-    """Container owner: org_id when the user is in an org, else user_id.
-
-    The OpenClaw container is keyed by owner — for org members the owner
-    is the org_id, NOT the member's user_id. Personal users are their
-    own owner. Mirrors ``core.auth.resolve_owner_id`` but works on the
-    Teams ``ctx`` shape (which already has ``owner_id`` for the
-    production path) plus the ``MagicMock`` ctx the pairing tests use
-    (which exposes ``ctx.auth.org_id`` / ``ctx.auth.user_id``).
-    """
-    auth = getattr(ctx, "auth", None)
-    if auth is not None:
-        org_id = getattr(auth, "org_id", None)
-        if isinstance(org_id, str):
-            return org_id
-        uid = getattr(auth, "user_id", None)
-        if isinstance(uid, str):
-            return uid
-    # TeamsContext production path — owner_id is computed in
-    # ``deps.resolve_teams_context`` via ``core.auth.resolve_owner_id``.
-    return getattr(ctx, "owner_id", None) or ctx.user_id
-
-
-async def build_principal_to_clerk(ctx: TeamsContext) -> dict[str, str]:
-    """Map Paperclip principalId → Clerk user_id for the caller's org.
-
-    For a personal context the caller is the only member (seed their own
-    pairing); for an org, map every human who joined the workspace's company
-    (``member_user_ids``) through their identity row. Read failures degrade
-    to what is known so the caller can ship a best-effort response.
-
-    Lives here (rather than in ``feed.py``) because both the activity feed's
-    actor enrichment and the ``/members`` roster need the same principal map.
-    """
-    principal_to_clerk: dict[str, str] = {}
-    if ctx.org_id is None:
-        return principal_to_clerk
-    repo = _repo()
-    try:
-        ws = await repo.get_workspace(ctx.org_id)
-        for clerk_uid in sorted(ws.member_user_ids) if ws is not None else []:
-            identity = await repo.get_identity(clerk_uid)
-            if identity is not None and identity.paperclip_user_id:
-                principal_to_clerk[identity.paperclip_user_id] = clerk_uid
-    except Exception:
-        logger.exception("teams: member principal map failed for org=%s", ctx.org_id)
-    return principal_to_clerk
-
-
 # --- Routes ---
 
 
@@ -222,12 +171,8 @@ async def list_agents(auth: AuthContext = Depends(get_current_user)):
 
 @router.get("/members")
 async def list_members(auth: AuthContext = Depends(get_current_user)):
-    """List the humans in the caller's workspace.
-
-    The source is Clerk org membership, NOT Paperclip's company members —
-    the same set ``messaging._validate_human_in_owner`` accepts as room
-    members, so the new-conversation picker never hides someone the backend
-    would let you add. A personal workspace has exactly one human: the caller.
+    """List the humans in the caller's workspace: exactly one, the caller (the same set
+    ``messaging._validate_human_in_owner`` accepts as room members).
 
     Returns the ``{members: [...]}`` envelope shape every Teams panel reads.
     Each row matches the frontend ``CompanyMember`` type
@@ -235,18 +180,8 @@ async def list_members(auth: AuthContext = Depends(get_current_user)):
     ``paperclipUserId`` comes from the stored identity rows (no Paperclip call),
     null for a member with no Paperclip identity.
     """
-    if auth.org_id is None:
-        members = [m for m in [await _resolve_member_identity(auth.user_id)] if m]
-    else:
-        from core.services.clerk_admin import list_organization_members
-
-        members = [
-            _member_row(m["user_id"], m["first_name"], m["last_name"], m["email"], m["image_url"])
-            for m in await list_organization_members(auth.org_id)
-        ]
-    who = SimpleNamespace(user_id=auth.user_id, org_id=auth.org_id)
-    clerk_to_principal = {clerk: pc for pc, clerk in (await build_principal_to_clerk(who)).items()}
-    return {"members": [{**m, "paperclipUserId": clerk_to_principal.get(m["userId"])} for m in members]}
+    members = [m for m in [await _resolve_member_identity(auth.user_id)] if m]
+    return {"members": [{**m, "paperclipUserId": None} for m in members]}
 
 
 def _member_row(user_id: str, first: str | None, last: str | None, email: str | None, image_url) -> dict:

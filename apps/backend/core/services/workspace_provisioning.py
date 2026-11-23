@@ -2,7 +2,6 @@
 
 * ``provision_org`` writes the META row (``active``, the provisioner as first member, a fresh
   onboarding generation) and seeds ``STARTER_ROSTER`` into ``agent_registry``.
-* ``provision_member`` records a member on an active workspace's row.
 * ``disable_workspace`` marks a deleted Clerk org's row ``disabled`` with a purge timer; the
   cleanup cron (``update_service._workspace_purge_pass``) deletes it afterwards.
 
@@ -176,16 +175,6 @@ async def provision_org(owner_id: str, *, provisioner: str) -> Workspace:
         raise
     logger.info("workspace_provisioning.provision_org: %s active (provisioner=%s)", owner_id, provisioner)
     return row
-
-
-async def provision_member(owner_id: str, user_id: str) -> Workspace | None:
-    """Record ``user_id`` as a member of the active workspace. None while it is not active yet."""
-    repo = _repo()
-    ws = await repo.resolve_owner_row(owner_id)
-    if ws is not None and user_id not in ws.member_user_ids:
-        await repo.add_member(owner_id, user_id)
-        ws.member_user_ids.add(user_id)
-    return ws
 
 
 async def disable_workspace(org_id: str, *, grace_days: int = 30) -> None:

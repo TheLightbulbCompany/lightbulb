@@ -20,7 +20,6 @@ from zoneinfo import ZoneInfo
 from botocore.exceptions import ClientError
 from dateutil.rrule import DAILY, rruleset, rrulestr
 
-from core.auth import is_org_owner_id
 from core.config import settings
 from core.dynamodb import is_cancelled
 from core.engine import client as engine
@@ -31,6 +30,7 @@ from core.voice import store
 from core.services import agent_email, clerk_admin
 from core.voice.meetings import meeting_bots, meeting_rsvp
 from core.services.agent_mail_inbound import authenticated_sender, parse_from_address
+from core.services.workspace_name import saved_name
 
 logger = logging.getLogger(__name__)
 
@@ -537,10 +537,10 @@ async def _sync_bot(owner_id: str, room_id: str, meeting: dict, prior: dict | No
         if not bot_id and stored.get("status") != "bot_failed" and now - int(stored.get("botClaimAt", 0)) < _CLAIM_S:
             return stored  # a claim this young may be another delivery's POST; past it, the lease says it died
     adopted = bot_id
-    org = {} if bot_id else await clerk_admin.get_organization(owner_id) or {}
+    company = "" if bot_id else await saved_name(owner_id) or ""
     try:
         bot_id = bot_id or await meeting_bots.create(
-            room_id=room_id, meeting={**meeting, "ticketNonce": nonce}, company=org.get("name") or "Your team"
+            room_id=room_id, meeting={**meeting, "ticketNonce": nonce}, company=company or "Your team"
         )
     except meeting_bots.RecallError as exc:
         if exc.code == "409":
@@ -581,18 +581,10 @@ async def handle_team_mail(
         return None
     # The shared-address router can resolve a verified secondary email to a Clerk user.
     # Recheck who may create here; no value from the mail payload grants authority.
-    if not is_org_owner_id(owner_id):  # a person's tenant: only that person
-        own = verified_sender_user_id == owner_id or (
-            sender and sender == (await clerk_admin.get_primary_email(owner_id)).lower()
-        )
-        creator = owner_id if own else None
-    elif verified_sender_user_id is not None:
-        members = await clerk_admin.list_organization_members(owner_id, strict=True)
-        creator = next((m["user_id"] for m in members if m.get("user_id") == verified_sender_user_id), None)
-    else:
-        members = await clerk_admin.list_organization_members(owner_id, strict=True)
-        by_email = {str(m["email"]).lower(): m["user_id"] for m in members if m.get("email")}
-        creator = by_email.get(sender) if sender else None
+    own = verified_sender_user_id == owner_id or (
+        sender and sender == (await clerk_admin.get_primary_email(owner_id)).lower()
+    )
+    creator = owner_id if own else None
     if creator is None:
         return None  # a stranger's mail: no bot, no room -- the CEO reads it as mail
     invite = await asyncio.to_thread(parse, payload.calendar)  # the rule walk is CPU work

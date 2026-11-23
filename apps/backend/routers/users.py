@@ -68,17 +68,9 @@ async def sync_user(
     # /users/sync is a pure user-row sync. Its optional legacy request body
     # remains accepted for old clients, but extra provider fields are ignored.
 
-    # Note: no billing-account creation here. /users/sync fires from multiple
-    # places (ChatLayout mount, onboarding, settings), and the caller's JWT
-    # may be in a transient personal context while Clerk is mid-activation of
-    # an org. Creating a billing row here would produce phantom
-    # personal-context rows for users who are actually org members. Billing is
-    # created lazily by POST /billing/checkout (the explicit "subscribe" signal)
-    # which is also gated on require_org_admin, so only the first admin click
-    # through Stripe Checkout ever writes the row.
-    #
-    # Container provisioning is also handled elsewhere (GET /container/status
-    # + ProvisioningStepper) for the same reason.
+    # Note: no billing-account creation here. Billing is created lazily by
+    # POST /billing/checkout (the explicit "subscribe" signal), and container
+    # provisioning is handled elsewhere (GET /container/status + ProvisioningStepper).
 
     return {"status": status, "user_id": user_id}
 
@@ -230,25 +222,6 @@ async def away_email_unsubscribe(token: str = Query(..., max_length=2048)) -> HT
     return _unsubscribe_page("You won't get these emails any more. Turn them back on in Settings.")
 
 
-async def _org_blocker(user_id: str, *, active_org_id: str | None, clerk_admin) -> str | None:
-    """Why deleting ``user_id`` would orphan a workspace, or None.
-
-    Per org the caller belongs to: sole member — fine only for the active org
-    (that workspace is wiped with the account), refused for any other; the
-    last admin with other members — refused; a plain member — fine.
-    """
-    for org in await clerk_admin.list_user_organizations(user_id, limit=100, strict=True):
-        members = await clerk_admin.list_organization_members(org["id"], strict=True)
-        others = [m for m in members if m.get("user_id") != user_id]
-        name = org.get("name") or org["id"]
-        if not others:
-            if org["id"] != active_org_id:
-                return f"You're the only member of {name}. Delete or hand over that workspace first."
-        elif org.get("role") == "org:admin" and not any(m.get("role") == "org:admin" for m in others):
-            return f"You're the admin of {name}. Make someone else an admin, or delete the workspace first."
-    return None
-
-
 class DeleteAccountRequest(BaseModel):
     """Typed-confirm body for self-serve deletion (mirrors the admin wipe)."""
 
@@ -260,9 +233,7 @@ class DeleteAccountRequest(BaseModel):
     summary="Delete the caller's account",
     description=(
         "Self-serve, irreversible account deletion (App Store guideline "
-        "5.1.1(v)). In a workspace with other members only the caller "
-        "goes (their membership is archived; the workspace keeps running). "
-        "The sole member takes the workspace with them, subscription "
+        "5.1.1(v)). The caller's workspace goes with them, subscription "
         "included. The Clerk user is always deleted last."
     ),
     operation_id="delete_my_account",
@@ -278,17 +249,10 @@ async def delete_my_account(
 ):
     # Lazy import: the wipe orchestrators pull the whole teardown surface
     # (runtime/Stripe clients) — keep it off users.py import time.
-    from core.services import clerk_admin
     from core.services.account_wipe import (
         OrgWipeUnsupportedError,
         resolve_account_emails,
         wipe_account,
-    )
-    from core.services.workspace_wipe import (
-        OtherMembersRemainError,
-        SelfServeBlockedError,
-        WorkspaceWipeError,
-        wipe_own_workspace,
     )
 
     owner_id = auth.user_id
@@ -300,33 +264,11 @@ async def delete_my_account(
     if not typed or not any(typed == e.strip().lower() for e in account_emails):
         raise HTTPException(status_code=400, detail="email_mismatch")
 
-    # strict everywhere: a Clerk blip must fail, never read as "nobody else here".
-    blocker = await _org_blocker(owner_id, active_org_id=auth.org_id, clerk_admin=clerk_admin)
-    if blocker:
-        raise HTTPException(status_code=409, detail=blocker)
-
     started = time.monotonic()
     try:
-        if not auth.is_org_context:
-            report = await wipe_account(owner_id, actor_admin_id=owner_id)
-        else:
-            try:
-                # The wipe's own snapshot decides "sole member" (one member source).
-                report = await wipe_own_workspace(auth.org_id, user_id=owner_id)
-            except OtherMembersRemainError:
-                # Others remain: the user-keyed wipe archives only this membership
-                # (the organizationMembership.deleted path — the workspace's
-                # runtime, company and billing are untouched) and deletes the
-                # caller's own rows and Clerk user.
-                report = await wipe_account(owner_id, actor_admin_id=owner_id)
+        report = await wipe_account(owner_id, actor_admin_id=owner_id)
     except OrgWipeUnsupportedError:
         raise HTTPException(status_code=403, detail="org_deletion_unsupported")
-    except SelfServeBlockedError as e:
-        raise HTTPException(status_code=409, detail=str(e))
-    except WorkspaceWipeError:
-        # Refused before any step ran (e.g. the workspace changed mid-delete): safe to retry.
-        logger.warning("self-delete: workspace wipe refused for %s", owner_id, exc_info=True)
-        raise HTTPException(status_code=409, detail="deletion_incomplete")
     elapsed_ms = int((time.monotonic() - started) * 1000)
 
     report_dict = report.to_dict()

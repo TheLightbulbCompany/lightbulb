@@ -412,10 +412,6 @@ class WorkspaceRepo:
         # workspace row (a pre-migration human row, a sentinel): not a workspace.
         if not item or "status" not in item:
             return None
-        # A workspace provisioned before the native store keeps its legacy ``company_id`` on the old row.
-        old = await run_in_thread(self._table().get_item, Key={"user_id": org_id}, ConsistentRead=consistent_read)
-        if (old.get("Item") or {}).get("company_id"):
-            item["company_id"] = old["Item"]["company_id"]
         return self._item_to_workspace(item)
 
     @staticmethod

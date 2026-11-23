@@ -1831,8 +1831,6 @@ async def decide_join(
 
     action = "join_allowed" if decision == "allow" else "join_declined"
     row, audit = await _change_session(auth, session_id, change, action, user_id)
-    if audit is not None and decision == "allow" and answered.get("outsider"):
-        await _admit_outsider(auth, session_id, user_id, row, answered["request"])
     if audit is not None:  # only a write that landed; a repeated answer is a no-op
         if answered.get("outsider"):  # 06 §2's funnel: a stranger's ask from the public page
             latency = int(time.time()) - int(answered["askedAt"]) if answered.get("askedAt") else None
@@ -1844,37 +1842,8 @@ async def decide_join(
     return _session_public(row, auth.user_id)
 
 
-async def _admit_outsider(auth: AuthContext, session_id: str, user_id: str, row: dict, request: dict) -> None:
-    """D1: Allow on an ask from the public page also makes that person a workspace member, as the
-    join link does (``org:member``, never more). After the Allow committed, so a decline or an end
-    that won the race never grants membership; if Clerk refuses, the Allow is undone (the ask is
-    pending again) and the error stands, so the owner can try again."""
-    from core.services import clerk_admin
-
-    # The call is idempotent (an existing member reads as `already_member`), so a lost response is
-    # settled by asking again: only a second refusal is a real one, and only then is the Allow undone.
-    try:
-        try:
-            await clerk_admin.create_organization_membership(org_id=row["ownerId"], user_id=user_id, role="org:member")
-        except Exception:
-            await clerk_admin.create_organization_membership(org_id=row["ownerId"], user_id=user_id, role="org:member")
-    except Exception:
-
-        def undo(current: dict) -> dict | None:
-            if user_id not in (current.get("allowedSenders") or []):
-                return None
-            requests = {**(current.get("joinRequests") or {}), user_id: request}
-            senders = [u for u in current.get("allowedSenders") or [] if u != user_id]
-            return {**current, "joinRequests": requests, "allowedSenders": senders}
-
-        await _change_session(auth, session_id, undo, "join_allow_undone", user_id, allow_ended=True)
-        raise
-
-
 #: What Allow on an outside ask grants, said where the owner decides (Activity, the push).
-OUTSIDER_ALLOW_COPY = (
-    "They watched it from its public link. Allow makes them a member of your workspace and lets them use this session."
-)
+OUTSIDER_ALLOW_COPY = "They watched it from its public link. Allow lets them use this session."
 
 
 def pending_pickups(row: dict) -> dict[str, str]:

@@ -65,7 +65,7 @@ def admin_env(app):
     test uses admin_env without async_client).
     """
     app.dependency_overrides[get_current_user] = lambda: AuthContext(
-        user_id="user_platform_admin", email="admin@thelightbulb.company"
+        user_id="user_platform_admin", email="admin@thelightbulb.company", human_session=True
     )
     try:
         yield
@@ -76,7 +76,9 @@ def admin_env(app):
 @pytest.fixture
 def non_admin_env(app):
     """Caller is not on PLATFORM_ADMIN_USER_IDS — every admin endpoint 403s."""
-    app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id="user_test_123", email="user@example.com")
+    app.dependency_overrides[get_current_user] = lambda: AuthContext(
+        user_id="user_test_123", email="user@example.com", human_session=True
+    )
     try:
         yield
     finally:

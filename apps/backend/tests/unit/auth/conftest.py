@@ -2,8 +2,8 @@
 a test JWKS), over moto DynamoDB with every table the request paths reach. Each test seeds A's rows with the
 product's own writers, carrying MARKER, then calls a door as B.
 
-`tenants` is parametrized: "user" (no `o` claim: the tenant is the person) and "org" (each person is admin of
-their own org). Every AWS call and every outbound HTTP request B's call makes is recorded (`calls`), and the
+`tenants` is parametrized: "user" (a plain session token) and "claim" (a token that also carries a leftover
+organisation claim `o.id` naming the OTHER person's tenant: it must change nothing). Every AWS call and every outbound HTTP request B's call makes is recorded (`calls`), and the
 network is closed: nothing reaches Stripe, Clerk, Twilio or AWS."""
 
 import json
@@ -35,12 +35,13 @@ _JWK = {**jwt.algorithms.RSAAlgorithm.to_jwk(_KEY.public_key(), as_dict=True), "
 @dataclass(frozen=True)
 class Tenant:
     user_id: str
-    org_id: str | None
+    claim: str | None  # an `o.id` the token carries (ignored by the backend)
+    role: str | None = "admin"  # the `o.rol` beside it, or none
     token: str = "session"  # or "oauth" (an `at+jwt` access token), "template" (a JWT-template token: no `sid`)
 
     @property
     def tenant(self) -> str:
-        return resolve_owner_id(AuthContext(user_id=self.user_id, org_id=self.org_id, human_session=True))
+        return resolve_owner_id(AuthContext(user_id=self.user_id, human_session=True))
 
     @property
     def headers(self) -> dict:
@@ -51,8 +52,8 @@ class Tenant:
             claims["sid"] = f"sess_{self.user_id}"
         if self.token == "oauth":
             claims["client_id"] = "oauth_app"
-        if self.org_id:
-            claims["o"] = {"id": self.org_id, "rol": "admin", "slg": self.org_id}
+        if self.claim:
+            claims["o"] = {"id": self.claim, "slg": self.claim, **({"rol": self.role} if self.role else {})}
         typ = {"typ": "at+jwt"} if self.token == "oauth" else {}
         token = jwt.encode(claims, _KEY, algorithm="RS256", headers={"kid": "test", **typ})
         return {"Authorization": f"Bearer {token}"}
@@ -118,11 +119,11 @@ def jwks(monkeypatch) -> None:
     monkeypatch.setattr(auth, "_get_cached_jwks", keys)
 
 
-@pytest.fixture(params=["user", "org"])
+@pytest.fixture(params=["user", "claim"])
 def tenants(request, ddb, jwks) -> tuple[Tenant, Tenant]:
     if request.param == "user":
         return Tenant("user_a", None), Tenant("user_b", None)
-    return Tenant("user_a", "org_a"), Tenant("user_b", "org_b")
+    return Tenant("user_a", "user_b"), Tenant("user_b", "user_a")
 
 
 @pytest.fixture

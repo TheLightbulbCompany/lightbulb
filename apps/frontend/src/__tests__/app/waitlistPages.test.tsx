@@ -3,10 +3,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/components/landing/Navbar", () => ({ Navbar: () => null }));
 vi.mock("@/components/landing/Footer", () => ({ Footer: () => null }));
-vi.mock("@/components/landing/PricingThreeCard", () => ({ PricingThreeCard: () => null }));
-vi.mock("@/lib/pricing", () => ({ getPricing: async () => null }));
-// The Spark page (/os) loads its own fonts; jsdom has no next/font.
-vi.mock("next/font/google", () => ({ Bricolage_Grotesque: () => ({ variable: "" }), Silkscreen: () => ({ variable: "" }) }));
+const pricing = vi.hoisted(() => ({ value: null as null | { voiceMonthlyUsd: number; voiceIncludedMinutes: number } }));
+vi.mock("@/lib/pricing", async (orig) => ({
+  ...(await orig<typeof import("@/lib/pricing")>()),
+  getPricing: async () => pricing.value,
+  voicePlanLine: (p: unknown) => (p ? "PLAN LINE FROM THE BACKEND." : null),
+}));
+// The Spark (/os) and Phone pages load their own fonts; jsdom has no next/font.
+vi.mock("next/font/google", () => {
+  const font = () => ({ variable: "" });
+  return { Bricolage_Grotesque: font, Silkscreen: font, Schibsted_Grotesk: font, Kalam: font };
+});
 const captureSignupCta = vi.fn();
 vi.mock("@/lib/signupFlow", () => ({ captureSignupCta: (o: unknown) => captureSignupCta(o) }));
 
@@ -15,6 +22,7 @@ import PhonePage, { metadata as phoneMeta } from "@/app/phone/page";
 import MeetingsPage, { metadata as meetingsMeta } from "@/app/meetings/page";
 import OsPage, { metadata as osMeta } from "@/app/os/page";
 import { BANNED } from "@/content/__tests__/bannedCopy";
+import { HOME_FAQ } from "@/lib/homeFaq";
 
 const pages = [
   { path: "/meetings", Page: MeetingsPage, meta: meetingsMeta, h1: "Leave every meeting with the notes already written." },
@@ -144,11 +152,57 @@ describe("/", () => {
 });
 
 describe("/phone", () => {
-  it("is today's home under its own canonical", async () => {
-    render(await PhonePage());
+  afterEach(() => {
+    pricing.value = null;
+  });
+
+  it("is today's home under its own canonical, with one h1", async () => {
+    const { container } = render(await PhonePage());
     expect(screen.getByRole("heading", { level: 1 }).textContent).toBe(
       "Your phone, answered and booked while your hands are busy.",
     );
+    expect(container.querySelectorAll("h1")).toHaveLength(1);
     expect(phoneMeta.alternates?.canonical).toBe("https://thelightbulb.company/phone");
+  });
+
+  it("tracks both sign-up doors and points Hear the voices at the stock samples", async () => {
+    captureSignupCta.mockClear();
+    const { container } = render(await PhonePage());
+    const doors = screen.getAllByRole("link", { name: "Set up your assistant" });
+    expect(doors.map((a) => a.getAttribute("href"))).toEqual(["/sign-up", "/sign-up"]);
+    doors.forEach((a) => fireEvent.click(a));
+    expect(captureSignupCta.mock.calls.map(([o]) => o.ctaId)).toEqual(["hero_start_free", "closing_start_free"]);
+    expect(screen.getAllByRole("link", { name: "Hear the voices" }).map((a) => a.getAttribute("href"))).toEqual([
+      "#voices",
+      "#voices",
+    ]);
+    const voices = container.querySelector("#voices")!;
+    expect(voices.textContent).toContain("These are stock samples.");
+    expect([...voices.querySelectorAll(".vc a")].map((a) => [a.getAttribute("aria-label"), a.getAttribute("href")])).toEqual([
+      ["Play Marin, a stock sample", "/voice-samples/gpt-live-1-marin-en.wav"],
+      ["Play Quartz, a stock sample", "/voice-samples/gpt-live-1-quartz-en.wav"],
+      ["Play Willow, a stock sample", "/voice-samples/gpt-live-1-willow-en.wav"],
+    ]);
+  });
+
+  it("says Nova is an example name and shows the visible questions the structured data carries", async () => {
+    const { container } = render(await PhonePage());
+    expect(container.textContent).toContain("Name it Nova, or anything you like.");
+    const faq = [...container.querySelectorAll("#faq details")].map((d) => [
+      d.querySelector("summary")?.textContent,
+      d.querySelector("p")?.textContent,
+    ]);
+    expect(faq).toEqual(HOME_FAQ.map(({ q, a }) => [q, a]));
+  });
+
+  it("reads the price from the backend and never invents one", async () => {
+    const neutral = render(await PhonePage());
+    expect(neutral.container.textContent).toContain("One monthly plan with minutes included. Month to month");
+    expect(neutral.container.textContent).not.toMatch(/\$\d/);
+    expect(neutral.container.textContent).not.toMatch(/[—–]/);
+    neutral.unmount();
+    pricing.value = { voiceMonthlyUsd: 1, voiceIncludedMinutes: 1 };
+    const priced = render(await PhonePage());
+    expect(priced.container.textContent).toContain("PLAN LINE FROM THE BACKEND. Month to month");
   });
 });

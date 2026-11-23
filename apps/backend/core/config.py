@@ -1,6 +1,5 @@
 import logging
 import os
-from typing import Literal
 from urllib.parse import urlparse
 
 from pydantic import field_validator, model_validator
@@ -301,12 +300,10 @@ class Settings(BaseSettings):
     TEMPORAL_WATCHDOG_TASK_QUEUE: str = "lightbulb-watchdog"
     WATCHDOG_OWNER_ID: str = ""
     WATCHDOG_ROOM_ID: str = ""
-    # The engine's transport (engine-service plan Task 8). `inprocess`: products call `core.engine.api` and the engine
-    # calls the products' hooks in the same process. `http`: products call the engine service at ENGINE_URL
-    # (`core.engine.client`), and the engine's processes call the products back at PRODUCT_CALLBACK_URL
-    # (`core.engine.http_hooks`). Both directions send `Authorization: Bearer ENGINE_SERVICE_TOKEN`; empty refuses all.
-    ENGINE_TRANSPORT: Literal["inprocess", "http"] = "inprocess"
-    ENGINE_URL: str = ""
+    # The engine's wire: products call the engine service at ENGINE_URL (`core.engine.client`), and the engine's
+    # processes call the products back at PRODUCT_CALLBACK_URL (`core.engine.http_hooks`). Both directions send
+    # `Authorization: Bearer ENGINE_SERVICE_TOKEN`; empty refuses all.
+    ENGINE_URL: str = ""  # local dev must run engine_main and set this: there is no in-process fallback
     PRODUCT_CALLBACK_URL: str = ""
     ENGINE_SERVICE_TOKEN: str = ""
 
@@ -333,14 +330,14 @@ class Settings(BaseSettings):
     STRIPE_VOICE_PLAN_PRICE_ID: str = ""
     #: Spark's $20/month subscription (one licensed price); empty: no checkout link.
     STRIPE_SPARK_PRICE_ID: str = ""
+    #: Save Spark voice transcripts (text only, 90 days) to the spark-transcripts table. Dev only until the
+    #: owner approves prod and the privacy text changes; off: nothing is saved.
+    SPARK_TRANSCRIPTS_ENABLED: bool = False
     STRIPE_BASE_PRICE_ID: str = ""
     # Stripe price for the Ultra runtime tier. Empty default so the app boots
     # without it; CDK-wired in dev/prod. This is the billing source of truth
     # for "$150".
     STRIPE_ULTRA_PRICE_ID: str = ""
-    # $20/month per human member from the 6th (billing_service.SEATS_INCLUDED).
-    # Empty = fail closed: a 6+ member checkout is refused and no seat is billed.
-    STRIPE_SEAT_PRICE_ID: str = ""
     # $100/month Front desk add-on (a third subscription item; pays for the workspace's texting number).
     # Empty = fail closed: the add-on cannot be bought.
     STRIPE_FRONT_DESK_PRICE_ID: str = ""
@@ -352,8 +349,6 @@ class Settings(BaseSettings):
     WORKSPACE_PRICE_USD: int = 50
     BASE_PRICE_USD: int = 20
     ULTRA_PRICE_USD: int = 150
-    # Display dollars for STRIPE_SEAT_PRICE_ID (per member from the 6th); lockstep with its unit amount.
-    SEAT_PRICE_USD: int = 20
     # Display dollars for STRIPE_FRONT_DESK_PRICE_ID (Photon's $250/month line price); lockstep with its unit amount.
     FRONT_DESK_PRICE_USD: int = 250
     # Display dollars for STRIPE_SPARK_PRICE_ID (Spark's monthly price); lockstep with its unit amount.
@@ -422,10 +417,6 @@ class Settings(BaseSettings):
     # "agents@acme-robotics.thelightbulb.company"). Empty disables address minting
     # entirely, so an env without a verified mail domain never mints.
     AGENT_EMAIL_DOMAIN: str = ""
-
-    # The Lightbulb workspace's Clerk org id: workspace_wipe refuses it, and an existing vendor shared
-    # channel (messaging.is_vendor_room) is recognised by it. Empty: no room is a vendor room.
-    VENDOR_ORG_ID: str = ""
 
     # SES configuration set every agent-mail send is stamped with (the
     # complaint event destination hangs off it). Empty ⇒ sends carry no

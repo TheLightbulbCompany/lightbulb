@@ -7,7 +7,7 @@ The repo is async (matches the pattern of other repos in
 """
 
 import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from unittest.mock import patch
 
 import boto3
@@ -262,34 +262,10 @@ async def test_update_status_not_if_status_applies_when_not_guarded(repo):
     assert retrieved.last_error == "boom"
 
 
-async def test_legacy_company_id_is_read_from_the_old_row_and_never_written(repo):
-    """A workspace provisioned before the native store keeps its company id on the legacy table."""
-    repo._table().put_item(Item={"user_id": "org_old", "company_id": "co_old", "status": "active"})
-    await repo.put_workspace(_make_company(user_id="org_old", company_id="co_ignored"))
-    assert (await repo.get_workspace("org_old")).company_id == "co_old"
-    assert "company_id" not in raw_workspace(repo, "org_old")
-    assert repo._table().get_item(Key={"user_id": "org_old"})["Item"]["company_id"] == "co_old"
-
-
 async def test_delete_removes_row(repo):
     await repo.put_workspace(_make_company(user_id="user_789"))
     await repo.delete("user_789")
     assert await repo.get_workspace("user_789") is None
-
-
-async def test_scan_purge_due_returns_overdue_disabled(repo):
-    now = datetime.now(timezone.utc)
-    past = now - timedelta(days=1)
-    future = now + timedelta(days=10)
-    # disabled and overdue -> should be returned
-    await repo.put_workspace(_make_company(user_id="overdue", status="disabled", scheduled_purge_at=past))
-    # disabled but not yet due -> should NOT be returned
-    await repo.put_workspace(_make_company(user_id="not_yet", status="disabled", scheduled_purge_at=future))
-    # active -> should NOT be returned (different status)
-    await repo.put_workspace(_make_company(user_id="still_active", status="active"))
-    due = await repo.scan_purge_due(now)
-    user_ids = {c.org_id for c in due}
-    assert user_ids == {"overdue"}
 
 
 # ---------------------------------------------------------------------------

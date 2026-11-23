@@ -206,8 +206,7 @@ on a `dev.thelightbulb.company` page with `Clerk.client.signIn.create({strategy:
 a production email.
 
 `/api/v1/debug/provision` (`PATCH` rewrites every roster profile and stops the warm session; `DELETE` then
-`POST` reprovisions) still exists and returns 403 in prod. The `dev-clean-slate-reset` and `prod-org-reprovision`
-skills in `.agents/skills/` still describe Paperclip and Aurora wipes; those steps are stale.
+`POST` reprovisions) still exists and returns 403 in prod. The `dev-clean-slate-reset` skill in `.agents/skills/` covers wiping a dev test person.
 
 ## Shipping
 
@@ -402,24 +401,10 @@ machine (`provision_dispatch.dispatch_provision`) runs `scripts/provision_runner
 `prepare_hermes_workspace` (tokens and boot values), `_seed_owner_workspace` (the workspace row and the six-agent
 roster in `agent_registry`, role-keyed uuid5 ids, so concurrent runs converge), then
 `provision_hermes_runtime`, which writes every roster profile to S3 and records the pool ARN, with no
-`CreateAgentRuntime`. Every step is idempotent; there is no lease. An owner is a Clerk org or a single person (a
-`user_` id; founder ruling, 20 Nov 2026: one account is one user, workspaces go). A person is provisioned like an
-org, as their own provisioner, through `GET /container/status`, `POST /container/provision` and
-`POST /container/retry` (Clerk `user.created` only writes the users row: a sign-up provisions nothing until the
-person opens the product). A person gets a company slug and team address only by claiming one
-(`POST /company/slug/claim`); `GET /agent-mail/address` only reads for a person (`none_claimed` before the claim).
-Every other door a person reaches acts on their own tenant exactly as for an org on the same plan, and a person is
-the admin of their own tenant: messaging, automations, connections and OAuth grants, the link wallet, voice, the
-voice plan and Team checkouts (a Stripe customer on the tenant's own billing row, separate from Spark's on the users
-row; a person's tenant bills no seats). Still refused for a person: the ChatGPT sign-in needs the paid Team plan
-(402, as for an unpaid org); `POST /voice/number` with no body (402 `voice_plan_required`: a person's number comes
-with the voice plan, at Go live); on a free plan, turning on `send_to_anyone` or clearing a complaint pause in
-`PATCH /agent-mail/address` (402 `paid_plan_required`); and the org join-link and invitation doors
-(`/orgs/{org_id}/join-link`, `/orgs/{org_id}/invitations`, 403). `POST /orgs/{org_id}/join` (redeeming another
-org's link) is unchanged until the member doors are deleted. `user.deleted` runs
-`account_wipe.wipe_account` on the person's own tenant (profiles and memory included; no Clerk read, no org
-touched, a held phone line kept for an admin wipe); a failed step fails the event so Svix redelivers. Per-owner runtimes are legacy (about 25 remain, being retired by exact
+`CreateAgentRuntime`. Every step is idempotent; there is no lease. **The tenant is one person.** The owner id is the Clerk user id: `core.auth.resolve_owner_id(auth)` returns `auth.user_id` and answers 403 `session_required` for a token that is not a first-party Clerk session. There are no organisations, members, invites, seats or join links; `require_org_admin`, `is_org_admin`, `AuthContext.org_id` and the organisation webhooks are deleted, and Clerk `organization*` events are acknowledged and ignored (`routers/webhooks.py`). A person is provisioned through `GET /container/status`, `POST /container/provision` and `POST /container/retry`: Clerk `user.created` only writes the users row, and a sign-up provisions nothing until the person opens the product (the web app's first screen calls `POST /container/provision`). A person gets a company slug and team address only by claiming one (`POST /company/slug/claim`); `GET /agent-mail/address` only reads for a person (`none_claimed` before the claim). Every door acts on the person's own tenant, and the person is the admin of it: messaging, automations, connections and OAuth grants, the link wallet, voice, and the voice plan and Team checkouts (a Stripe customer on the tenant's own billing row, separate from Spark's on the users row). Still refused until paid: the ChatGPT sign-in needs a paid plan (402); `POST /voice/number` with no body (402 `voice_plan_required`: the number comes with the voice plan, at Go live); and, on a free plan, turning on `send_to_anyone` or clearing a complaint pause in `PATCH /agent-mail/address` (402 `paid_plan_required`). `user.deleted` runs `account_wipe.wipe_account` on the person's own tenant (profiles and memory included, no Clerk read; a held phone line is kept); a failed step fails the event so Svix redelivers. Dev and prod data were reset on 2026-11-22/23, so no organisation-keyed data remains. Per-owner runtimes are legacy (about 25 remain, being retired by exact
 allowlist; their identity seeds are kept until network identity custody has a replacement).
+
+**The engine is its own service.** The conversation engine runs as its own Fargate service (`apps/backend/engine_main.py`, same image as the backend). Product code reaches it over HTTP through `core/engine/client.py` (`settings.ENGINE_URL`, the internal ALB's :8082); the in-process transport and the `ENGINE_TRANSPORT` setting are deleted. The backend no longer mounts `runtime_internal`, `internal_automations` or `messaging_internal`: the engine service serves them, the internal ALB sends their paths there (`apps/infra/lib/engine-paths.json`), and a gateway Lambda in `api-stack.ts` answers 404 "Engine path not public" for engine-only paths on the public API. Some routes still call `core.engine.api` inside the backend process (`routers/tasks.py`, `routers/questions.py`, `routers/automations.py`). Internal doors act only as the tenant's own person (`core/engine/api.py` `_tenant_person`).
 
 ### Hermes image and rollout
 
@@ -434,7 +419,7 @@ overlay (`managed/`, which wins at the leaf), the generated skills tree and the 
 - **A pin flip, deployed by `deploy.yml`, updates the pool's image through CDK.** Then
   `apps/backend/scripts/roll_hermes_runtimes.py` idle-stops warm sessions that started on the old image
   (`ROLL_IDLE_WAIT_S`, 10 minutes, because of the end-of-turn save). `run_runtime_roll.py` with
-  `roll-hermes-runtime.yml` runs one org's roll in CI. Verify by reading the pool's `containerUri`, never the pin
+  `roll-hermes-runtime.yml` runs one owner's roll in CI. Verify by reading the pool's `containerUri`, never the pin
   file.
 - **Config is not code.** An agent's config is its S3 profile under `<owner>/hermes/<agent>/`
   (`config.yaml`, `.env`, `SOUL.md`, `lightbulb-facts.json`), written by `hermes_profiles.write_agent_profile`.
@@ -477,8 +462,8 @@ source of truth for settings, but several modules read `os.getenv` directly. Run
 this file keeps the why, not inventories.
 
 - Auth is Clerk JWT (`core/auth.py`, `get_current_user` → `AuthContext`; JWKS cached 5 minutes, fails closed after
-  15 minutes stale). `resolve_owner_id` returns the org, else the signed-in person; 409 `workspace_required` only
-  for a non-session token with no org.
+  15 minutes stale). `resolve_owner_id` returns the person's Clerk user id and answers 403 `session_required` for a
+  token that is not a first-party Clerk session.
 - `owner_lifecycle.py` is a DynamoDB conditional-write lease on the path that writes an owner's credentials. It
   fails closed.
 - New Clerk calls go through `clerk_admin.py`; `routers/billing.py` and `routers/desktop_auth.py` still call
@@ -501,11 +486,11 @@ fields (`apps/frontend/src/lib/pricing.ts`); never bake a price into a client re
 - **The voice plan** (`core/billing/voice_plan*.py`, `voice_billing.py`): $250 a month, 1,500 minutes, $0.35 a minute
   after. It is a normal Stripe subscription (`STRIPE_VOICE_PLAN_PRICE_ID`, Checkout with promotion codes, #5208);
   Stripe's status is the access. Metronome (`METRONOME_VOICE_*`) bills only minutes past 1,500. The old Team plan
-  ($50, five members, $20 a seat) is still in code and offered at sign-up; the founder ruled one plan (F27) and one
+  ($50 a month) is still in code and offered at sign-up; the founder ruled one plan (F27) and one
   credit pool (F32), both open on the board (6.1, 6.3, 6.7). Today only the orb debits credits; phone and Meet send
   minutes to the plan meter only. Build no second meter.
 - **Payment is proven in the Stripe sandbox on dev** (F29), never by a real prod charge.
-- **Free tier `trial_local`:** a workspace with no billing row gets one, bounded by OpenRouter's per-key daily
+- **Free tier `trial_local`:** a tenant with no billing row gets one, bounded by OpenRouter's per-key daily
   limit (`OPENROUTER_TRIAL_KEY_DAILY_LIMIT_USD`) **and** a 30-day window (`billing_repo._TRIAL_LOCAL_DURATION_SECONDS`;
   a missing `trial_end` is unarmed, not expired). **There is no cap-only check primitive** — a cap-only check once
   woke expired trials — so every door calls the full predicate (`services/trial_cap.py` `trial_block_reason`, cap AND expiry).

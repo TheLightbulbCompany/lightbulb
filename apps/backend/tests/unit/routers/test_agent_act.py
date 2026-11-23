@@ -14,7 +14,7 @@ from core.repositories import messaging_repo
 from core.services import local_session_grants
 from core.services.messaging import ApiProblem
 from routers import messaging as router
-from tests.unit.repositories.test_messaging_repo import FRIDAY, GAUGE, OWNER, USER_A, _room, table  # noqa: F401
+from tests.unit.repositories.test_messaging_repo import FRIDAY, GAUGE, USER_A, _room, table  # noqa: F401
 
 ROOM = "22222222-2222-4222-8222-222222222222"
 URL = "/api/v1/messaging/agent-act"
@@ -36,7 +36,7 @@ def client(monkeypatch):
 
 def _bearer(requester, reader=None):
     grant = local_session_grants.mint(
-        "org_1", ROOM, "friday", "44444444-4444-4444-8444-444444444444", requester, reader
+        "user_ana", ROOM, "friday", "44444444-4444-4444-8444-444444444444", requester, reader
     )
     return {"Authorization": f"Bearer {grant}"}
 
@@ -47,7 +47,7 @@ def seated(monkeypatch):
     seated = {("agent", "friday"), ("human", "user_ana")}
     member = AsyncMock(side_effect=lambda room, kind, mid: {"kind": kind, "id": mid} if (kind, mid) in seated else None)
     member.seated = seated
-    monkeypatch.setattr(messaging_repo, "get_room", AsyncMock(return_value={"roomId": ROOM, "ownerId": "org_1"}))
+    monkeypatch.setattr(messaging_repo, "get_room", AsyncMock(return_value={"roomId": ROOM, "ownerId": "user_ana"}))
     monkeypatch.setattr(messaging_repo, "get_member", member)
     monkeypatch.setattr(messaging_repo, "has_foreign_members", AsyncMock(return_value=False))
     return member
@@ -59,7 +59,7 @@ def test_add_member_acts_as_the_requester(client, monkeypatch, seated):
     response = client.post(URL, json=ADD, headers=_bearer("user_ana"))
     assert response.status_code == 200 and response.json() == {"roomId": ROOM}
     auth, room_id, request = upsert.await_args.args
-    assert (auth.user_id, auth.org_id, room_id) == ("user_ana", "org_1", ROOM)
+    assert (auth.user_id, room_id) == ("user_ana", ROOM)
     assert (request.kind, request.id, request.role) == ("agent", "atlas", "member")
 
 
@@ -126,14 +126,14 @@ def test_the_incident_an_agent_added_through_agent_act_gets_its_delivery_cursor(
     """18 Oct: a hand-written member row skipped the cursor and silenced the agent's @mentions."""
     import asyncio
 
-    room_id, _ = asyncio.run(_room())  # USER_A owns it; FRIDAY is seated
+    room_id, _ = asyncio.run(_room(owner=USER_A))  # USER_A is the tenant and owns it; FRIDAY is seated
     roster = [{"id": FRIDAY, "name": "Friday"}, {"id": GAUGE, "name": "Gauge"}]
     monkeypatch.setattr(router.service, "load_agent_roster", AsyncMock(return_value=roster))
     monkeypatch.setattr(router.service, "_publish_room_metadata", AsyncMock())
     monkeypatch.setattr(router.service, "_emit_member_added", lambda *a, **kw: None)
     publisher = type("P", (), {"publish_user": AsyncMock(), "publish_room": AsyncMock()})()
     monkeypatch.setattr(router.service, "get_live_event_publisher", lambda: publisher)
-    grant = local_session_grants.mint(OWNER, room_id, FRIDAY, "44444444-4444-4444-8444-444444444444", USER_A)
+    grant = local_session_grants.mint(USER_A, room_id, FRIDAY, "44444444-4444-4444-8444-444444444444", USER_A)
     body = {
         "action": "add_member",
         "room_id": room_id,

@@ -88,12 +88,10 @@ def _engine_hooks():
 
 @pytest.fixture(autouse=True)
 def _engine_over_http(monkeypatch):
-    """Run with ENGINE_TRANSPORT=http: products reach the engine through `engine_main.app` in this process, over the
-    wire's bearer and encoding (`core.engine.client`), so a product suite exercises the HTTP contract."""
+    """Products reach the engine through `engine_main.app` in this process, over the wire's bearer and encoding
+    (`core.engine.client`), so a product suite exercises the HTTP contract."""
     from core.config import settings
 
-    if settings.ENGINE_TRANSPORT != "http":
-        return
     import engine_main
     from core.engine import transport
     from core.voice import engine_hooks
@@ -148,10 +146,9 @@ def _reset_shutdown_flag():
 
 @pytest.fixture(autouse=True)
 def _no_aws_profile(monkeypatch):
-    # The dev acceptance harness (scripts/super_agent/acceptance/ctx.py aws_profile_default, reached from
-    # validate_meeting_context and the acceptance tests) setdefaults AWS_PROFILE=isol8-admin. Owning the
-    # variable here restores it after every test, so it never leaks to later tests in the xdist worker,
-    # where boto3 then fails on any machine without that local SSO profile.
+    # A developer's local SSO profile must never reach a test: boto3 would then resolve it (and fail on
+    # any machine without it). Owning the variable here also restores it after every test, so nothing
+    # that sets it leaks to later tests in the xdist worker.
     monkeypatch.delenv("AWS_PROFILE", raising=False)
     monkeypatch.delenv("AWS_DEFAULT_PROFILE", raising=False)
 
@@ -255,24 +252,13 @@ def mock_current_user(mock_auth_context):
 @pytest.fixture
 def mock_org_admin_context() -> AuthContext:
     """Mock auth context for org admin."""
-    return AuthContext(
-        user_id="user_test_123",
-        org_id="org_test_456",
-        org_role="org:admin",
-        org_slug="test-org",
-        org_permissions=["org:billing:manage"],
-    )
+    return AuthContext(user_id="user_test_123", human_session=True)
 
 
 @pytest.fixture
 def mock_org_member_context() -> AuthContext:
     """Mock auth context for org member (non-admin)."""
-    return AuthContext(
-        user_id="user_test_789",
-        org_id="org_test_456",
-        org_role="org:member",
-        org_slug="test-org",
-    )
+    return AuthContext(user_id="user_test_123", human_session=True)
 
 
 @pytest.fixture
@@ -312,8 +298,13 @@ def mock_jwks() -> dict:
 
 
 @pytest.fixture
-def app():
-    """Create a fresh FastAPI app instance for testing."""
+def app(request):
+    """The backend's app; a module that tests the runtime's callback routes sets `ENGINE_APP = True` for the engine
+    service's app, which alone mounts them."""
+    if getattr(request.module, "ENGINE_APP", False):
+        from engine_main import app as engine_app
+
+        return engine_app
     from main import app as fastapi_app
 
     return fastapi_app
@@ -347,7 +338,7 @@ async def async_client(app, mock_current_user) -> AsyncGenerator:
 
 @pytest.fixture
 async def async_client_org_admin(app, mock_org_admin_user) -> AsyncGenerator:
-    """Async test client authenticated as org admin (user_test_123 in org_test_456)."""
+    """Async test client authenticated as org admin (user_test_123 in user_test_123)."""
     from core.auth import get_current_user
 
     app.dependency_overrides[get_current_user] = mock_org_admin_user
@@ -360,7 +351,7 @@ async def async_client_org_admin(app, mock_org_admin_user) -> AsyncGenerator:
 
 @pytest.fixture
 async def async_client_org_member(app, mock_org_member_user) -> AsyncGenerator:
-    """Async test client authenticated as org member (user_test_789 in org_test_456)."""
+    """Async test client authenticated as org member (user_test_789 in user_test_123)."""
     from core.auth import get_current_user
 
     app.dependency_overrides[get_current_user] = mock_org_member_user

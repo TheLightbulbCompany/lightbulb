@@ -2,7 +2,7 @@
 
 Every "a person must decide" is one Question row on a task. This module is the pure part: who may answer, what the
 options are, whether an external effect may proceed (`gate`), the card copy, and the false-approval pattern. The only
-I/O is the Clerk admin roster and the stored capability policy, both read through their existing modules.
+I/O is the stored capability policy, read through its existing module.
 
 Only answering a Question approves. Nothing here maps message text to an answer.
 """
@@ -135,11 +135,8 @@ def asks(mode: str, kind: str, operands: dict, *, members: Collection[str] = (),
 
 
 async def member_emails(ws: str) -> set[str]:
-    """The workspace members' primary emails, lower-case, strictly read (a Clerk error raises: the caller asks)."""
-    if not ws.startswith("org_"):
-        return {(await clerk_admin.get_primary_email(ws)).lower()}
-    members = await clerk_admin.list_organization_members(ws, strict=True)
-    return {m["email"].lower() for m in members if m.get("email")}
+    """The person's primary email, lower-case, strictly read (a Clerk error raises: the caller asks)."""
+    return {(await clerk_admin.get_primary_email(ws)).lower()}
 
 
 #: The operand an Always-allow rule binds to: the recipient, app, repo or agent.
@@ -216,7 +213,7 @@ async def add_always_allow(ws: str, kind: str, operands: dict, *, by: str) -> No
     rid = "always-" + hashlib.sha256(f"{kind}\0{key}\0{value}".encode()).hexdigest()[:16]
     for _ in range(_RULE_WRITE_TRIES):
         doc = await a2a_repo.get_rules(ws)
-        rules = a2a_rules.Rules.model_validate(doc) if doc else a2a_rules.default_rules(ws, await _admins(ws))
+        rules = a2a_rules.Rules.model_validate(doc) if doc else a2a_rules.default_rules(ws, [ws])
         if any(r.id == rid for r in rules.rules):
             return
         rules.rules.append(
@@ -270,18 +267,6 @@ def qid_for(idem_key: str) -> str:
     return "q-" + hashlib.sha256(idem_key.encode()).hexdigest()[:16]
 
 
-async def _members(ws: str) -> dict[str, str]:
-    """{user_id: role} of the workspace, strictly read (a Clerk error raises, never reads as "nobody")."""
-    if not ws.startswith("org_"):
-        return {ws: "org:admin"}  # a personal workspace's owner is its only member and admin
-    members = await clerk_admin.list_organization_members(ws, strict=True)
-    return {m["user_id"]: m.get("role") or "" for m in members if m.get("user_id")}
-
-
-async def _admins(ws: str) -> list[str]:
-    return [u for u, role in (await _members(ws)).items() if role == "org:admin"]
-
-
 async def _current_rule(ws: str, subkind: str | None) -> str:
     needs_policy = subkind == "send" or subkind in _MONEY
     return _rule_for(subkind, await billing_repo.get_capability_policy(ws) if needs_policy else {})
@@ -304,7 +289,6 @@ def _rule_for(subkind: str | None, policy: dict[str, bool]) -> str:
 async def answerers(
     ws: str,
     task: dict,
-    kind: str,
     subkind: str | None,
     *,
     app: dict | None = None,
@@ -314,12 +298,6 @@ async def answerers(
     Returns `(answerers, rule, base)`: `base` is the non-admin part (requester, app creator), kept
     so `can_answer_now` can re-check the admin part at answer time. Raises `NoAnswerer` on an empty list.
     """
-    inviter = task.get("ownerUserId")
-    if kind == "approval" and task.get("confirmAll") and inviter and inviter != ws and inviter in await _members(ws):
-        # Founder ruling 8 Nov 2026: a meeting's Needs-your-OK card goes to the inviter only (the meeting acts under
-        # the inviter's authority, records.inviting_member), never to the workspace's other admins. An inviter
-        # who left the workspace (or a workspace-owned task) falls through to the rule below: never a locked card.
-        return [inviter], "inviter", [inviter]
     rule = await _current_rule(ws, subkind)
     if rule == "creator+admins":
         # An app the call did not name (`lightbulb app publish` run in the app's folder carries no id) has no
@@ -332,31 +310,17 @@ async def answerers(
     ids = list(base)
     # A workspace-owned request (the proactive layer's runs: requester = the workspace) is answered by its admins.
     if rule.endswith("admins") or (rule.startswith("requester") and task.get("ownerUserId") == ws):
-        ids += await _admins(ws)
+        ids.append(ws)
     ids = list(dict.fromkeys(ids))
     if not ids:
         raise NoAnswerer(rule)
     return ids, rule, base
 
 
-async def can_answer_now(ws: str, q: dict, user_id: str, *, member: bool = False) -> bool:
-    """Spec 05 §3.3 "re-checks authority": in the stored list AND still a workspace member AND today's rule (from
-    today's policy) still admits them. An admin demoted, a member removed, or a policy tightened since the ask
-    (outreach/money moves → admins only) is refused. Fails closed on a row with no stored rule. `member`: the caller
-    already vouches that `user_id` is a workspace member, so only an admin rule reads the members."""
-    if user_id not in (q.get("answerers") or []) or not q.get("answererRule"):
-        return False
-    members = None if member else await _members(ws)
-    if members is not None and user_id not in members:
-        return False
-    if q["answererRule"] == "inviter":
-        return user_id in (q.get("baseAnswerers") or [])
-    rule = await _current_rule(ws, q.get("subkind"))
-    if rule != "admins" and user_id in (q.get("baseAnswerers") or []):
-        return True  # requester, app creator or governance holder, and today's rule still has that seat
-    if not rule.endswith("admins"):
-        return False
-    return (members if members is not None else await _members(ws)).get(user_id) == "org:admin"
+async def can_answer_now(ws: str, q: dict, user_id: str) -> bool:
+    """Spec 05 §3.3 "re-checks authority": in the stored list and the tenant's own person. The tenant is one person,
+    so every rule (requester, app creator, admins) admits exactly them. Fails closed on a row with no stored rule."""
+    return user_id == ws and user_id in (q.get("answerers") or []) and bool(q.get("answererRule"))
 
 
 @dataclass(frozen=True)

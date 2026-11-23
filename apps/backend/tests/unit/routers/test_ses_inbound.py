@@ -1099,7 +1099,7 @@ INVITE = "\r\n".join(
 TEAM_ORG = "org_acme"
 
 
-def _team(monkeypatch, members):
+def _team(monkeypatch):
     """An org's team address: its members' invites are meetings."""
     from core.repositories import messaging_repo
     from core.voice.meetings import meeting_invites
@@ -1109,11 +1109,6 @@ def _team(monkeypatch, members):
     monkeypatch.setattr(ses_inbound, "try_consume_stranger_wake", AsyncMock(return_value=True))
     monkeypatch.setattr(ses_inbound, "get_by_address", AsyncMock(return_value=team_row))
     monkeypatch.setattr(ses_inbound, "_ceo", AsyncMock(return_value=CEO_ID))
-    monkeypatch.setattr(
-        meeting_invites.clerk_admin,
-        "list_organization_members",
-        AsyncMock(return_value=[{"user_id": f"user_{i}", **m} for i, m in enumerate(members)]),
-    )
     monkeypatch.setattr(messaging_repo, "get_room", AsyncMock(side_effect=[None, *[{"ownerId": TEAM_ORG}] * 3]))
     monkeypatch.setattr(meeting_invites.container_repo, "try_claim_owner_lifecycle", AsyncMock(return_value="tok"))
     monkeypatch.setattr(meeting_invites.container_repo, "release_owner_lifecycle_claim", AsyncMock())
@@ -1127,51 +1122,10 @@ def _team(monkeypatch, members):
     return put, deliver
 
 
-def test_a_strangers_invite_to_the_team_address_is_ceo_mail(client, monkeypatch):
-    _enable(monkeypatch)
-    _dedup_recorded(monkeypatch)
-    put, deliver = _team(monkeypatch, [{"email": "member@acme.com"}])
-
-    resp = _post(client, _body(to=[TEAM_ADDRESS], calendar=INVITE))
-
-    assert resp.json()["status"] == "delivered"
-    put.assert_not_awaited()
-    deliver.assert_awaited_once()
-    assert deliver.await_args.kwargs["agent_id"] == CEO_ID
-
-
-def test_a_members_invite_to_the_team_address_is_a_meeting(client, monkeypatch):
-    _enable(monkeypatch)
-    _dedup_recorded(monkeypatch)
-    put, deliver = _team(monkeypatch, [{"email": SENDER}])
-
-    resp = _post(client, _body(to=[TEAM_ADDRESS], calendar=INVITE))  # From: SENDER, a member
-
-    assert resp.json()["status"] == "meeting_scheduled"
-    put.assert_awaited_once()
-    deliver.assert_not_awaited()
-
-
-@pytest.mark.parametrize(
-    "bad",
-    [("UID:evt-1", "SEQUENCE:abc\r\nUID:evt-1"), ("DTSTART:20361003T190000Z", "DTSTART;TZID=America:20361003T190000")],
-)
-def test_a_members_malformed_invite_is_ceo_mail_not_5xx(client, monkeypatch, bad):
-    _enable(monkeypatch)
-    _dedup_recorded(monkeypatch)
-    put, deliver = _team(monkeypatch, [{"email": SENDER}])
-
-    resp = _post(client, _body(to=[TEAM_ADDRESS], calendar=INVITE.replace(*bad)))
-
-    assert resp.status_code == 200 and resp.json()["status"] == "delivered"
-    put.assert_not_awaited()
-    assert deliver.await_args.kwargs["agent_id"] == CEO_ID
-
-
 def test_team_mail_without_a_ceo_is_dropped(client, monkeypatch):
     _enable(monkeypatch)
     _dedup_recorded(monkeypatch)
-    _, deliver = _team(monkeypatch, [])
+    _, deliver = _team(monkeypatch)
     monkeypatch.setattr(ses_inbound, "_ceo", AsyncMock(return_value=None))
 
     assert _post(client, _body(to=[TEAM_ADDRESS])).json()["status"] == "dropped_unknown_recipient"
@@ -1218,7 +1172,7 @@ def _sent_by(monkeypatch, sent: dict):
 def test_a_reply_to_an_agents_mail_goes_to_that_agent(client, monkeypatch):
     _enable(monkeypatch)
     _dedup_recorded(monkeypatch)
-    _, deliver = _team(monkeypatch, [])
+    _, deliver = _team(monkeypatch)
     _sent_by(monkeypatch, {"<friday-1@agents.isol8.co>": "friday"})
     headers = {"Message-ID": "<r@x>", "In-Reply-To": "<friday-1@agents.isol8.co>"}
 
@@ -1232,7 +1186,7 @@ def test_a_reply_to_an_agents_mail_goes_to_that_agent(client, monkeypatch):
 def test_the_thread_root_decides_before_the_immediate_parent(client, monkeypatch):
     _enable(monkeypatch)
     _dedup_recorded(monkeypatch)
-    _, deliver = _team(monkeypatch, [])
+    _, deliver = _team(monkeypatch)
     _sent_by(monkeypatch, {"<atlas-root@d>": "atlas", "<friday-2@d>": "friday"})
     headers = {"Message-ID": "<r@x>", "References": "<atlas-root@d> <friday-2@d>", "In-Reply-To": "<friday-2@d>"}
 
@@ -1245,7 +1199,7 @@ def test_a_reply_to_a_strangers_root_goes_to_the_agent_who_answered(client, monk
     """References[0] is the human's own first mail (not ours), so In-Reply-To decides."""
     _enable(monkeypatch)
     _dedup_recorded(monkeypatch)
-    _, deliver = _team(monkeypatch, [])
+    _, deliver = _team(monkeypatch)
     _sent_by(monkeypatch, {"<friday-2@d>": "friday"})
     headers = {"Message-ID": "<r@x>", "references": "<human-root@x> <friday-2@d>", "In-Reply-To": "<friday-2@d>"}
 
@@ -1257,7 +1211,7 @@ def test_a_reply_to_a_strangers_root_goes_to_the_agent_who_answered(client, monk
 def test_mail_that_answers_nothing_we_sent_goes_to_the_ceo(client, monkeypatch):
     _enable(monkeypatch)
     _dedup_recorded(monkeypatch)
-    _, deliver = _team(monkeypatch, [])
+    _, deliver = _team(monkeypatch)
     _sent_by(monkeypatch, {})
     headers = {"Message-ID": "<r@x>", "In-Reply-To": "<someone-elses@x>"}
 
@@ -1270,7 +1224,7 @@ def test_an_inbound_row_is_not_a_writer(client, monkeypatch):
     """Only a sent (``direction=out``) row names a writer; a stored inbound with that id does not."""
     _enable(monkeypatch)
     _dedup_recorded(monkeypatch)
-    _, deliver = _team(monkeypatch, [])
+    _, deliver = _team(monkeypatch)
     monkeypatch.setattr(
         ses_inbound, "find_by_message_id", AsyncMock(return_value={"agent_id": "friday", "received_key": "k"})
     )
@@ -1283,7 +1237,7 @@ def test_an_inbound_row_is_not_a_writer(client, monkeypatch):
 def test_the_first_inbound_creates_the_team_row(client, monkeypatch):
     _enable(monkeypatch)
     _dedup_recorded(monkeypatch)
-    _, deliver = _team(monkeypatch, [])
+    _, deliver = _team(monkeypatch)
     row = {"owner_id": TEAM_ORG, "address": TEAM_ADDRESS, "send_to_anyone": True}
     monkeypatch.setattr(ses_inbound, "get_by_address", AsyncMock(side_effect=[None, row]))
     ensure = AsyncMock(return_value=(TEAM_ADDRESS, "ok"))
@@ -1296,7 +1250,7 @@ def test_the_first_inbound_creates_the_team_row(client, monkeypatch):
 def test_a_sent_id_from_another_workspace_does_not_pick_the_agent(client, monkeypatch):
     _enable(monkeypatch)
     _dedup_recorded(monkeypatch)
-    _, deliver = _team(monkeypatch, [])
+    _, deliver = _team(monkeypatch)
     _sent_by(monkeypatch, {"<theirs@d>": ("agents@other.agents.isol8.co", "their-friday")})
 
     _post(client, _body(to=[TEAM_ADDRESS], headers={"Message-ID": "<r@x>", "In-Reply-To": "<theirs@d>"}))
@@ -1308,7 +1262,7 @@ def test_a_forged_reply_to_a_real_sent_id_does_not_wake_a_closed_mailbox(client,
     """Naming a real sent Message-ID picks the agent, never the right to wake it."""
     _enable(monkeypatch)
     _dedup_recorded(monkeypatch)
-    _, deliver = _team(monkeypatch, [])
+    _, deliver = _team(monkeypatch)
     closed = {"owner_id": OWNER_ID, "address": TEAM_ADDRESS, "send_to_anyone": False, "verified_senders": []}
     monkeypatch.setattr(ses_inbound, "get_by_address", AsyncMock(return_value=closed))
     _sent_by(monkeypatch, {"<friday-1@d>": "friday"})

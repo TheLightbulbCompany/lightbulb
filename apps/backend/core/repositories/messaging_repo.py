@@ -434,11 +434,6 @@ def dm_pair_sk(*members: tuple[str, str]) -> str:
     return "DMPAIR#" + _sha256("|".join(sorted(f"{kind}#{member_id}" for kind, member_id in members)))
 
 
-def vendor_room_id(owner_id: str) -> str:
-    """The one platform-managed channel a customer workspace shares with the vendor org."""
-    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"lightbulb-vendor-room|{owner_id}"))
-
-
 def feed_room_id(owner_id: str) -> str:
     """The workspace's one feed channel (Activity). Mirrored by the messaging projector
     (apps/infra/lambda/messaging-projector/index.py ``_is_feed_room``): edit both together."""
@@ -2421,17 +2416,14 @@ async def list_active_user_streams(owner_id: str) -> list[dict]:
     return [r for r in rows if r.get("active")]
 
 
-async def ensure_user_stream(owner_id: str, user_id: str, *, rejoin: bool = False) -> str | None:
+async def ensure_user_stream(owner_id: str, user_id: str) -> str | None:
     """Return the user's CURRENT active channel key, allocating a fresh UUID when no
-    stream exists. An INACTIVE stream is a removed member (``revoke_human_membership``):
-    it answers None, because a removed member's unexpired JWT still resolves the org and
-    reviving the stream here would put them back on live events. Only ``rejoin=True`` —
-    the Clerk ``organizationMembership.created`` webhook, a real (re)join — turns it back
-    on, under a fresh key (an old key is never reactivated)."""
+    stream exists. An INACTIVE stream answers None: reviving it here would put a deactivated
+    user back on live events (an old key is never reactivated)."""
     current = await get_user_stream(owner_id, user_id)
     if current is not None and current.get("active"):
         return current["channelKey"]
-    if current is not None and not rejoin:
+    if current is not None:
         return None
     table_name = _table().name
     now = utc_now_iso()

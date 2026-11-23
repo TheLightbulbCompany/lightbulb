@@ -1,5 +1,4 @@
 "use client";
-import Link from "next/link";
 
 import { PHONE_VOICES, voiceSamplePath } from "@lightbulb/shared";
 
@@ -142,9 +141,6 @@ export function InCharge() {
             </li>
           ))}
         </ul>
-        <p className="lb-sec-sub">
-          <Link href="/security">How we handle your data</Link>
-        </p>
       </div>
     </section>
   );

@@ -2,10 +2,6 @@
 
 * ``provision_org`` writes the META row (``active``, the provisioner as first member, a fresh
   onboarding generation) and seeds ``STARTER_ROSTER`` into ``agent_registry``.
-* ``provision_member`` records a member on an active workspace's row.
-* ``disable_workspace`` marks a deleted Clerk org's row ``disabled`` with a purge timer; the
-  cleanup cron (``update_service._workspace_purge_pass``) deletes it afterwards.
-
 Leaving a workspace is ``WorkspaceRepo.remove_member`` (the class keeps its name until task 9).
 """
 
@@ -14,7 +10,7 @@ from __future__ import annotations
 import dataclasses
 import logging
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from botocore.exceptions import ClientError
 from ulid import ULID
@@ -108,8 +104,8 @@ def _repo() -> WorkspaceRepo:
     return WorkspaceRepo()
 
 
-def starter_agent_id(org_id: str, starter_key: str) -> str:
-    return str(uuid.uuid5(_STARTER_NAMESPACE, f"{org_id}:{starter_key}"))
+def starter_agent_id(owner_id: str, starter_key: str) -> str:
+    return str(uuid.uuid5(_STARTER_NAMESPACE, f"{owner_id}:{starter_key}"))
 
 
 async def provision_org(owner_id: str, *, provisioner: str) -> Workspace:
@@ -178,29 +174,9 @@ async def provision_org(owner_id: str, *, provisioner: str) -> Workspace:
     return row
 
 
-async def provision_member(owner_id: str, user_id: str) -> Workspace | None:
-    """Record ``user_id`` as a member of the active workspace. None while it is not active yet."""
-    repo = _repo()
-    ws = await repo.resolve_owner_row(owner_id)
-    if ws is not None and user_id not in ws.member_user_ids:
-        await repo.add_member(owner_id, user_id)
-        ws.member_user_ids.add(user_id)
-    return ws
-
-
-async def disable_workspace(org_id: str, *, grace_days: int = 30) -> None:
-    """Mark a workspace row ``disabled`` with a purge timer (the Clerk org was deleted)."""
-    repo = _repo()
-    if await repo.get_workspace(org_id) is None:
-        return
-    purge_at = datetime.now(timezone.utc) + timedelta(days=grace_days)
-    await repo.update_status(org_id, status="disabled", scheduled_purge_at=purge_at)
-    logger.info("workspace_provisioning.disable_workspace: %s scheduled for purge at %s", org_id, purge_at.isoformat())
-
-
-async def _mark_failed(repo: WorkspaceRepo, org_id: str, reason: str) -> None:
+async def _mark_failed(repo: WorkspaceRepo, owner_id: str, reason: str) -> None:
     """Leave the failure visible (``/teams`` answers 503, not an endless 202), never over ``active``."""
-    if await repo.get_workspace(org_id, consistent_read=True) is not None:
-        await repo.update_status(org_id, status="failed", last_error=reason, not_if_status="active")
+    if await repo.get_workspace(owner_id, consistent_read=True) is not None:
+        await repo.update_status(owner_id, status="failed", last_error=reason, not_if_status="active")
     else:
-        await repo.put_failed_marker_if_absent(org_id=org_id, reason=reason)
+        await repo.put_failed_marker_if_absent(org_id=owner_id, reason=reason)

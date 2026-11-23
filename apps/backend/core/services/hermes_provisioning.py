@@ -609,9 +609,8 @@ async def delete_workspace_runtime(
     function is shared by NON-terminal callers -- ``entitlement_teardown`` (a lapsed or
     past-due subscription) and ``routers/debug.py``'s ``DELETE /debug/provision`` (a
     routine reprovision) -- and passing ``True`` from those destroyed a migrated owner's
-    memory / skills / SOUL.md / auth.json. Exactly THREE terminal callers pass ``True``:
-    ``account_wipe`` (user-keyed: the admin wipe and the Clerk ``user.deleted`` webhook),
-    ``workspace_wipe`` (org-keyed), and
+    memory / skills / SOUL.md / auth.json. Exactly TWO terminal callers pass ``True``:
+    ``account_wipe`` (the admin wipe and the Clerk ``user.deleted`` webhook) and
     ``routers/debug.py``'s ``DELETE /debug/user-data`` (the e2e
     empty-slate reset; debug is 403 in prod). Do not re-broaden it.
 
@@ -700,7 +699,6 @@ async def prepare_hermes_workspace(owner_id: str) -> bool:
     # ponytail: on the shared runtime a bearer rotation (a manual generation bump) reaches a warm
     # session at its next cold start, not by a restart here; nothing in code bumps it.
     boot_changed = False
-    await _ensure_network_member(owner_id)
 
     # m2: the one step that mints three credentials and writes a secret was otherwise invisible
     # in the provision log. Never logs a value -- only which tokens were reused vs freshly minted.
@@ -712,28 +710,6 @@ async def prepare_hermes_workspace(owner_id: str) -> bool:
         boot_changed,
     )
     return boot_changed
-
-
-async def _ensure_network_member(owner_id: str) -> None:
-    """Write ``sessions.json``, so every workspace is a member of the ``lightbulb`` network from
-    provision on, and rewrite it when it exists so each provision, reconcile and roll carries the
-    current ``members`` (the people the workspace's agents answer; a file written before that
-    field existed would otherwise leave the gate off and hold every member's message).
-    Best-effort: a network hiccup never fails a provision. On a fresh provision the roster is
-    still empty here; ``write_profiles`` republishes it once the roster is seeded."""
-    from core.auth import is_org_owner_id
-
-    if not settings.OWNER_STATE_BUCKET or not is_org_owner_id(owner_id):  # the network's workspace mode is org-only
-        return
-    from core.services import network_member
-
-    try:
-        if await network_member.sessions_exist(owner_id):
-            await network_member.publish_sessions(owner_id)
-        else:
-            await network_member.write_sessions(owner_id)
-    except Exception:  # noqa: BLE001
-        logger.warning("network sessions write failed for owner=%s", owner_id, exc_info=True)
 
 
 async def _ensure_codex_auth_staged(owner_id: str) -> None:

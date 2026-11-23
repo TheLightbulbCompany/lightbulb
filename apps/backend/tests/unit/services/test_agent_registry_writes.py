@@ -60,7 +60,7 @@ def side_effects(monkeypatch):
 def client(ddb, side_effects):
     from main import app
 
-    app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id="user_1", org_id=WS)
+    app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id=WS, human_session=True)
     try:
         yield TestClient(app)
     finally:

@@ -1,11 +1,10 @@
 """Shared FastAPI deps for the Teams BFF routers.
 
-``TeamsContext`` (the caller's user, org and owner ids) and ``envelope_list``.
+``envelope_list``.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Any
 
 
@@ -30,10 +29,3 @@ def envelope_list(upstream: Any, key: str) -> dict[str, list[dict]]:
     else:
         rows = []
     return {key: [row for row in rows if isinstance(row, dict)]}
-
-
-@dataclass
-class TeamsContext:
-    user_id: str
-    org_id: str | None
-    owner_id: str

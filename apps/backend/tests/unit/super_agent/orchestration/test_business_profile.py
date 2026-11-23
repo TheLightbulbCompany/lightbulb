@@ -9,7 +9,6 @@ import pytest
 from core.repositories import billing_repo
 from core.voice import store
 from core.voice.phone import business_profile as bp
-from core.services import clerk_admin
 from core.voice.phone import voice_booking
 from core.temporal import activities as acts
 from core.temporal import router_prompt
@@ -31,7 +30,7 @@ def sources(monkeypatch):
     get = AsyncMock(return_value=CFG)
     monkeypatch.setattr(store, "get_voice_agent", get)
     monkeypatch.setattr(billing_repo, "get_by_owner_id", AsyncMock(return_value=None))
-    monkeypatch.setattr(clerk_admin, "get_organization", AsyncMock(return_value={"name": "Glow Nails"}))
+    monkeypatch.setattr("core.services.workspace_name.saved_name", AsyncMock(return_value="Glow Nails"))
     monkeypatch.setattr(vp, "_taken", AsyncMock(return_value=[]))
     monkeypatch.setattr(voice_booking, "busy_across", AsyncMock(return_value=[]))
     monkeypatch.setattr(vp, "free_slots", lambda *a: ["2026-11-14T09:00", "2026-11-14T09:30", "2026-11-14T14:00"])
@@ -125,30 +124,6 @@ async def test_optional_timeout_keeps_known_facts_and_marks_only_missing_data_un
         assert "This caller's upcoming bookings: unknown" in text
         assert "9:00 AM–9:30 AM, 2:00 PM" in text
         assert len(cancelled) == 1
-
-
-async def test_the_facts_and_slots_never_wait_on_google_or_clerk(sources, monkeypatch):
-    """8 Nov prod: an expired Google grant timed the profile out on 18 phone turns in 16 minutes, so the Router had
-    no facts, hours or slots. A slow Google (or Clerk) now costs only its own part: the facts and Nova's own slots
-    still go out inside the bound."""
-
-    async def slow(*_a, **_k):
-        await asyncio.sleep(5)
-
-    bp._names.clear()
-    sources.return_value = CFG | {"bookingsGo": "google"}
-    google = AsyncMock(side_effect=slow)
-    monkeypatch.setattr(clerk_admin, "get_organization", slow)
-    monkeypatch.setattr(voice_booking, "_request", google)
-    monkeypatch.setattr(voice_booking, "busy_across", _real_busy_across)
-    monkeypatch.setattr(bp, "GOOGLE_S", 0.05)
-    monkeypatch.setattr(bp, "ORG_S", 0.05)
-    started = asyncio.get_running_loop().time()
-    text = await bp.business_profile("org_x", "+15550001")
-    assert asyncio.get_running_loop().time() - started < 1
-    assert "Pedicure $45" in text and "$50 deposit" in text and "Business: not named" in text
-    assert "Open start times: unknown" in text and "9:00 AM" not in text
-    assert google.await_count == 1  # Google was asked once for the week, and not waited for
 
 
 async def test_googles_busy_blocks_are_one_bounded_freebusy_for_the_week(monkeypatch):

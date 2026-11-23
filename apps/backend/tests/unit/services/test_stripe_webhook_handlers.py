@@ -830,13 +830,8 @@ async def test_a_stale_trialing_event_after_the_trial_is_ignored(mock_repo, prio
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("status", ["active", "canceled", "past_due"])
-async def test_subscription_handler_calls_sync_front_desk_after_seats(mock_repo, monkeypatch, status):
-    calls = MagicMock()
-    seats = AsyncMock()
+async def test_subscription_handler_calls_sync_front_desk(mock_repo, monkeypatch, status):
     front_desk = AsyncMock()
-    calls.attach_mock(seats, "seats")
-    calls.attach_mock(front_desk, "front_desk")
-    monkeypatch.setattr("core.services.billing_service.sync_seat_quantity", seats)
     monkeypatch.setattr("core.services.text_lines.sync_front_desk", front_desk)
     monkeypatch.setattr("core.config.settings.STRIPE_FRONT_DESK_PRICE_ID", "price_fd")
     event = _subscription_event(status=status)
@@ -846,8 +841,6 @@ async def test_subscription_handler_calls_sync_front_desk_after_seats(mock_repo,
     front_desk.assert_awaited_once_with(
         "org_x", subscription_id=event["data"]["object"]["id"], previous_subscription_id=None
     )
-    if status == "active":
-        assert [c[0] for c in calls.mock_calls] == ["seats", "front_desk"]
 
 
 @pytest.mark.asyncio
@@ -868,7 +861,6 @@ async def test_subscription_event_without_the_item_and_without_a_claim_never_cal
     retrieve, release = MagicMock(), AsyncMock()
     monkeypatch.setattr(text_lines.stripe.Subscription, "retrieve", retrieve)
     monkeypatch.setattr(text_lines, "release_line", release)
-    monkeypatch.setattr("core.services.billing_service.sync_seat_quantity", AsyncMock())
     await _run_state(mock_repo, "active", status)
     retrieve.assert_not_called()
     release.assert_not_awaited()

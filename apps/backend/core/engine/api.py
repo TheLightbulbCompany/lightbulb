@@ -2,8 +2,8 @@
 
 Lightbulb Phone and Lightbulb Meetings call these, and only these, to put lines in a conversation, start and answer
 tasks and read what the agents said. In process today; the same shapes go over HTTP later (`core.engine.contract`).
-Every operation takes the tenant explicitly: none reads a Clerk organisation, and a `member` principal is the tenant's
-member on the product's word (as the phone trusts a call's `ownerUserId`), never looked up. A refusal is an
+Every operation takes the tenant explicitly (the person's own id), and a `member` principal is that person
+on the product's word (as the phone trusts a call's `ownerUserId`), never looked up. A refusal is an
 `EngineError` carrying the status and body the routes answered before; `http` turns it back into that `HTTPException`
 for a route.
 
@@ -182,6 +182,12 @@ async def list_conversations(tenant_id: str, kinds: list[str], limit: int) -> li
     ]
 
 
+def _tenant_person(tenant_id: str, principal: Principal | None) -> None:
+    """The tenant is one person: a `member` principal is that person, nobody else."""
+    if principal is not None and principal.kind == "member" and principal.id != tenant_id:
+        raise _problem(403, "not_tenant_person")
+
+
 async def open_conversation(req: OpenIn) -> ConversationOut:
     """Open a conversation, or get the one `client_key` already opened (a retry). A `call`: the creator as its owner
     member, the front agent seated when asked and there is one. A `channel`: the creator and every agent, on
@@ -189,6 +195,7 @@ async def open_conversation(req: OpenIn) -> ConversationOut:
     (tenant, kind, client key). An id already taken by a deleted conversation, or another tenant's, is not found."""
     if fields := sorted(set(req.annotations) - PRODUCT_META_FIELDS):
         raise _problem(400, "not_product_field", fields=fields)
+    _tenant_person(req.tenant_id, req.creator)
     if req.kind == "dm":
         return await _open_dm(req)
     if not req.conversation_id:
@@ -265,10 +272,12 @@ async def get_roster(tenant_id: str) -> list[dict]:
 
 async def _open_dm(req: OpenIn) -> ConversationOut:
     ws, member = req.tenant_id, req.creator.id
+    if member != ws:  # the tenant is one person: only they open their conversations
+        raise _problem(403, "not_tenant_person")
     try:
         front = {"id": req.agent_id} if req.agent_id else await task_conversation._front_agent(ws)
         room = await messaging.create_room(
-            AuthContext(user_id=member, org_id=ws),
+            AuthContext(user_id=ws, human_session=True),
             messaging.CreateRoomRequest(
                 client_room_id=uuid.uuid5(uuid.NAMESPACE_URL, f"{req.client_key}|{front['id']}"),
                 name=None,
@@ -340,9 +349,11 @@ async def append_line(req: LineIn) -> LineOut:
         )
         return LineOut(message_id=message_id)
     member, key = req.principal.id, req.idempotency_key
+    if member != req.tenant_id:  # the tenant is one person: only they speak as a member
+        raise _problem(403, "not_tenant_person")
     answered = await _answer_said_question(req.tenant_id, req.conversation_id, member, req.answers, req.text, key)
     msg = await messaging.create_human_message(
-        AuthContext(user_id=member, org_id=req.tenant_id),
+        AuthContext(user_id=req.tenant_id, human_session=True),
         req.conversation_id,
         messaging.CreateMessageRequest(
             client_message_id=uuid.uuid5(uuid.NAMESPACE_URL, key),
@@ -463,7 +474,7 @@ async def _answer_said_question(owner_id: str, room_id: str, member: str, ref: Q
                     option_id="answer", text=text[:4000],
                     client_answer_id=uuid.uuid5(uuid.NAMESPACE_URL, key).hex)  # fmt: skip
     try:
-        await _submit_answer(owner_id, ref.task_id, ref.qid, member, body, member=True)
+        await _submit_answer(owner_id, ref.task_id, ref.qid, member, body)
     except (EngineError, HTTPException) as e:  # a refusal, or a product hook's HTTPException (a call gone)
         logger.info("voice room %s: question %s not answered by voice (%s)", room_id, ref.qid, e.detail)
         return False
@@ -477,6 +488,7 @@ async def start_task(req: StartIn) -> StartOut:
     """A task started with no Router model turn (a scripted `ref.start`), answered in `conversation_id`. The same
     `trigger_id` is the same task. `lane="auto"`: the requester's private lane in a DM, else shared. `ask`
     (`task_asks.open_ask`'s arguments): the task opens waiting on that Question instead of running first."""
+    _tenant_person(req.tenant_id, req.principal)
     meta = await _owned(req.tenant_id, req.conversation_id)
     requester = req.principal.id if req.principal else None
     lane = "shared"
@@ -523,6 +535,7 @@ async def start_task(req: StartIn) -> StartOut:
 async def submit_event(req: EventIn) -> EventOut:
     """A source event for the Router with no message behind it: `respond` (it answers) or `candidate` (it decides
     whether to act). The same `trigger_id` is the same event."""
+    _tenant_person(req.tenant_id, req.principal)
     if req.conversation_id:
         await _owned(req.tenant_id, req.conversation_id)
     now = utc_now_iso()
@@ -639,8 +652,8 @@ _STYLES = {"deny": "danger", "request_changes": "secondary"}
 
 async def answer(req: AnswerIn) -> dict:
     """`principal` answers Question `qid` of `task_id` (`_submit_answer`): the question's view and the task's summary."""
-    member = req.principal.kind == "member"
-    return await _submit_answer(req.tenant_id, req.task_id, req.qid, req.principal.id, req, member=member)
+    _tenant_person(req.tenant_id, req.principal)
+    return await _submit_answer(req.tenant_id, req.task_id, req.qid, req.principal.id, req)
 
 
 async def _people(ids: list[str | None]) -> dict[str, str]:
@@ -739,14 +752,12 @@ def _not_open(q: dict) -> EngineError:
     return _problem(409, "not_open", state=q["state"], by=q.get("answeredBy"), at=q.get("answeredAt"))
 
 
-async def _submit_answer(
-    ws: str, task_id: str, qid: str, me: str, body: Any, *, member: bool = False
-) -> dict[str, Any]:
+async def _submit_answer(ws: str, task_id: str, qid: str, me: str, body: Any) -> dict[str, Any]:
     """`me` answers Question `qid`: the card's press, and a line said to the voice right after it said the question
-    (`_answer_said_question`). `body`: `option_id`, `text`, `client_answer_id`, `expect_version`. `member`: `me` is
-    the tenant's member on the caller's word. Raises the answer route's refusals as EngineError."""
+    (`_answer_said_question`). `body`: `option_id`, `text`, `client_answer_id`, `expect_version`.
+    Raises the answer route's refusals as EngineError."""
     task = await tasks_repo.get_task(ws, task_id)
-    if task is None or not await tasks_access.can_view(task, me, member=member):
+    if task is None or not await tasks_access.can_view(task, me):
         raise _not_found()
     q = await questions_repo.get_question(ws, task_id, qid)
     if q is None:
@@ -760,7 +771,7 @@ async def _submit_answer(
         # A closed task's Questions are cancelled when it ends; one left open (that cancel failed) is still never
         # answered, and no Temporal update is sent (it would start a fresh run for a finished task).
         raise _problem(409, "task_closed")
-    if not await questions.can_answer_now(ws, q, me, member=member):
+    if not await questions.can_answer_now(ws, q, me):
         raise _problem(403, "not_answerer")
     offered = {o["id"] for o in q.get("options") or []} or {"answer"}
     if body.option_id not in offered:
@@ -823,15 +834,15 @@ _GATED = frozenset({"retry"})  # a new attempt: today's chat gate first (§14.10
 
 async def act(req: ActIn) -> dict:
     """Stop, resolve, reopen or retry a task as `principal`, at `version` when given: the task's summary after."""
-    member = req.principal.kind == "member"
-    return await _act(req.tenant_id, req.task_id, req.action, req.principal.id, req.version, member=member)
+    _tenant_person(req.tenant_id, req.principal)
+    return await _act(req.tenant_id, req.task_id, req.action, req.principal.id, req.version)
 
 
-async def _visible_tree(ws: str, task_id: str, user_id: str, *, member: bool = False) -> dict:
+async def _visible_tree(ws: str, task_id: str, user_id: str) -> dict:
     tree = await tasks_repo.get_task_tree(ws, task_id)
     if tree["task"] is None:
         raise _problem(404, "not_found")
-    if not await tasks_access.can_view(tree["task"], user_id, member=member):
+    if not await tasks_access.can_view(tree["task"], user_id):
         raise _problem(404, "not_found")  # hidden reads as missing: no existence leak (lead ruling, 5 Nov)
     return tree
 
@@ -844,8 +855,8 @@ async def _summary(tree: dict, viewer: str) -> dict:
     return tasks_access.summarize({**tree, "userNames": names}, viewer)
 
 
-async def _act(ws: str, task_id: str, action: str, user_id: str, version: int | None, *, member: bool = False) -> dict:
-    tree = await _visible_tree(ws, task_id, user_id, member=member)
+async def _act(ws: str, task_id: str, action: str, user_id: str, version: int | None) -> dict:
+    tree = await _visible_tree(ws, task_id, user_id)
     task = tree["task"]
     if version is not None and task["version"] != version:
         raise _problem(409, "version_conflict", version=task["version"])
@@ -939,9 +950,9 @@ def warm(tenant_id: str, agent_ids: list[str], conversation_id: str | None = Non
 _TENANT_WORKFLOW_PREFIXES = ("task", "learn", "gwatch", "fire", "hook")
 
 
-#: A tenant id `delete_tenant` acts on: a Clerk organisation or user id, nothing else (its WorkflowId prefix scan and
+#: A tenant id `delete_tenant` acts on: a Clerk user id, nothing else (its WorkflowId prefix scan and
 #: partition delete are keyed on it).
-_TENANT_ID = re.compile(r"(?:org|user)_[A-Za-z0-9]{1,64}")
+_TENANT_ID = re.compile(r"user_[A-Za-z0-9]{1,64}")
 
 
 async def delete_tenant(tenant_id: str) -> dict[str, int]:

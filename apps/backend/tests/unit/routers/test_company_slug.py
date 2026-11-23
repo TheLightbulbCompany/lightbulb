@@ -16,7 +16,7 @@ from routers import company_slug as mod  # noqa: E402
 @pytest.fixture
 def client(monkeypatch):
     # No org on the token: the caller is creating their first workspace.
-    app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id="user_new")
+    app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id="user_new", human_session=True)
     monkeypatch.setattr(mod.settings, "AGENT_EMAIL_DOMAIN", "dev.thelightbulb.company")
     yield TestClient(app)
     app.dependency_overrides.clear()
@@ -56,28 +56,3 @@ def test_hold_409s_a_lost_race_and_holds_a_free_slug(client, monkeypatch):
     monkeypatch.setattr(mod.company_slug_repo, "hold", hold)
     assert client.post("/api/v1/company/slug/hold", json={"slug": "bench-club"}).json() == {"slug": "bench-club"}
     hold.assert_awaited_once_with(slug="bench-club", user_id="user_new")
-
-
-def test_claim_hands_the_hold_to_the_callers_new_workspace(monkeypatch):
-    app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id="user_new", org_id="org_new")
-    try:
-        claim = AsyncMock(return_value=True)
-        named = AsyncMock()
-        monkeypatch.setattr(mod.company_slug_repo, "claim", claim)
-        monkeypatch.setattr(mod.company_slug_repo, "get_by_owner", AsyncMock(return_value=None))
-        monkeypatch.setattr(mod.WorkspaceRepo, "set_name", named)
-        c = TestClient(app)
-        body = {"slug": "bench-club", "name": " Bench Club "}
-        assert c.post("/api/v1/company/slug/claim", json=body).status_code == 200
-        claim.assert_awaited_once_with(slug="bench-club", user_id="user_new", owner_id="org_new")
-        named.assert_awaited_once_with("org_new", "Bench Club")
-        claim.return_value = False
-        assert c.post("/api/v1/company/slug/claim", json=body).status_code == 409
-        assert c.post("/api/v1/company/slug/claim", json={"slug": "bench-club", "name": " "}).status_code == 422
-        # The org page sends the slug alone: still claimed, and no name is written.
-        named.reset_mock()
-        claim.return_value = True
-        assert c.post("/api/v1/company/slug/claim", json={"slug": "bench-club"}).status_code == 200
-        named.assert_not_awaited()
-    finally:
-        app.dependency_overrides.clear()

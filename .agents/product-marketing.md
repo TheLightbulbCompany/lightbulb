@@ -140,6 +140,7 @@ Paths are relative to the repo root `/Users/prasiddhaparthsarthy/Desktop/lb-mark
 | Requires macOS 14 or later | VERIFIED | The app's sign-in library needs macOS 14 (app team, 21 Nov 2026). |
 | Apple silicon only (M1 or later); no Intel build | VERIFIED | The app team's build is arm64 only (21 Nov 2026). Say "For Mac with Apple silicon (M1 or later)". |
 | On an invite link (`/os?ref=CODE`), signed out: "You've been invited to Spark. Create your account, then download." with the sign-up form and "Skip, just download"; signed in: the download and "Open Spark and sign in with the same Apple, Google or email." Before the installer is published: "Download coming soon." No referrer name. | VERIFIED | Founder, 21 Nov 2026: record the referral at web sign-up; the referred person gets nothing extra. `app/os/OsInvite.tsx`. |
+| On a phone or tablet (decided by user agent in the browser; the server HTML always carries the download for crawlers and Macs), every download button on `/os` is replaced by "Spark is a Mac app. Open this page on your Mac to download it." with "Copy link" (the page address, invite code kept) and "Email me the link" (a `mailto:`). An invited visitor can still create the account; "Skip, just download" is hidden | VERIFIED | Owner, 22 Nov 2026 (a friend tapped a Mac download on an iPhone). `app/os/SparkDownload.tsx` `SparkGet`. |
 | Price and trial on `/os`: one small line under the download, "Free for 3 days, then $20/month. Renews monthly until you cancel.", built from the backend's public `GET /os/config` (no line when it cannot be read), followed by "Terms" (`/terms`) and "Privacy" (`/privacy`) links, always shown. Nowhere else on the page | VERIFIED | Founder, 21 Nov 2026. `app/os/page.tsx`. Spark's Stripe Checkout asks for Terms of Service consent when the Stripe account has a terms URL. |
 
 ### Billing, trial, compliance
@@ -314,7 +315,7 @@ Confidence: **low.** No first-party salon interviews exist yet, and Reddit was b
 11. how to stop missing calls at my salon
 12. salon phone answering service 24/7
 
-**Current site state:** one site for three products. `/` is the company home. `/phone` sells Lightbulb Phone (the receptionist), and `/pricing` is its one plan. `/meetings` (Lightbulb Meetings) is a waitlist page that sells nothing and shows no price. `/os` (Spark, the Mac app) says "Meet Spark" and offers the Mac download, with one price line from the backend and Terms and Privacy links. The shared nav lists Phone, Meetings, Spark and Pricing; its sign-up button and the footer's say "Set up Lightbulb Phone". The footer, sitemap, `llms.txt` and the facts in `lib/seo.tsx` name all three products. `/voice` layout metadata is "Your assistant's calls and meetings".
+**Current site state:** one site for three products. `/` is the company home. `/phone` sells Lightbulb Phone (the receptionist), and `/pricing` is its one plan. `/meetings` (Lightbulb Meetings) is a waitlist page that sells nothing and shows no price. `/os` (Spark, the Mac app) says "Meet Spark" and offers the Mac download, with one price line from the backend and Terms and Privacy links; on a phone it says to open the page on a Mac instead. The shared nav lists Phone, Meetings, Spark and Pricing; its sign-up button and the footer's say "Set up Lightbulb Phone". The footer, sitemap, `llms.txt` and the facts in `lib/seo.tsx` name all three products. `/voice` layout metadata is "Your assistant's calls and meetings".
 
 ## What from the old product is kept (do not delete these routes)
 
@@ -331,4 +332,6 @@ Confidence: **low.** No first-party salon interviews exist yet, and Reddit was b
 
 ## Changelog
 *Newest first. One line per revision: what changed and why.*
+- v3 (2026-11-23) — At the owner's word the Spark page's new first-conversation wording, its own share picture and the `/spark` forward were removed again (the two lines are back to his earlier wording, which describes the tidy-your-Desktop lesson the app no longer gives). The phone state, the menu button per page, pricing for all three and error reporting stay.
+- v2 (2026-11-22) — Spark page: phone visitors get "open this on your Mac" instead of a download, the first-conversation lines replace the old tidy-your-Desktop lesson (wording pending the owner), Spark's own share picture, `/spark` forwards to `/os`. The shared menu, `/pricing` and error reporting are handed to the website session.
 - v1 (2026-11-18) — Initial context for the 7 Nov 2026 voice pivot: salon/spa/barbershop AI receptionist, a code-checked claims ledger, pricing-source rules, positioning, objections, SEO and the keep-list.

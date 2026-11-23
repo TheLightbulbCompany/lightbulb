@@ -24,7 +24,6 @@ from core.engine.contract import (
 )
 from core.repositories import effects_repo, messaging_repo, tasks_repo
 from core.services import container_rpc, task_conversation
-from core.services.messaging import ApiProblem
 
 from .test_api import (  # noqa: F401 -- the moto tables and the rooms the in-process tests use
     ANSWER_ERRORS,
@@ -321,13 +320,13 @@ async def test_delete_tenant_over_http(world, wire, monkeypatch):
     monkeypatch.setattr(automations_repo, "list_schedules", AsyncMock(return_value=[]))
     temporal_client.set_client(_FakeTemporal(running=set(), schedules=set()))
     try:
-        assert transport.dump(await client.delete_tenant("org_gone")) == transport.dump(
-            await api.delete_tenant("org_gone")
+        assert transport.dump(await client.delete_tenant("user_gone")) == transport.dump(
+            await api.delete_tenant("user_gone")
         )
         failing = _FirstFails(wire._transport, "refused")
         monkeypatch.setattr(wire, "_transport", failing)
         with pytest.raises(httpx.ConnectError):
-            await client.delete_tenant("org_gone")
+            await client.delete_tenant("user_gone")
         assert failing.calls == 1
     finally:
         temporal_client.set_client(None)
@@ -413,13 +412,13 @@ async def test_a_lost_revision_race_raises_the_store_error(world):
 
 
 async def test_an_app_refusal_is_the_same_problem(world):
-    """A refusal by the app's own door (a person not in the room) is the same ApiProblem, status and body."""
+    """A refusal by the engine's own door (a person who is not the tenant) is the same error, status and body."""
     stranger = _member_line("voice-turn:x", "Hi").model_copy(update={"principal": Who(kind="member", id="user_x")})
     problems = []
     for e in (api, client):
-        with pytest.raises(ApiProblem) as err:
+        with pytest.raises(EngineError) as err:
             await e.append_line(stranger)
-        problems.append((err.value.status_code, err.value.body()))
+        problems.append((err.value.status, err.value.detail))
     assert problems[0] == problems[1]
 
 
@@ -440,17 +439,19 @@ async def test_a_path_that_names_another_id_is_refused(world, wire):
     assert await messaging_repo.list_messages_before(DM, 10**19, 10) == []
 
 
-def test_engine_follows_the_setting(monkeypatch):
-    import core.engine as package
-
-    for transport_name, module in (("http", client), ("inprocess", api)):
-        monkeypatch.setattr(settings, "ENGINE_TRANSPORT", transport_name)
-        monkeypatch.delitem(vars(package), "engine", raising=False)
-        assert package.engine is module
-    monkeypatch.delitem(vars(package), "engine", raising=False)
-
-
-BAD_TENANTS = ["", "org_", "user_", "org_a\nb", "org_a\x00", "org_a'b", "org_1/../org_2", "org_a:b", "team_abc", "org"]
+BAD_TENANTS = [
+    "",
+    "org_2abcDEF9",
+    "org_",
+    "user_",
+    "org_a\nb",
+    "org_a\x00",
+    "org_a'b",
+    "org_1/../org_2",
+    "org_a:b",
+    "team_abc",
+    "org",
+]
 
 
 @pytest.mark.parametrize("tenant", BAD_TENANTS, ids=repr)
@@ -482,8 +483,8 @@ async def test_delete_tenant_refuses_an_id_that_is_not_a_tenant(world, monkeypat
     assert fake.queries == [] and schedules.await_count == 0 and delete.await_count == 0
 
 
-@pytest.mark.parametrize("tenant", ["org_2abcDEF9", "user_2abcDEF9"])
-async def test_delete_tenant_takes_org_and_user_ids(world, monkeypatch, tenant):
+async def test_delete_tenant_takes_a_user_id(world, monkeypatch):
+    tenant = "user_2abcDEF9"
     from core.repositories import automations_repo
     from core.temporal import client as temporal_client
     from tests.unit.services.test_wipe_engine_state import _FakeTemporal

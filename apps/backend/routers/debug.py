@@ -9,7 +9,7 @@ import logging
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from core.auth import AuthContext, get_current_user, require_org_admin, resolve_owner_id
+from core.auth import AuthContext, get_current_user, resolve_owner_id
 from core.config import settings
 from core.dynamodb import run_in_thread
 from core.observability.metrics import put_metric
@@ -75,7 +75,6 @@ async def provision_container(
     auth: AuthContext = Depends(get_current_user),
 ):
     owner_id = resolve_owner_id(auth)
-    require_org_admin(auth)
 
     existing = await container_repo.get_by_owner_id(owner_id)
     if existing and existing.get("status") in ("running", "provisioning"):
@@ -109,7 +108,6 @@ async def redeploy_container(
     auth: AuthContext = Depends(get_current_user),
 ):
     owner_id = resolve_owner_id(auth)
-    require_org_admin(auth)
 
     container = await container_repo.get_by_owner_id(owner_id)
     if not container:
@@ -147,7 +145,6 @@ async def remove_container(
     auth: AuthContext = Depends(get_current_user),
 ):
     owner_id = resolve_owner_id(auth)
-    require_org_admin(auth)
 
     try:
         # NOT delete_profiles: this is a routine reprovision door, and destroying a migrated
@@ -179,18 +176,7 @@ async def remove_container(
 async def delete_user_data(auth: AuthContext = Depends(get_current_user)):
     assert_debug_enabled("user-data")
 
-    # Mirror /debug/provision DELETE — non-admin org members must not be able
-    # to wipe shared org-scoped state (containers, billing, api-keys, etc.)
-    # via this endpoint just because dev/staging exposes it. Personal context
-    # passes through (require_org_admin no-ops when not in org).
-    require_org_admin(auth)
-
     owner_id = resolve_owner_id(auth)
-    # In an org context resolve_owner_id returns the org_id, but the `users`
-    # and `ws-connections` tables are keyed by the Clerk user_id directly.
-    # Without this split, org E2E teardown would target the org id for both,
-    # leaving the Clerk user row + WS connection rows behind on every run.
-    user_id = auth.user_id
     deleted: dict = {"runtime": False, "ddb": []}
     # Track failures so we can return 500 at the end. Test cleanup needs to
     # know if anything leaked — a green 200 with a leaked runtime was silently
@@ -261,8 +247,8 @@ async def delete_user_data(auth: AuthContext = Depends(get_current_user)):
     async def _delete_user_row():
         from core.services.os_billing import cancel_for_deleted_user
 
-        await cancel_for_deleted_user(user_id)  # a failure keeps the row: it holds the subscription id
-        await user_repo.delete(user_id)
+        await cancel_for_deleted_user(owner_id)  # a failure keeps the row: it holds the subscription id
+        await user_repo.delete(owner_id)
 
     ddb_steps = []
     if runtime_succeeded:
@@ -273,10 +259,10 @@ async def delete_user_data(auth: AuthContext = Depends(get_current_user)):
             ("byo-llm-keys", _wipe_byo_llm_keys),
             ("usage-counters", lambda: usage_repo.delete_all_for_owner(owner_id)),
             ("integrations", _wipe_integrations),
-            ("ws-connections", lambda: connection_service.delete_all_for_user(user_id)),
+            ("ws-connections", lambda: connection_service.delete_all_for_user(owner_id)),
             ("users", _delete_user_row),
             # The person's own memory data: sessions, drafts, episodes, computer keys.
-            ("person-memory", lambda: workspace_memory.delete_person_memory(user_id)),
+            ("person-memory", lambda: workspace_memory.delete_person_memory(owner_id)),
             # The WORKSPACE row (keyed by the owner id) carries the company,
             # its onboarding generation/funnel and the starter roster (INV-10).
             # Left behind, the next fresh provision would RECONCILE-ADOPT the
@@ -337,30 +323,21 @@ async def delete_user_data(auth: AuthContext = Depends(get_current_user)):
 )
 async def ddb_rows(
     owner_id: str,
-    user_id: str | None = None,
     auth: AuthContext = Depends(get_current_user),
 ):
     assert_debug_enabled("ddb-rows")
 
     # Restrict to caller-owned data. The endpoint is meant for the test
     # harness to verify ITS OWN teardown — anyone passing a different
-    # owner/user is fishing for cross-tenant info in dev/staging.
+    # owner is fishing for cross-tenant info in dev/staging.
     if owner_id != resolve_owner_id(auth):
         raise HTTPException(status_code=403, detail="Cannot query another owner's row counts")
-    if user_id is not None and user_id != auth.user_id:
-        raise HTTPException(status_code=403, detail="Cannot query another user's row counts")
 
-    # `users` and `ws-connections` are keyed by Clerk user_id even when other
-    # tables are scoped by org_id. Caller supplies user_id explicitly in org
-    # mode; defaults to owner_id for personal mode where they're the same
-    # value.
-    effective_user_id = user_id or owner_id
-
-    user = await user_repo.get_by_user_id(effective_user_id)
+    user = await user_repo.get_by_user_id(owner_id)
     container = await container_repo.get_by_owner_id(owner_id)
     billing = await billing_repo.get_by_owner_id(owner_id)
     usage = await usage_repo.count_for_owner(owner_id)
-    ws_conns = await connection_service.count_for_user(effective_user_id)
+    ws_conns = await connection_service.count_for_user(owner_id)
 
     return {
         "tables": {

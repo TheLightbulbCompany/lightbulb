@@ -8,6 +8,7 @@ import { useAuth, UserButton } from "@clerk/nextjs";
 import { Logo } from "@/components/Logo";
 import { hydrateFromStorage, strike, useLampTheme } from "@/components/landing/HeroLamp/lampStore";
 import { captureSignupCta } from "@/lib/signupFlow";
+import { trackSparkDownload, useOnPhone } from "@/app/os/SparkDownload";
 
 const LINKS = [
   { href: "/phone", label: "Phone" },
@@ -16,15 +17,57 @@ const LINKS = [
   { href: "/pricing", label: "Pricing" },
 ] as const;
 
+type Cta = { product: "phone" | "spark" | "meetings"; label: string; short: string; href: string };
+
+// The main button follows the page: Spark's download on Spark pages, the waitlist on Meetings, a plain
+// sign-up on the company home (which gives the three products equal weight), and Lightbulb Phone's
+// sign-up everywhere else. The home's door is still the Phone sign-up underneath, so it keeps its ctaIds.
+export function navCta(pathname: string): Cta {
+  if (pathname === "/") {
+    return { product: "phone", label: "Sign up", short: "Sign up", href: "/sign-up" };
+  }
+  if (pathname === "/os" || pathname.startsWith("/os/")) {
+    return { product: "spark", label: "Download for Mac", short: "Download", href: "/download/spark" };
+  }
+  if (pathname === "/meetings") {
+    return { product: "meetings", label: "Join the waitlist", short: "Waitlist", href: "/meetings#waitlist" };
+  }
+  return { product: "phone", label: "Set up Lightbulb Phone", short: "Set up", href: "/sign-up" };
+}
+
 export function Navbar() {
   const [mobileOpen, setMobileOpen] = useState(false);
   const { isSignedIn, isLoaded } = useAuth();
   const pathname = usePathname() ?? "/";
   const theme = useLampTheme();
-  // The company home gives the three products equal weight, so its sign-up door names none of them.
-  // Every other page keeps the Phone door. The ctaIds stay put; only the label changes.
-  const home = pathname === "/";
-  const signUp = home ? "Sign up" : "Set up Lightbulb Phone";
+  const cta = navCta(pathname);
+  const spark = cta.product === "spark";
+  const onPhone = useOnPhone();
+  // A phone cannot install Spark: the button goes to the page's "open this on your Mac" line instead.
+  const ctaHref = spark && onPhone ? (pathname === "/os" ? "#get" : "/os#get") : cta.href;
+  const onCta = (ctaId: string, surface: string) => () => {
+    // The Spark and waitlist buttons can land on the page already open, so the phone menu must close itself.
+    setMobileOpen(false);
+    if (spark) {
+      if (!onPhone) trackSparkDownload("nav");
+    } else if (cta.product === "phone") {
+      captureSignupCta({ ctaId, label: cta.label, surface });
+    }
+  };
+  // Spark's account lives in the Mac app, so Spark pages offer no web sign-in and no way into the Phone app.
+  const signedIn = isLoaded && isSignedIn && !spark;
+  const signedOut = spark || (isLoaded && !isSignedIn);
+  // The Spark download is a redirect to a file, so a plain link (no prefetch); the rest are pages.
+  const ctaLink = (className: string, ctaId: string, surface: string, children: React.ReactNode) =>
+    spark ? (
+      <a href={ctaHref} className={className} onClick={onCta(ctaId, surface)}>
+        {children}
+      </a>
+    ) : (
+      <Link href={ctaHref} className={className} onClick={onCta(ctaId, surface)}>
+        {children}
+      </Link>
+    );
   useEffect(() => {
     hydrateFromStorage(); // adopt a stored choice into the store; the inline script already painted it
   }, []);
@@ -54,23 +97,17 @@ export function Navbar() {
             {l.label}
           </Link>
         ))}
-        {isLoaded && !isSignedIn && (
+        {signedOut && (
           <>
-            <Link href="/sign-in" className="nav-mobile-login">
-              Log in
-            </Link>
-            <Link
-              href="/sign-up"
-              className="nav-mobile-login"
-              onClick={() =>
-                captureSignupCta({ ctaId: "nav_mobile_sign_up", label: signUp, surface: "landing_nav_mobile" })
-              }
-            >
-              {signUp}
-            </Link>
+            {!spark && (
+              <Link href="/sign-in" className="nav-mobile-login">
+                Log in
+              </Link>
+            )}
+            {ctaLink("nav-mobile-login", "nav_mobile_sign_up", "landing_nav_mobile", cta.label)}
           </>
         )}
-        {isLoaded && isSignedIn && (
+        {signedIn && (
           <Link href="/voice" className="nav-mobile-login">
             Open Lightbulb
           </Link>
@@ -96,7 +133,7 @@ export function Navbar() {
             </svg>
           )}
         </button>
-        {isLoaded && isSignedIn ? (
+        {signedIn ? (
           <>
             <Link href="/voice" className="btn-primary">
               Open Lightbulb
@@ -105,9 +142,11 @@ export function Navbar() {
           </>
         ) : (
           <>
-            <Link href="/sign-in" className="nav-login">
-              Log in
-            </Link>
+            {!spark && (
+              <Link href="/sign-in" className="nav-login">
+                Log in
+              </Link>
+            )}
             <Link
               href="/request-setup"
               className="nav-login"
@@ -123,21 +162,16 @@ export function Navbar() {
               Talk to a founder
             </Link>
             {/* Self-serve is the one filled button, matching the hero. */}
-            <Link
-              href="/sign-up"
-              className="btn-primary"
-              onClick={() =>
-                captureSignupCta({
-                  ctaId: "nav_sign_up",
-                  label: signUp,
-                  surface: "landing_nav",
-                })
-              }
-            >
-              {/* The long label would push the bar past a phone's width; phones get the short one. */}
-              <span className="nav-cta-long">{signUp}</span>
-              <span className="nav-cta-short">{home ? "Sign up" : "Set up"}</span>
-            </Link>
+            {/* The long label would push the bar past a phone's width; phones get the short one. */}
+            {ctaLink(
+              "btn-primary",
+              "nav_sign_up",
+              "landing_nav",
+              <>
+                <span className="nav-cta-long">{cta.label}</span>
+                <span className="nav-cta-short">{cta.short}</span>
+              </>,
+            )}
           </>
         )}
         <button

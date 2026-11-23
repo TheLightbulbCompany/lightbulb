@@ -20,7 +20,7 @@ from routers import tasks as router_mod
 from .test_tasks_repo import table  # noqa: F401
 
 WS = "org_1"
-SAM, PRIYA = "user_sam", "user_priya"
+SAM, PRIYA = "org_1", "user_priya"
 ROOM = "11111111-2222-4333-8444-555555555555"
 
 
@@ -44,7 +44,7 @@ def world(table, monkeypatch):  # noqa: F811
     who = {"user": SAM}
     app = FastAPI()
     app.include_router(router_mod.router, prefix="/api/v1")
-    app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id=who["user"], org_id=WS)
+    app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id=who["user"], human_session=True)
     client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t")
     return {"client": client, "who": who, **fakes}
 

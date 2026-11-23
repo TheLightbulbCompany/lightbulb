@@ -299,7 +299,9 @@ def _me(monkeypatch, line, set_phone=None):
 def _as(client, user_id):
     from core.auth import AuthContext
 
-    client.app.dependency_overrides[agent_text.get_current_user] = lambda: AuthContext(user_id=user_id, org_id=OWNER)
+    client.app.dependency_overrides[agent_text.get_current_user] = lambda: AuthContext(
+        user_id=user_id, human_session=True
+    )
 
 
 def test_phone_code_is_issued_and_stored(client, monkeypatch):

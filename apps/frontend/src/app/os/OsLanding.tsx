@@ -4,14 +4,19 @@ import { Suspense } from "react";
 import { Footer } from "@/components/landing/Footer";
 import { Navbar } from "@/components/landing/Navbar";
 
-import { OsInvite, SOON } from "./OsInvite";
-import { SparkDownload } from "./SparkDownload";
-import { SparkStage } from "./SparkStage";
+import { DownloadBlock, OsInvite, SOON } from "./OsInvite";
+import { SparkGet } from "./SparkDownload";
 
 export type SparkPrice = { priceText: string; trialDays: number } | null;
+import { SparkStage } from "./SparkStage";
+
 
 const SYSTEM = "For Mac with Apple silicon (M1 or later). Requires macOS 14 or later.";
 const FRIEND = "Each friend who joins with your link adds a free day.";
+// The owner's wording (restored 2026-11-23 at his word). Plain constants so it is easy to change.
+const FIRST_TITLE = "Tidy your Desktop";
+const FIRST_LINE = "Its first lesson: you tidy your Desktop together.";
+const HI_STEP = "Say hi. Spark tidies your Desktop with you.";
 
 const Key = ({ k }: { k: string }) => <span className="os-key">{k}</span>;
 
@@ -63,8 +68,8 @@ export function OsLanding({ ready, price }: { ready: boolean; price: SparkPrice 
             <p className="os-how-line">
               Hold <Key k="fn" /> and say what you want done. Spark does it on your Mac.
             </p>
-            <div className="os-cta os-act">
-              <Suspense>
+            <div className="os-cta os-act" id="get">
+              <Suspense fallback={<DownloadBlock ready={ready} source="os_hero" />}>
                 <OsInvite ready={ready} source="os_hero" />
               </Suspense>
               {price && (
@@ -127,8 +132,8 @@ export function OsLanding({ ready, price }: { ready: boolean; price: SparkPrice 
               </p>
             </div>
             <div>
-              <h3>Tidy your Desktop</h3>
-              <p>Its first lesson: you tidy your Desktop together.</p>
+              <h3>{FIRST_TITLE}</h3>
+              <p>{FIRST_LINE}</p>
             </div>
             <div>
               <h3>Keep listening</h3>
@@ -154,7 +159,7 @@ export function OsLanding({ ready, price }: { ready: boolean; price: SparkPrice 
                 [0.3, "Account", "Sign in."],
                 [0.62, "Brain", "Connect ChatGPT or Claude."],
                 [0.8, "Mac", "Allow three Mac permissions."],
-                [1, "Hi", "Say hi. Spark tidies your Desktop with you."],
+                [1, "Hi", HI_STEP],
               ] as const
             ).map(([lit, step, text]) => (
               <li key={step}>
@@ -206,7 +211,7 @@ export function OsLanding({ ready, price }: { ready: boolean; price: SparkPrice 
               {FRIEND}
             </p>
             <div className="os-cta">
-              {ready ? <SparkDownload source="os_closing" /> : <p className="os-soon">{SOON}</p>}
+              {ready ? <SparkGet source="os_closing" /> : <p className="os-soon">{SOON}</p>}
               <p className="os-small">
                 {price && "Renews monthly until you cancel. "}For Mac with Apple silicon (M1 or later), macOS 14 or
                 later.

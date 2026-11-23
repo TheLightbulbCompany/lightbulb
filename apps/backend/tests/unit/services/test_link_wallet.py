@@ -535,7 +535,7 @@ async def test_canary_no_credential_reaches_logs_rows_or_returns(world, caplog):
 @pytest.fixture
 def client():
     app.dependency_overrides[get_current_user] = lambda: AuthContext(
-        user_id=ADMIN, org_id=OWNER, org_role="org:admin", email="a@example.com"
+        user_id=OWNER, email="a@example.com", human_session=True
     )
     try:
         yield TestClient(app)
@@ -562,23 +562,6 @@ def test_every_route_404s_while_link_is_unconfigured(client, monkeypatch, missin
     assert r.status_code == 404
     r = client.post("/api/v1/internal/link-wallet/org_a/requests", json={})
     assert r.status_code == 404
-
-
-def test_a_member_cannot_reach_the_owner_routes(world):
-    app.dependency_overrides[get_current_user] = lambda: AuthContext(
-        user_id="user_m", org_id=OWNER, org_role="org:member", email="m@example.com"
-    )
-    try:
-        c = TestClient(app)
-        assert c.post("/api/v1/company/link-wallet/connect").status_code == 403
-        assert (
-            c.put(
-                "/api/v1/company/link-wallet/limits", json={"perPurchaseCents": 1, "projectMonthlyCents": 1}
-            ).status_code
-            == 403
-        )
-    finally:
-        app.dependency_overrides.clear()
 
 
 def test_the_agent_door_needs_the_hook_token(world):

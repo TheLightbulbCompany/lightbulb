@@ -1,4 +1,4 @@
-"""Shared (vendor) rooms: foreign members are authorised and notified by their HOME workspace."""
+"""Rooms with a foreign member: they are authorised and notified by their HOME tenant."""
 
 import uuid
 from unittest.mock import AsyncMock, call
@@ -9,7 +9,7 @@ from core.services import messaging
 from core.services.messaging import ApiProblem
 
 ROOM = str(uuid.uuid4())
-CUSTOMER, VENDOR = "org_customer", "org_vendor"
+CUSTOMER, VENDOR = "user_customer", "user_foreign"
 META = {
     "roomId": ROOM,
     "ownerId": CUSTOMER,
@@ -98,111 +98,6 @@ async def test_removal_notices_go_to_each_humans_home_stream(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_revoking_an_org_membership_only_touches_rooms_where_that_org_is_home(monkeypatch):
-    foreign = _human("user_v", VENDOR)
-    discovered = [{"meta": META, "member": foreign}]
-    # Each revoke lists twice: before and after the stream goes off (the removal empties the second).
-    monkeypatch.setattr(
-        messaging.messaging_repo, "list_rooms_for_member", AsyncMock(side_effect=[discovered, [], discovered, []])
-    )
-    # Seated in META's room only: revoke also sweeps #general and the feed by id (no seat there).
-    monkeypatch.setattr(
-        messaging.messaging_repo,
-        "get_member",
-        AsyncMock(side_effect=lambda room_id, *_: foreign if room_id == META["roomId"] else None),
-    )
-    monkeypatch.setattr(messaging.messaging_repo, "get_room", AsyncMock(return_value=META))
-    monkeypatch.setattr(messaging.messaging_repo, "deactivate_user_stream", AsyncMock())
-    monkeypatch.setattr(messaging.messaging_repo, "release_autojoin", AsyncMock())
-    removed = AsyncMock(return_value=META)
-    monkeypatch.setattr(messaging, "_remove_member_with_notices", removed)
-
-    await messaging.revoke_human_membership(VENDOR, "user_v")
-    removed.assert_awaited_once_with(META, "human", "user_v")
-
-    removed.reset_mock()
-    await messaging.revoke_human_membership(CUSTOMER, "user_v")
-    removed.assert_not_awaited()
-
-
-@pytest.fixture
-def vendor(monkeypatch):
-    monkeypatch.setattr(messaging.settings, "VENDOR_ORG_ID", VENDOR)
-    return VENDOR
-
-
-def test_vendor_room_is_recognised_by_its_deterministic_id(vendor):
-    room_id = messaging.messaging_repo.vendor_room_id(CUSTOMER)
-    assert messaging.is_vendor_room({"roomId": room_id, "ownerId": CUSTOMER})
-    assert not messaging.is_vendor_room({"roomId": ROOM, "ownerId": CUSTOMER})
-    fields = messaging._room_summary_fields({**META, "roomId": room_id}, _human("user_c", CUSTOMER), 0)
-    assert fields["shared"] is True and fields["workspace_id"] == META["workspaceId"]
-    assert messaging._room_summary_fields(META, _human("user_c", CUSTOMER), 0)["shared"] is False
-
-
-def test_feature_off_means_no_room_is_ever_shared(monkeypatch):
-    monkeypatch.setattr(messaging.settings, "VENDOR_ORG_ID", "")
-    assert not messaging.is_vendor_room(
-        {"roomId": messaging.messaging_repo.vendor_room_id(CUSTOMER), "ownerId": CUSTOMER}
-    )
-
-
-@pytest.mark.asyncio
-async def test_vendor_room_membership_and_name_are_platform_managed(vendor, monkeypatch):
-    meta = {**META, "roomId": messaging.messaging_repo.vendor_room_id(CUSTOMER)}
-    auth = AuthContext(user_id="user_c", org_id=CUSTOMER)
-    monkeypatch.setattr(
-        messaging, "require_room_admin", AsyncMock(return_value=(meta, _human("user_c", CUSTOMER, "owner")))
-    )
-    monkeypatch.setattr(messaging, "require_room_member", AsyncMock(return_value=(meta, _human("user_c", CUSTOMER))))
-    attempts = [
-        messaging.upsert_member(
-            auth,
-            meta["roomId"],
-            messaging.UpsertRoomMemberRequest(kind="human", id="user_x", role="member", listen_mode=None),
-        ),
-        messaging.remove_member(auth, meta["roomId"], "human", "user_v"),
-        messaging.leave_room(auth, meta["roomId"]),
-        messaging.patch_room(auth, meta["roomId"], messaging.PatchRoomRequest(name="renamed")),
-    ]
-    for attempt in attempts:
-        with pytest.raises(ApiProblem) as exc:
-            await attempt
-        assert exc.value.error.code == "ROOM_FORBIDDEN"
-
-
-@pytest.mark.asyncio
-async def test_vendor_room_still_lets_admins_change_the_agents_listen_mode(vendor, monkeypatch):
-    meta = {**META, "roomId": messaging.messaging_repo.vendor_room_id(CUSTOMER)}
-    auth = AuthContext(user_id="user_c", org_id=CUSTOMER)
-    agent = {
-        "kind": "agent",
-        "id": str(uuid.uuid4()),
-        "role": "member",
-        "listenMode": "mentions",
-        "displayName": "CEO",
-        "mentionHandle": "ceo",
-    }
-    monkeypatch.setattr(
-        messaging, "require_room_member", AsyncMock(return_value=(meta, _human("user_c", CUSTOMER, "owner")))
-    )
-    monkeypatch.setattr(messaging.messaging_repo, "get_member", AsyncMock(return_value=agent))
-    monkeypatch.setattr(messaging.messaging_repo, "get_room", AsyncMock(return_value=meta))
-    monkeypatch.setattr(messaging, "load_agent_roster", AsyncMock(return_value=[{"id": agent["id"], "name": "CEO"}]))
-    monkeypatch.setattr(messaging, "_resolved_member", AsyncMock(return_value={**agent, "listenMode": "active"}))
-    monkeypatch.setattr(messaging.messaging_repo, "list_members", AsyncMock(return_value=[agent]))
-    monkeypatch.setattr(messaging.messaging_repo, "upsert_member", AsyncMock(return_value=meta))
-    monkeypatch.setattr(messaging, "_publish_room_metadata", AsyncMock())
-    monkeypatch.setattr(messaging, "_room_detail", AsyncMock(return_value="detail"))
-    result = await messaging.upsert_member(
-        auth,
-        meta["roomId"],
-        messaging.UpsertRoomMemberRequest(kind="agent", id=agent["id"], role="member", listen_mode="active"),
-    )
-    assert result == "detail"
-
-
-@pytest.mark.asyncio
 async def test_attachment_download_reads_the_rooms_owner_workspace_not_the_callers(monkeypatch):
     from types import SimpleNamespace
 
@@ -218,7 +113,9 @@ async def test_attachment_download_reads_the_rooms_owner_workspace_not_the_calle
             (SimpleNamespace(content_type="image/png", file_name="a.png"), b"x"),
         )[1],
     )
-    response = await router.get_room_attachment(ROOM, str(uuid.uuid4()), AuthContext(user_id="user_v", org_id=VENDOR))
+    response = await router.get_room_attachment(
+        ROOM, str(uuid.uuid4()), AuthContext(user_id=VENDOR, human_session=True)
+    )
     assert response.status_code == 200 and seen == [CUSTOMER]
 
 
@@ -253,7 +150,7 @@ async def test_a_foreign_members_message_is_written_under_the_rooms_owner(monkey
         lambda owner, item: captured.append(owner) or _noop(),
     )
     await messaging.create_human_message(
-        AuthContext(user_id="user_v", org_id=VENDOR),
+        AuthContext(user_id=VENDOR, human_session=True),
         ROOM,
         messaging.CreateMessageRequest(
             client_message_id=uuid.uuid4(),
@@ -288,7 +185,7 @@ async def test_a_foreign_admin_can_only_add_the_rooms_own_org_members(monkeypatc
     monkeypatch.setattr(messaging, "_room_detail", AsyncMock(return_value="detail"))
 
     await messaging.upsert_member(
-        AuthContext(user_id="user_v", org_id=VENDOR),
+        AuthContext(user_id=VENDOR, human_session=True),
         ROOM,
         messaging.UpsertRoomMemberRequest(kind="agent", id=agent_id, role="member", listen_mode="mentions"),
     )

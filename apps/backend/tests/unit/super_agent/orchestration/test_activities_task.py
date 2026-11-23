@@ -45,7 +45,6 @@ def world(table, monkeypatch):  # noqa: F811
         "marks": [],  # lifecycle markers in the task room (UX slice 3), kept apart from the posts people read
         "pushes": [],
         "usage": [],
-        "invites": [],
         "runs": [],
         "steers": [],
         "reactions": [],
@@ -77,9 +76,6 @@ def world(table, monkeypatch):  # noqa: F811
     async def usage(ws, user, u, **kw):
         w["usage"].append((user, u.input_tokens, kw))
 
-    async def invite(ws, row, outcome):
-        w["invites"].append(row["roomId"])
-
     async def create_run(ws, identity, request):
         w["runs"].append((identity, request))
         if w["create"]:
@@ -105,7 +101,6 @@ def world(table, monkeypatch):  # noqa: F811
     monkeypatch.setattr(acts.messaging_repo, "get_room", AsyncMock(return_value=None))
     monkeypatch.setattr(acts.messaging, "load_agent_roster", roster)
     monkeypatch.setattr(acts.messaging, "_record_run_usage", usage)
-    monkeypatch.setattr(acts.messaging, "ask_who_should_see", invite)
     monkeypatch.setattr(acts.push_service, "send_push_to_user", push)
     monkeypatch.setattr(acts.runtime_runs, "create_run", create_run)
     monkeypatch.setattr(acts.runtime_runs, "steer_run", steer)
@@ -368,7 +363,6 @@ async def test_end_attempt_with_a_room_name_for_origin_still_ends(world):
     await acts.acquire_slot(WS, tid)
     await _ended(tid, "completed")
     assert [p["room"] for p in world["posts"]] == [ts.task_room_id(tid)]  # the task room has the result
-    assert world["invites"] == []
     assert (await repo.get_task(WS, tid))["status"] == "idle"
 
 
@@ -457,13 +451,6 @@ async def test_end_attempt_with_no_requester_meters_the_workspace(world):
     await _ended(tid, "failed", usage={"inputTokens": 70, "outputTokens": 3})
     assert [(u, n) for u, n, _ in world["usage"]] == [(WS, 70)]
     assert world["pushes"] == []  # nobody to tell: pushes stay requester-only
-
-
-async def test_end_attempt_invite_ask_once_per_workspace(world):
-    tid = await _task()
-    await _attempt(tid)
-    await _ended(tid, "completed")
-    assert world["invites"] == [ROOM]  # ask_who_should_see keeps its own once-per-workspace marker
 
 
 async def test_end_attempt_stopped_resolves(world):

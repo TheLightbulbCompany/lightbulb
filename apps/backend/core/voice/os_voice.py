@@ -8,8 +8,11 @@ write) and their running total of voice seconds (`os_voice_seconds`).
 
 One task holds each session's sideband under a lease on its row; every task's sweep re-attaches lapsed ones.
 
-Never log an SDP (host candidates carry the Mac's LAN addresses), the instructions, the input or an OpenAI
-error message (it can quote the request): ids, sizes, statuses and outcomes only."""
+With `SPARK_TRANSCRIPTS_ENABLED` the sideband also saves the text transcript, one `spark-transcripts` item per
+turn (what the person said, what Spark said; never audio or screen content), kept 90 days by TTL.
+
+Never log an SDP (host candidates carry the Mac's LAN addresses), the instructions, the input, a transcript or an
+OpenAI error message (it can quote the request): ids, sizes, statuses and outcomes only."""
 
 from __future__ import annotations
 
@@ -59,6 +62,10 @@ PENDING_S = 60  # a reserved session with no OpenAI id after this: its creating 
 CLOSE_WAIT_S = 30  # after our session.close, end it ourselves if session.closed never arrives
 ENDED_TTL_S = 7 * 86400
 MAX_SESSION_S = 2 * 3600  # unmeasured: OpenAI documents no WebRTC length (2 h is its SIP limit)
+TRANSCRIPTS = "spark-transcripts"
+TRANSCRIPT_TTL_S = 90 * 86400
+TURN_PAUSE_S = 3.0  # GPT-Live sends no end-of-turn event: a side silent this long has finished its turn
+_ROLES = {"session.input_transcript.delta": "user", "session.output_transcript.delta": "spark"}
 TASK_ID = f"{os.getenv('HOSTNAME') or 'local'}-{uuid.uuid4().hex[:8]}"
 
 # The OpenAI close reasons, as the reasons GET /os/voice-session reports.
@@ -369,6 +376,7 @@ async def _tick(ws, s: dict) -> bool:
     if (row := await _lease(s["sessionId"], at, expression, values)) is None:
         return False
     s["closeRequested"] = row.get("closeRequested")
+    await _flush(s, idle=TURN_PAUSE_S)
     if not s.get("closeReason") and (reason := await _due(s, at)):
         s["closeReason"] = reason
     if s.get("closeReason") and not s.get("closeSentAt"):
@@ -379,6 +387,57 @@ async def _tick(ws, s: dict) -> bool:
         await _reap_unconfirmed(s["sessionId"], s["usageSeconds"])
         return False
     return True
+
+
+async def _save_turn(s: dict, role: str, text: str, start_ms: int) -> None:
+    """Write one turn, only while the session is active: an ended one (closed for an account deletion, say)
+    saves nothing more. Turns sort by when they started (ms into the session), so a reply that began before
+    the request's last words arrived still sorts after the request. A failure is counted and logged without
+    its text; it never touches the session."""
+    at = now()
+    sk = f"{int(s['startedAt'])}#{s['sessionId']}#{start_ms:012d}#{role}"
+    item = {"user_id": s["userId"], "sk": sk, "role": role}
+    item |= {"text": text, "at": at, "sessionId": s["sessionId"], "ttl": at + TRANSCRIPT_TTL_S}
+    try:
+        table = get_table(TRANSCRIPTS)
+        active = {
+            "TableName": _table().name,
+            "Key": _key(s["sessionId"]),
+            "ConditionExpression": "#st = :active",
+            "ExpressionAttributeNames": {"#st": "status"},
+            "ExpressionAttributeValues": {":active": ACTIVE},
+        }
+        await transact(table, [{"ConditionCheck": active}, {"Put": {"TableName": table.name, "Item": item}}])
+    except ClientError as e:
+        if not is_cancelled(e):
+            put_metric("os_voice.transcript.write_failed")
+            logger.warning("os voice session %s: transcript write failed: %s", s["sessionId"], type(e).__name__)
+    except Exception as e:  # noqa: BLE001 -- the type only: the text is never logged
+        put_metric("os_voice.transcript.write_failed")
+        logger.warning("os voice session %s: transcript write failed: %s", s["sessionId"], type(e).__name__)
+
+
+async def _flush(s: dict, idle: float = 0.0) -> None:
+    """Save each held turn whose side has been silent `idle` seconds (0: every held turn, at session end)."""
+    turns = s.get("turns") or {}
+    for role in tuple(turns):
+        parts, last, start_ms = turns[role]
+        if time.monotonic() - last >= idle:
+            del turns[role]
+            if text := "".join(parts).strip():
+                await _save_turn(s, role, text, start_ms)
+
+
+async def _transcribe(s: dict, role: str, delta: str, start_ms) -> None:
+    """Add a delta to its side's turn. A turn ends only after its own side's silence (or the session's end):
+    the other side speaking never ends or splits it. Spark often starts replying before the person's last
+    words arrive, and the person's whole request matters more than splitting a rapid back-and-forth."""
+    if type(start_ms) is not int:  # no timing on the event: when it arrived, in ms into the session
+        start_ms = max(0, time.time_ns() // 1_000_000 - int(s["startedAt"]) * 1000)
+    turns = s.setdefault("turns", {})
+    turn = turns.setdefault(role, [[], 0.0, start_ms])
+    turn[0].append(delta)
+    turn[1] = time.monotonic()
 
 
 def _seconds(event: dict) -> int | None:
@@ -405,7 +464,11 @@ async def _event(s: dict, raw) -> bool:
         session = event.get("session")
         if isinstance(session, dict) and type(session.get("expires_at")) is int:
             s["expiresAt"] = session["expires_at"]
+    elif kind in _ROLES:
+        if settings.SPARK_TRANSCRIPTS_ENABLED and isinstance(event.get("delta"), str):
+            await _transcribe(s, _ROLES[kind], event["delta"], event.get("start_ms"))
     elif kind == "session.closed":
+        await _flush(s)
         seconds = max(int(s["usageSeconds"]), _seconds(event) or 0)
         reason = s.get("closeReason") or _REASONS.get(event.get("reason"), "upstream")
         await end_session(s["sessionId"], reason, seconds)
@@ -431,40 +494,81 @@ async def run_sideband(sid: str) -> None:
     s["trialEndsAt"] = await _trial_ends_at(s["userId"])
     connected = False
     try:
-        url = ATTACH_URL.format(s["liveId"])
-        async with _connect(url, additional_headers=_auth(), open_timeout=10, logger=_WS_LOG) as ws:
-            connected, loop, next_tick = True, asyncio.get_running_loop(), 0.0
-            while True:
-                if loop.time() >= next_tick:
-                    if not await _tick(ws, s):
+        try:
+            url = ATTACH_URL.format(s["liveId"])
+            async with _connect(url, additional_headers=_auth(), open_timeout=10, logger=_WS_LOG) as ws:
+                connected, loop, next_tick = True, asyncio.get_running_loop(), 0.0
+                while True:
+                    if loop.time() >= next_tick:
+                        if not await _tick(ws, s):
+                            return
+                        next_tick = loop.time() + TICK_S
+                    try:
+                        raw = await asyncio.wait_for(ws.recv(), timeout=max(0.0, next_tick - loop.time()))
+                    except TimeoutError:
+                        continue
+                    if await _event(s, raw):
                         return
-                    next_tick = loop.time() + TICK_S
-                try:
-                    raw = await asyncio.wait_for(ws.recv(), timeout=max(0.0, next_tick - loop.time()))
-                except TimeoutError:
-                    continue
-                if await _event(s, raw):
-                    return
-    except (OSError, TimeoutError, websockets.exceptions.InvalidStatus) as e:
-        if connected:
-            logger.info("os voice session %s: sideband dropped", sid)
-        elif isinstance(e, websockets.exceptions.InvalidStatus) and e.response.status_code in (404, 410):
-            # OpenAI no longer has it: it is over
-            await end_session(sid, s.get("closeReason") or await _due(s, now()) or "upstream", int(s["usageSeconds"]))
-            return
-        else:
-            put_metric("os_voice.sideband.attach_failed", dimensions={"status": _status_class(e)})
-            logger.warning("os voice session %s: attach failed (%s)", sid, _status_class(e))
-            if s.get("closeReason") or await _due(s, now()):  # due, and this attempt to close it failed
-                await _reap_unconfirmed(sid, int(s["usageSeconds"]))
+        except (OSError, TimeoutError, websockets.exceptions.InvalidStatus) as e:
+            if connected:
+                logger.info("os voice session %s: sideband dropped", sid)
+            elif isinstance(e, websockets.exceptions.InvalidStatus) and e.response.status_code in (404, 410):
+                # OpenAI no longer has it: it is over
+                await end_session(
+                    sid, s.get("closeReason") or await _due(s, now()) or "upstream", int(s["usageSeconds"])
+                )
+                return
             else:
-                await _release(sid, attach_failed=True)
-            return
-    except websockets.ConnectionClosed:
-        logger.info("os voice session %s: sideband dropped", sid)
-    except Exception as e:  # noqa: BLE001 -- the type only: an event's text is never logged
-        logger.warning("os voice session %s: sideband failed: %s", sid, type(e).__name__)
-    await _release(sid)
+                put_metric("os_voice.sideband.attach_failed", dimensions={"status": _status_class(e)})
+                logger.warning("os voice session %s: attach failed (%s)", sid, _status_class(e))
+                if s.get("closeReason") or await _due(s, now()):  # due, and this attempt to close it failed
+                    await _reap_unconfirmed(sid, int(s["usageSeconds"]))
+                else:
+                    await _release(sid, attach_failed=True)
+                return
+        except websockets.ConnectionClosed:
+            logger.info("os voice session %s: sideband dropped", sid)
+        except Exception as e:  # noqa: BLE001 -- the type only: an event's text is never logged
+            logger.warning("os voice session %s: sideband failed: %s", sid, type(e).__name__)
+        await _release(sid)
+    finally:
+        await _flush(s)  # a dropped or cancelled sideband keeps the turns it heard
+
+
+async def forget(user_id: str, sessions) -> None:
+    """Close the person's open sessions, then delete their saved transcripts. A closed session's sideband can
+    save no more turns (`_save_turn` writes only while the session is active). `sessions` is their users row's
+    active set; a replaced session left it but stays active until its sideband closes it, so every active
+    session of theirs on the status index is closed too (the index can lag a new one, hence the union)."""
+    rows = await container_repo.get_by_status(ACTIVE)
+    for sid in set(sessions or ()) | {
+        r["sessionId"] for r in rows if r.get("userId") == user_id and r.get("sessionId")
+    }:
+        await close_and_wait(sid, "signed_out")  # OpenAI gets session.close before the cleanup
+    await delete_transcripts(user_id)
+
+
+async def delete_transcripts(user_id: str) -> None:
+    """Delete every saved transcript turn of this person (their Spark account is being deleted)."""
+
+    def delete() -> None:
+        table, start = get_table(TRANSCRIPTS), {}
+        while True:
+            page = table.query(
+                KeyConditionExpression="user_id = :u",
+                ExpressionAttributeValues={":u": user_id},
+                ProjectionExpression="user_id, sk",
+                ConsistentRead=True,  # includes the turn a closing session saved just before
+                **start,
+            )
+            with table.batch_writer() as batch:
+                for item in page.get("Items", []):
+                    batch.delete_item(Key=item)
+            if "LastEvaluatedKey" not in page:
+                return
+            start = {"ExclusiveStartKey": page["LastEvaluatedKey"]}
+
+    await run_in_thread(delete)
 
 
 def start_sideband(sid: str) -> None:

@@ -190,9 +190,8 @@ class SesInboundBody(BaseModel):
 
 async def _shared_team_mailbox(body: SesInboundBody) -> tuple[dict | None, str | None, str | None]:
     """Resolve the shared address only from an authenticated, verified sender: their own tenant when
-    they have claimed a team address, else their one current org membership.
+    they have claimed a team address.
 
-    Several businesses is not an implicit workspace selection.
     Failures from Clerk/DynamoDB remain retryable through the ingest's existing 503 path.
     """
     verdicts = body.verdicts or {}
@@ -208,16 +207,10 @@ async def _shared_team_mailbox(body: SesInboundBody) -> tuple[dict | None, str |
         for e in user.get("email_addresses", [])
     ):
         return None, "dropped_unregistered_sender", None
-    # The sender's own tenant once they have claimed a team address; else their one org.
-    has_own = await team_address(user["id"])
-    memberships = [] if has_own else await clerk_admin.list_user_organizations(user["id"], limit=100, strict=True)
-    owners = {user["id"]} if has_own else {m["id"] for m in memberships}
-    if len(owners) > 1:
-        return None, "dropped_ambiguous_workspace", None
-    if not owners:
+    # The sender's own tenant, once they have claimed a team address.
+    if not await team_address(user["id"]):
         return None, "dropped_unregistered_sender", None
-    owner = next(iter(owners))  # exactly one, never first among several
-    # Membership selects the workspace; it never grants permission to wake a closed mailbox.
+    owner = user["id"]
     address, reason = await ensure_team_address(owner, None)
     if not address:
         raise RuntimeError(f"shared team address not ready: {reason}")

@@ -106,14 +106,6 @@ async def test_account_requires_a_human_session(users, clock, token):
     assert users.scan()["Items"] == []
 
 
-async def test_works_with_and_without_an_organisation(users, clock):
-    without = await account(A)
-    clock[0] += DAY
-    with_org = await account(replace(A, org_id="org_a"))
-    assert without == with_org
-    assert [i["user_id"] for i in users.scan()["Items"]] == ["user_a"]
-
-
 async def test_account_has_referral_fields(users, clock):
     body = await account(B)
     assert body["referralUrl"] == f"{settings.FRONTEND_URL.rstrip('/')}/os?ref=b"
@@ -267,13 +259,53 @@ async def test_in_app_referral_is_not_credited_again_by_the_account_read(users, 
     assert (await account(A))["referralCount"] == 1
 
 
-async def test_many_referrals_have_no_cap(users, clock):
+async def test_each_referral_below_the_cap_adds_a_day(users, clock):
     await account(A)
     for who in (B, C, D):
         await account(who)
         assert await refer(who, "a")
     a = await account(A)
     assert a["referralCount"] == 3 and a["referralDaysEarned"] == 3 and a["trialEndsAt"] == START + 6 * DAY
+
+
+async def test_free_days_stop_at_a_month(users, clock, monkeypatch):
+    """Owner, 2026-11-22: a person gets at most 30 free days, the 3-day trial included, so 27 invite days."""
+    moved = []
+    monkeypatch.setattr("routers.os.os_billing.extend_trial", lambda uid: moved.append(uid) or asyncio.sleep(0))
+    await account(A)
+    set_row("user_a", os_referrals=26, os_referral_days=26, os_trial_ends_at=START + 29 * DAY)
+    await account(B)
+    assert await refer(B, "a")  # the 27th day: the last one
+    a = await account(A)
+    assert a["referralDaysEarned"] == 27 and a["trialEndsAt"] == START + 30 * DAY and moved == ["user_a"]
+    await account(C)
+    assert await refer(C, "a")  # the invite still counts; nobody gets a day
+    a = await account(A)
+    assert a["referralCount"] == 28 and a["referralDaysEarned"] == 27 and a["trialEndsAt"] == START + 30 * DAY
+    assert moved == ["user_a"], "no Stripe trial is moved for a day that was not given"
+    c = users.get_item(Key={"user_id": "user_c"})["Item"]
+    assert c["os_referred_by"] == "user_a" and c["os_referral_credited"] is True
+    assert (await account(C))["trialEndsAt"] == START + 3 * DAY and (await account(C))["inviteBonusDays"] == 0
+    assert not await refer(C, "a")  # still once per person
+
+
+async def test_the_month_counts_a_day_a_paying_inviter_gave(users, clock):
+    await account(A)
+    set_row("user_a", os_referrals=26, os_referral_days=26, os_invite_bonus_days=1, os_trial_ends_at=START + 30 * DAY)
+    await account(B)
+    assert await refer(B, "a")
+    a = await account(A)
+    assert a["referralCount"] == 27 and a["referralDaysEarned"] == 26 and a["trialEndsAt"] == START + 30 * DAY
+
+
+async def test_an_ended_trial_at_the_cap_stays_ended(users, clock):
+    await account(A)
+    set_row("user_a", os_referrals=27, os_referral_days=27)
+    clock[0] = START + 40 * DAY
+    await account(B)
+    assert await refer(B, "a")
+    a = await account(A)
+    assert a["status"] == "ended" and a["trialEndsAt"] == START + 3 * DAY and a["referralCount"] == 28
 
 
 @pytest.mark.parametrize("ago", [3 * DAY, 3600])

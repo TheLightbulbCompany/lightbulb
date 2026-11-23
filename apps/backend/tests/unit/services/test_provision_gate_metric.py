@@ -28,7 +28,7 @@ async def test_blocked_gate_emits_metric_with_code():
             new=AsyncMock(return_value=account),
         ),
     ):
-        gate = await provision_gate.evaluate_provision_gate(owner_id="org_x", is_admin=True)
+        gate = await provision_gate.evaluate_provision_gate(owner_id="org_x")
     assert gate is not None
     assert gate.code == "subscription_required"
     calls = [c for c in mock_put.call_args_list if c.args and c.args[0] == "provision.gate.blocked"]
@@ -59,9 +59,7 @@ async def test_trial_expired_gate_emits_metric_and_dedup_telemetry():
         ),
         patch("core.services.provision_gate.capture_once_per_owner_per_day") as mock_capture,
     ):
-        gate = await provision_gate.evaluate_provision_gate(
-            owner_id="org_x", is_admin=True, actor_user_id="user_poller"
-        )
+        gate = await provision_gate.evaluate_provision_gate(owner_id="org_x", actor_user_id="user_poller")
     assert gate is not None
     assert gate.code == "trial_expired"
     mock_capture.assert_called_once_with(owner_id="org_x", event="trial_expired_block", distinct_id="user_poller")
@@ -80,7 +78,7 @@ async def test_non_trial_expired_blocked_gate_does_not_fire_trial_expired_teleme
         ),
         patch("core.services.provision_gate.capture_once_per_owner_per_day") as mock_capture,
     ):
-        gate = await provision_gate.evaluate_provision_gate(owner_id="org_x", is_admin=True)
+        gate = await provision_gate.evaluate_provision_gate(owner_id="org_x")
     assert gate is not None
     assert gate.code == "subscription_required"
     mock_capture.assert_not_called()
@@ -108,7 +106,7 @@ async def test_allowed_provision_emits_no_metric():
             new=AsyncMock(return_value=False),
         ),
     ):
-        gate = await provision_gate.evaluate_provision_gate(owner_id="org_x", is_admin=True)
+        gate = await provision_gate.evaluate_provision_gate(owner_id="org_x")
     assert gate is None
     blocked = [c for c in mock_put.call_args_list if c.args and c.args[0] == "provision.gate.blocked"]
     assert blocked == []

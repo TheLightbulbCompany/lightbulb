@@ -43,7 +43,8 @@ from core.dynamodb import run_in_thread
 from core.repositories import billing_repo, container_repo, messaging_repo
 from core.services.person_label import email_label, is_relay_email
 from core.services.push_service import send_push_to_user
-from core.services import clerk_admin, hermes_profiles, run_analytics
+from core.services import hermes_profiles, run_analytics
+from core.services.workspace_name import saved_name
 from core.engine import hooks
 from core.engine.contract import PRODUCT_META_FIELDS, MessageVia
 from core.engine.hooks import ContextAsk, EngineEvent
@@ -132,20 +133,6 @@ _FIRST_MESSAGE = (
     "Hi, I'm Lightbulb. I answer your calls, book appointments and take messages. "
     'Ask me anything, like "Who called today?" or "What\'s on tomorrow?"'
 )
-
-
-#: Posted once by the CEO in #general after the first finished run, while the workspace has one
-#: person (08 §3, screen 6). Static on purpose: a model-written ask would not fire reliably or be
-#: measurable. The link renders as the inline invite card on the web (``RoomAppLinks``).
-INVITE_ASK = (
-    "Who should see this with you? Add them now and they'll see the plan the moment it's ready, "
-    "and can approve it with you."
-)
-INVITE_ASK_MARKER = "invite-ask"
-
-
-def invite_ask_text() -> str:
-    return f"{INVITE_ASK}\n\n[Invite someone]({settings.FRONTEND_URL.rstrip('/')}/chat?panel=invite)"
 
 
 #: Super-agent (UX slice 6): the welcome and its first-reply chips sit in the owner's Lightbulb DM, marked by this
@@ -351,9 +338,7 @@ class RoomSummary(ContractModel):
     # workspace, so a foreign member's client must subscribe with this, not its
     # own. None only on rows written before the segment was stamped.
     workspace_id: str | None = None
-    # The platform-managed channel shared with the Lightbulb workspace.
-    shared: bool = False
-    # The viewer belongs to another workspace than the room's owner (a vendor shared-channel guest).
+    # The viewer belongs to another tenant than the room's owner (a foreign member of this room).
     guest: bool = False
     # The seeded starter channel, where the onboarding setup band renders.
     is_default: bool = False
@@ -1792,14 +1777,8 @@ async def _touch_last_interactive_quietly(owner_id: str) -> None:
 
 
 async def _validate_human_in_owner(owner_id: str, user_id: str) -> None:
-    if owner_id == user_id:
-        return
-    if not owner_id.startswith("org_"):
-        raise ApiProblem("MEMBER_NOT_FOUND", "That human is not in this workspace.")
-    from core.services.clerk_admin import list_user_organizations
-
-    if not any(org.get("id") == owner_id for org in await list_user_organizations(user_id, limit=100)):
-        raise ApiProblem("MEMBER_NOT_FOUND", "That human is not in this workspace.")
+    if owner_id != user_id:  # the tenant is one person
+        raise ApiProblem("MEMBER_NOT_FOUND", "That person is not on this account.")
 
 
 async def _resolved_member(owner_id: str, member: CreateRoomMember, roster: list[dict]) -> dict:
@@ -1990,7 +1969,6 @@ def _room_summary_fields(meta: dict, member: dict, read: dict | None, mention_co
         "section_id": member.get("sectionId"),
         "topic": meta.get("topic"),
         "workspace_id": meta.get("workspaceId"),
-        "shared": is_vendor_room(meta),
         "guest": messaging_repo.member_home(member, meta["ownerId"]) != meta["ownerId"],
         "is_default": is_default_room(meta),
         "first_run": bool(meta.get("firstRun")),
@@ -2012,8 +1990,7 @@ async def _room_detail(meta: dict, user_id: str, member: dict | None = None) -> 
     members, read, open_runs, cursors, deliveries = await asyncio.gather(
         messaging_repo.list_members(meta["roomId"]),
         messaging_repo.get_read_row(meta["roomId"], user_id),
-        # The run ledger is partitioned by the ROOM's owner — the customer org
-        # even on a room shared with the vendor workspace.
+        # The run ledger is partitioned by the ROOM's owner, not the viewer.
         messaging_repo.list_open_runs_for_room(meta["ownerId"], meta["roomId"]),
         messaging_repo.list_read_cursors(meta["roomId"]),
         messaging_repo.list_agent_deliveries(meta["roomId"]),
@@ -2160,13 +2137,6 @@ def default_room_id(owner_id: str) -> str:
     return str(uuid.uuid5(uuid.NAMESPACE_URL, f"lightbulb-default-room|{owner_id}"))
 
 
-def is_vendor_room(meta: dict) -> bool:
-    """The one channel a customer shares with the vendor org — by id, never by a stored flag."""
-    return bool(settings.VENDOR_ORG_ID) and meta.get("roomId") == messaging_repo.vendor_room_id(
-        meta.get("ownerId") or ""
-    )
-
-
 def is_default_room(meta: dict) -> bool:
     """The seeded starter channel — by id, never by name.
 
@@ -2190,11 +2160,11 @@ def is_session_room(meta: dict) -> bool:
     return bool(meta.get("session"))
 
 
-def _deny_vendor_human_change(meta: dict, kind: str) -> None:
+def _deny_managed_human_change(meta: dict, kind: str) -> None:
     # A session chat's people follow session read access (spec 2026-10-07 decision 2).
     # The feed's people are the workspace's: only a workspace join/removal changes them.
     # The feed's membership (people only; agents are its authors) is Lightbulb's alone, every kind.
-    if is_feed_room(meta) or (kind == "human" and (is_vendor_room(meta) or is_session_room(meta))):
+    if is_feed_room(meta) or (kind == "human" and is_session_room(meta)):
         raise ApiProblem("ROOM_FORBIDDEN", "Membership of this channel is managed by Lightbulb.")
 
 
@@ -2241,7 +2211,7 @@ async def _autojoin(owner_id: str, room_id: str, user_id: str) -> bool:
     try:
         if await messaging_repo.ensure_user_stream(owner_id, user_id) is None:
             await messaging_repo.release_autojoin(room_id, user_id)
-            return False  # a removed member: only the membership webhook's rejoin turns them back on
+            return False  # a removed member's stream stays off
         meta = await messaging_repo.upsert_member(room_id=room_id, owner_id=owner_id, member=member)
     except messaging_repo.MemberLimitExceeded:
         # Keep the marker: a full room must not turn every poll into a retry.
@@ -2308,10 +2278,10 @@ async def ensure_default_room(owner_id: str, owner_user_id: str) -> str | None:
     )
     client_room_id = f"workspace-bootstrap-v2:{owner_id}"
     # Resolve the welcome BEFORE the room exists: an empty room is visible the moment
-    # create_room returns, and a Clerk call that pauses there would let the owner's
+    # create_room returns, and a read that pauses there would let the owner's
     # first message take seq 1 -- which hides the starter chips for good.
-    org = await clerk_admin.get_organization(owner_id) or {}
-    welcome = default_room_welcome(org.get("name"))
+    name = await saved_name(owner_id)
+    welcome = default_room_welcome(name)
     if existing_room is None:
         await messaging_repo.ensure_user_stream(owner_id, owner_user_id)
         normalized = [{key: member.get(key) for key in ("kind", "id", "role", "listenMode")} for member in members]
@@ -2334,7 +2304,7 @@ async def ensure_default_room(owner_id: str, owner_user_id: str) -> str | None:
         # Super-agent (UX slice 6): the owner's first run is a chat with Lightbulb, in their DM. The DM goes
         # first: #general's message is the "done" signal above, so a failure in between redoes this, idempotently.
         await _post_first_run_welcome(owner_id, owner_user_id, front, welcome)
-        welcome, attrs = team_welcome(org.get("name")), {"kind": TEAM_WELCOME_KIND}
+        welcome, attrs = team_welcome(name), {"kind": TEAM_WELCOME_KIND}
     await messaging_repo.create_message(
         room_id=room_id,
         owner_id=owner_id,
@@ -2519,8 +2489,8 @@ async def create_room(auth: AuthContext, request: CreateRoomRequest, *, meta_ext
         if await messaging_repo.ensure_user_stream(owner_id, human["id"]) is None:
             # A removed member: the creator (stale JWT) is refused, a removed invitee is not found.
             if human["id"] == auth.user_id:
-                raise ApiProblem("WORKSPACE_MEMBERSHIP_REQUIRED", "You are no longer a member of this workspace.")
-            raise ApiProblem("MEMBER_NOT_FOUND", "That human is not in this workspace.")
+                raise ApiProblem("WORKSPACE_MEMBERSHIP_REQUIRED", "You no longer have access to this account.")
+            raise ApiProblem("MEMBER_NOT_FOUND", "That person is not on this account.")
     normalized = [{key: member.get(key) for key in ("kind", "id", "role", "listenMode")} for member in members[1:]]
     room_id = messaging_repo.deterministic_room_id(owner_id, auth.user_id, str(request.client_room_id))
     req_hash = messaging_repo.request_hash(request.name, request.kind, normalized)
@@ -2590,17 +2560,15 @@ async def patch_room(auth: AuthContext, room_id: str, request: PatchRoomRequest)
         if chat_project
         else kind == "group-dm" and not updates and request.paused is None  # archive/unarchive a group chat
     )
-    # Pause/resume alone: a workspace admin may do it too (UX slice 6), but never someone's private DM.
+    # Pause/resume alone: the person may do it too (UX slice 6), but never on a private DM.
     pause_only = request.paused is not None and not updates and request.archived is None
-    if not room_admin and not member_may and not feed_brief and not (pause_only and auth.is_org_admin and kind != "dm"):
+    if not room_admin and not member_may and not feed_brief and not (pause_only and kind != "dm"):
         raise ApiProblem("ROOM_FORBIDDEN", "Room owner or admin access required.")
     # A DM's display name is derived from its counterpart; a stored name would
     # shadow it with nothing in the UI able to clear it. (Finding from #2483,
     # merged to main — this generalizes the same guard to updates-scoping.)
     if "name" in updates and meta.get("kind") == "dm":
         raise ApiProblem("ROOM_FORBIDDEN", "Direct messages cannot be renamed.")
-    if "name" in updates and is_vendor_room(meta):
-        raise ApiProblem("ROOM_FORBIDDEN", "This channel's name is managed by Lightbulb.")
     if "name" in updates and is_session_room(meta):
         raise ApiProblem("ROOM_FORBIDDEN", "This chat is named after its session.")
     if "name" in updates and is_feed_room(meta):
@@ -2617,12 +2585,7 @@ async def patch_room(auth: AuthContext, room_id: str, request: PatchRoomRequest)
         raise ApiProblem("ROOM_FORBIDDEN", "Only a channel or a chat with Lightbulb has an icon and colour.")
     paused = None
     if request.paused is not None and request.paused != bool(meta.get("pausedAt")):
-        if (
-            (kind != "channel" and not chat_project)
-            or is_feed_room(meta)
-            or is_vendor_room(meta)
-            or is_session_room(meta)
-        ):
+        if (kind != "channel" and not chat_project) or is_feed_room(meta) or is_session_room(meta):
             raise ApiProblem("ROOM_NOT_PAUSABLE", "Only a channel or a chat with Lightbulb can be paused.")
         paused = request.paused
         updates |= (
@@ -2665,14 +2628,8 @@ async def _tell_products(e: EngineEvent) -> None:
 
 def _require_archivable(meta: dict) -> None:
     """A plain channel or a group DM archives; a 1:1 DM does not. #general is where
-    join_default_room seats every new teammate and onboarding renders; the shared vendor
-    channel is the customer's support line."""
-    if (
-        meta.get("kind") not in {"channel", "group-dm"}
-        or is_default_room(meta)
-        or is_vendor_room(meta)
-        or is_feed_room(meta)
-    ):
+    join_default_room seats every new teammate and onboarding renders."""
+    if meta.get("kind") not in {"channel", "group-dm"} or is_default_room(meta) or is_feed_room(meta):
         name = "#general" if is_default_room(meta) else "This room"
         raise ApiProblem("ROOM_NOT_ARCHIVABLE", f"{name} can't be archived.")
 
@@ -2707,7 +2664,7 @@ async def patch_room_me(auth: AuthContext, room_id: str, request: MemberPrefsReq
 async def upsert_member(auth: AuthContext, room_id: str, request: UpsertRoomMemberRequest) -> RoomDetail:
     meta, actor = await require_room_member(resolve_owner_id(auth), auth.user_id, room_id)
     owner_id = meta["ownerId"]  # room-scoped writes are keyed on the ROOM owner, never the caller's workspace
-    _deny_vendor_human_change(meta, request.kind)
+    _deny_managed_human_change(meta, request.kind)
     if meta.get("kind") in {"dm", "group-dm"} and request.role != "member":
         raise ApiProblem("INVALID_REQUEST", "Group chat members must use the member role.")
     existing = await messaging_repo.get_member(room_id, request.kind, request.id)
@@ -2715,8 +2672,7 @@ async def upsert_member(auth: AuthContext, room_id: str, request: UpsertRoomMemb
     # Channels keep owner/admin membership management. A direct or group chat
     # has no privileged administrator, so any participant may add another
     # workspace member (always at the ordinary member role).
-    # Only the room-owning workspace's own members: in the shared vendor room a
-    # Lightbulb-side member would be spending the customer's inference.
+    # Only the room-owning tenant's own members may change an agent's mode.
     mode_change = (
         request.kind == "agent"
         and existing is not None
@@ -2742,7 +2698,7 @@ async def upsert_member(auth: AuthContext, room_id: str, request: UpsertRoomMemb
         # A person's choice of mode; a system sweep never overrides it.
         member = {**member, "modeSetBy": "user"}
     if request.kind == "human" and await messaging_repo.ensure_user_stream(owner_id, request.id) is None:
-        raise ApiProblem("MEMBER_NOT_FOUND", "That human is not in this workspace.")  # a removed member
+        raise ApiProblem("MEMBER_NOT_FOUND", "That person is not on this account.")  # a removed member
     current = await messaging_repo.list_members(room_id)
     room_agents = [row for row in current if row.get("kind") == "agent"]
     # Updating membership is not a new conversation. The room's existing front keeps its
@@ -2821,7 +2777,7 @@ async def remove_member(auth: AuthContext, room_id: str, kind: str, member_id: s
         raise ApiProblem("INVALID_REQUEST", "Invalid member kind.")
     owner_id = resolve_owner_id(auth)
     meta, _ = await require_room_admin(owner_id, auth.user_id, room_id)
-    _deny_vendor_human_change(meta, kind)
+    _deny_managed_human_change(meta, kind)
     target = await messaging_repo.get_member(room_id, kind, member_id)
     if target is None:
         raise ApiProblem("MEMBER_NOT_FOUND", "Room member not found.")
@@ -2837,7 +2793,7 @@ async def leave_room(auth: AuthContext, room_id: str) -> None:
     powers there, so they simply leave. A DM's starter cannot leave it."""
     owner_id = resolve_owner_id(auth)
     meta, member = await require_room_member(owner_id, auth.user_id, room_id)
-    _deny_vendor_human_change(meta, "human")
+    _deny_managed_human_change(meta, "human")
     if member.get("role") == "owner" and meta.get("kind") == "dm":
         raise ApiProblem("INVALID_REQUEST", "A direct message cannot be left.")
     if (
@@ -2963,20 +2919,14 @@ async def delete_room(auth: AuthContext, room_id: str) -> None:
     """Owner-only channel delete, as a TOMBSTONE: META gains deletedAt/deletedBy and the
     deliveryKey rotates with a ``room.access.removed`` notice to every human in the same
     transaction -- the revocation contract of a human removal, applied to the whole room.
-    Messages and members stay. #general, the shared vendor channel and DMs refuse, like
+    Messages and members stay. #general and DMs refuse, like
     archive; a room already deleted is a 404 from require_room_member."""
     owner_id = resolve_owner_id(auth)
     for attempt in range(3):
         meta, member = await require_room_member(owner_id, auth.user_id, room_id)
         if member.get("role") != "owner":
             raise ApiProblem("ROOM_FORBIDDEN", "Only the channel's owner can delete it.")
-        if (
-            meta.get("kind") != "channel"
-            or is_default_room(meta)
-            or is_vendor_room(meta)
-            or is_session_room(meta)
-            or is_feed_room(meta)
-        ):
+        if meta.get("kind") != "channel" or is_default_room(meta) or is_session_room(meta) or is_feed_room(meta):
             name = "#general" if is_default_room(meta) else "This room"
             raise ApiProblem("ROOM_NOT_DELETABLE", f"{name} can't be deleted.")
         new_key = str(uuid.uuid4())
@@ -2995,52 +2945,6 @@ async def delete_room(auth: AuthContext, room_id: str) -> None:
             # require_room_member answers 404 if the room is now gone.
             if attempt == 2:
                 raise
-
-
-async def revoke_human_membership(owner_id: str, user_id: str) -> None:
-    """Rotate every room key before deactivating this user's private stream."""
-    discovered = await messaging_repo.list_rooms_for_member(owner_id, "human", user_id)
-    own_session_chats: list[str] = []
-    for row in discovered:
-        room_id = row["meta"]["roomId"]
-        member = await messaging_repo.get_member(room_id, "human", user_id)
-        if member is None:
-            continue
-        meta = await messaging_repo.get_room(room_id)
-        if meta is None or messaging_repo.member_home(member, meta["ownerId"]) != owner_id:
-            continue
-        await _remove_member_with_notices(meta, "human", user_id)
-        if is_session_room(meta) and meta["session"].get("ownerId") == user_id:
-            own_session_chats.append(meta["session"]["sessionId"])
-    # Cooperative revocation of /ws/<ws>/sessions: an open AppSync subscription cannot be closed
-    # server-side, so the leaver's own client is told to drop it, while its channel still works.
-    # Their stream (and sessions member row) then go off, so no new subscribe is admitted.
-    try:
-        from core.services.live_events import get_live_event_publisher  # imports this module
-
-        workspace_id = await messaging_repo.ensure_workspace_id(owner_id)
-        await get_live_event_publisher().publish_user(
-            owner_id, user_id, make_live_event("workspace.access.removed", {"workspaceId": workspace_id})
-        )
-    except Exception:
-        logger.warning("workspace.access.removed notice failed")
-    await messaging_repo.deactivate_user_stream(owner_id, user_id)
-    # Second pass, stream off: a first seat (#general) that landed after the list above
-    # held no marker and passed its own re-check while the stream was still on.
-    # The list reads an eventually consistent GSI that can miss a seat committed just now, so the
-    # auto-seated #general and an existing feed are swept by id as well (consistent reads; a no-op without a seat).
-    swept = {row["meta"]["roomId"] for row in await messaging_repo.list_rooms_for_member(owner_id, "human", user_id)}
-    swept |= {default_room_id(owner_id), messaging_repo.feed_room_id(owner_id)}
-    for room_id in swept:
-        await _remove_human_seat(owner_id, room_id, user_id)
-    if own_session_chats:
-        # Their sessions' chats go silent for everyone: the person they were about is gone. After
-        # the stream is off, which the chat door reads once it has seated someone: a seat that
-        # lands before this list is removed here, one that lands after it is refused there.
-        from core.services import session_chat  # lazy: it imports this module
-
-        for session_id in own_session_chats:
-            await session_chat.silence(owner_id, session_id, keep=None)
 
 
 async def list_messages(
@@ -4160,7 +4064,7 @@ async def create_human_message(
                         notification_copy.line(
                             row.get("displayTitle") or row.get("title") or row.get("cwdName") or "Session", 80
                         ),
-                        notification_copy.line(owner_member.get("displayName") or "Workspace member", 40),
+                        notification_copy.line(owner_member.get("displayName") or "Someone", 40),
                     )
                 )
     links = await _validate_message_links(
@@ -4731,10 +4635,6 @@ async def handle_run_event(owner_id: str, event: RunEventRequest) -> RunEventRes
                 await _after_run_ended(owner_id, row, event.outcome, event.usage)
             except Exception:
                 logger.exception("run post-processing failed")
-            try:
-                await ask_who_should_see(owner_id, row, event.outcome)
-            except Exception:
-                logger.exception("invite ask failed")
     if not applied and await messaging_repo.get_run(owner_id, run_id) is None:
         put_metric("messaging.run.callback", dimensions={"type": event.type, "outcome": "unknown"})
         raise ApiProblem("RUN_NOT_FOUND", "Run not found.")
@@ -4840,61 +4740,6 @@ async def _after_run_ended(owner_id: str, row: dict, outcome: str, usage: RunUsa
             )
         except Exception:
             logger.exception("run failure push failed")
-
-
-async def ask_who_should_see(owner_id: str, row: dict, outcome: str) -> None:
-    """After the first completed run in #general of a one-person workspace, the CEO asks
-    "Who should see this with you?" with the invite card -- once per workspace, ever.
-
-    The marker is claimed before the Clerk read so a busy #general costs one failed
-    conditional put per run afterwards; a read that cannot answer releases it to retry.
-    A workspace that already has two people keeps the marker: the ask is for one person."""
-    room_id = row.get("roomId")
-    if outcome != "completed" or not room_id:
-        return
-    general = default_room_id(owner_id)
-    front = await _front_agent_id(owner_id)
-    # Super-agent: the first run is in the owner's Lightbulb DM. In a one-person workspace (checked below) any DM
-    # with Lightbulb is that DM. The marker stays on #general's id either way: one ask per workspace.
-    if room_id != general and not (front and ((await messaging_repo.get_room(room_id)) or {}).get("kind") == "dm"):
-        return
-    if not await messaging_repo.claim_room_marker(general, INVITE_ASK_MARKER):
-        return
-    org = await clerk_admin.get_organization(owner_id, include_members_count=True)
-    if org is None or org.get("members_count") is None:
-        await messaging_repo.release_room_marker(general, INVITE_ASK_MARKER)
-        return
-    if org["members_count"] != 1:
-        return
-    from core.repositories.workspace_repo import WorkspaceRepo
-
-    company = await WorkspaceRepo().resolve_owner_row(owner_id)
-    ceo_id = (getattr(company, "starter_agent_ids", None) or {}).get("ceo") if company else None
-    if not ceo_id or await messaging_repo.get_member(room_id, "agent", ceo_id) is None:
-        return  # a legacy roster or a CEO removed from #general: nobody to ask in its voice
-    name = (
-        FRONT_AGENT_NAME  # super-agent: every post in a people's room is Lightbulb's
-        if front
-        else next((a["name"] for a in await load_agent_roster(owner_id) if a["id"] == ceo_id), "Lightbulb")
-    )
-    text = invite_ask_text()
-    await messaging_repo.create_message(
-        room_id=room_id,
-        owner_id=owner_id,
-        idemp_pk=messaging_repo.room_pk(room_id),
-        idemp_sk=messaging_repo.human_idemp_sk("__system__", f"{room_id}:{INVITE_ASK_MARKER}"),
-        req_hash=messaging_repo.request_hash(text, ceo_id),
-        author={"kind": "agent", "id": ceo_id, "displayName": name},
-        text=text,
-        mentions=[],
-        reply_to_message_id=None,
-        thread_root_message_id=None,
-        run_id=None,
-        dispatch_targets=[],
-        source_agent_id=ceo_id,
-        client_message_id=None,
-    )
-    put_metric("messaging.invite_ask.posted")
 
 
 async def require_agent_in_live_room(owner_id: str, room_id: str, agent_id: str) -> None:
@@ -5504,6 +5349,8 @@ async def _agent_dm_room_id(owner_id: str, user_id: str, agent_id: str, *, meta_
     """The human↔agent DM, created through the same ``create_room`` the web client's
     ``selectDm`` calls (agent ``active``) when none exists. The client room id is derived
     from the pair, so two racing posts converge on one room instead of two DMs."""
+    if user_id != owner_id:  # the tenant is one person: no one else has a DM here
+        raise ApiProblem("MEMBER_NOT_FOUND", "That person is not on this account.")
     for row in await messaging_repo.list_rooms_for_member(owner_id, "human", user_id):
         meta = row["meta"]
         if (
@@ -5514,7 +5361,7 @@ async def _agent_dm_room_id(owner_id: str, user_id: str, agent_id: str, *, meta_
         ):
             return meta["roomId"]
     detail = await create_room(
-        AuthContext(user_id=user_id, org_id=owner_id),
+        AuthContext(user_id=owner_id, human_session=True),
         CreateRoomRequest(
             client_room_id=uuid.uuid5(uuid.NAMESPACE_URL, f"lightbulb-agent-dm|{owner_id}|{user_id}|{agent_id}"),
             name=None,
@@ -5527,34 +5374,22 @@ async def _agent_dm_room_id(owner_id: str, user_id: str, agent_id: str, *, meta_
 
 
 async def _user_for_handle(owner_id: str, handle: str) -> str:
-    """A workspace member by messaging handle, derived exactly as rooms derive it.
+    """The tenant's person by messaging handle, derived exactly as rooms derive it.
 
     ponytail: handles are per-room derived (see ``with_human_handles``), so this uses the
     workspace-wide derivation; two humans whose handles collide only in some room still
     resolve here. Pass ``userId`` when a handle is ambiguous."""
-    from core.services.clerk_admin import list_organization_members
-
-    people = await list_organization_members(owner_id)
-    if not people:
-        raise ApiProblem("RUNTIME_UNAVAILABLE", "Could not read workspace members.", retryable=True, retry_after=3)
     agents = [
         {"kind": "agent", "mentionHandle": h}
         for h in (await _handles_for(owner_id, await load_agent_roster(owner_id))).values()
     ]
-    humans = [
-        {
-            "kind": "human",
-            "id": p["user_id"],
-            "displayName": " ".join(x for x in (p.get("first_name"), p.get("last_name")) if x) or p["user_id"],
-        }
-        for p in people
-    ]
-    emails = {p["user_id"]: p["email"] for p in people if p.get("email")}
+    humans = [{"kind": "human", "id": owner_id, "displayName": await human_display_name(owner_id)}]
+    emails = await human_emails(humans)
     wanted = handle.removeprefix("@").lower()
     for row in with_human_handles(agents + humans, emails):
         if row["kind"] == "human" and row["mentionHandle"] == wanted:
             return row["id"]
-    raise ApiProblem("MEMBER_NOT_FOUND", "No workspace member has that handle.")
+    raise ApiProblem("MEMBER_NOT_FOUND", "No one on this account has that handle.")
 
 
 async def resolve_agent_post_room(owner_id: str, request: AgentPostRequest) -> str:
@@ -5580,10 +5415,8 @@ async def resolve_agent_post_room(owner_id: str, request: AgentPostRequest) -> s
         return matches[0]
     user_id = request.user_id
     if user_id is not None:
-        # _validate_human_in_owner waves the owner id itself through; an org id is never a human.
-        if not user_id.startswith("user_") or user_id == owner_id:
-            raise ApiProblem("MEMBER_NOT_FOUND", "That human is not in this workspace.")
-        await _validate_human_in_owner(owner_id, user_id)
+        if user_id != owner_id:  # the tenant is one person: only their own DM
+            raise ApiProblem("MEMBER_NOT_FOUND", "That person is not on this account.")
     elif request.handle is not None:
         user_id = await _user_for_handle(owner_id, request.handle)
     if user_id is not None:

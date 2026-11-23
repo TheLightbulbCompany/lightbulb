@@ -1,38 +1,19 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { automationRowLine, canDecide, deliveryRoomId, deliveryWords, nextRunWords, runNowReason, runsAgain, scheduleWords, waitingWords } from "./automations";
+import { automationRowLine, canDecide, deliveryRoomId, deliveryWords, nextRunWords, runNowReason, runsAgain, scheduleWords } from "./automations";
 
-const sam = { userId: "sam", admin: false };
-const admin = { userId: "ana", admin: true };
+const sam = { userId: "sam" };
+const ana = { userId: "ana" };
 
-describe("who turns an automation on (routers/automations.py)", () => {
-  it("a job the workspace owns (the builtin proactive jobs) is resumed by an org admin, never a member (_may_activate)", () => {
-    const builtin = { deliverTo: "none", ownerUserId: "org_1", match: null };
-    expect(canDecide(builtin, { ...admin, orgId: "org_1" })).toBe(true);
-    expect(canDecide(builtin, { ...sam, orgId: "org_1" })).toBe(false);
-    // Without the workspace id it stays the owner rule (nobody's user id is the org's).
-    expect(canDecide(builtin, admin)).toBe(false);
-    // A personal one is still its owner's.
-    expect(canDecide({ deliverTo: "dm:sam", ownerUserId: "sam", match: null }, { ...sam, orgId: "org_1" })).toBe(true);
-  });
-
-  it("a rule goes by its match, not deliverTo", () => {
-    const room = { deliverTo: "none", ownerUserId: "sam", match: { roomIds: ["r1"] } };
-    expect(canDecide(room, sam)).toBe(false);
-    expect(canDecide(room, admin)).toBe(true);
-    expect(waitingWords(room)).toBe("Waiting on a workspace admin");
-    const calendar = { deliverTo: "room:r1", ownerUserId: "sam", match: { sources: ["calendar"] } };
-    expect(canDecide(calendar, sam)).toBe(true);
-    expect(canDecide(calendar, admin)).toBe(false);
-  });
-  it("a schedule goes by where it posts", () => {
-    expect(canDecide({ deliverTo: "room:r1", ownerUserId: "sam", match: null }, sam)).toBe(false);
-    expect(canDecide({ deliverTo: "dm:sam", ownerUserId: "sam", match: null }, sam)).toBe(true);
+describe("who turns an automation on", () => {
+  it("is its owner's call", () => {
+    expect(canDecide({ ownerUserId: "sam" }, sam)).toBe(true);
+    expect(canDecide({ ownerUserId: "sam" }, ana)).toBe(false);
   });
   it("Run now only while active", () => {
     expect(runNowReason({ status: "paused" }, true)).toBe("Resume it first");
     expect(runNowReason({ status: "paused_system" }, true)).toBe("Resume it first");
     expect(runNowReason({ status: "active" }, true)).toBeNull();
-    expect(runNowReason({ status: "active" }, false)).toBe("Only its owner or an admin can run it");
+    expect(runNowReason({ status: "active" }, false)).toBe("Only its owner can run it");
   });
 });
 

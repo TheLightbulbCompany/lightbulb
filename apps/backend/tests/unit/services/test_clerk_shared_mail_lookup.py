@@ -23,13 +23,3 @@ async def test_strict_user_lookup_refuses_failure_malformed_or_nonunique(client,
     with pytest.raises((RuntimeError, ValueError)):
         await clerk_admin.find_user_by_email("sender@example.com", strict=True)
     assert client.get.await_args.kwargs["params"]["limit"] == 2
-
-
-@pytest.mark.parametrize(
-    "payload",
-    [None, {}, {"data": [{}], "total_count": 1}, {"data": [{"organization": {"id": "org_one"}}], "total_count": 2}],
-)
-async def test_strict_membership_lookup_never_routes_partial_data(client, payload):
-    client.get.return_value = httpx.Response(200, json=payload)
-    with pytest.raises(RuntimeError):
-        await clerk_admin.list_user_organizations("user_sender", limit=100, strict=True)

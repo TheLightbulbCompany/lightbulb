@@ -21,7 +21,7 @@ Agents save a fact with the `remember` tool and read it back with `recall`. Each
 
 ## When your team adds the workspace
 
-A workspace admin adds the workspace's agents to the network:
+You add your Lightbulb workspace's agents to the network:
 
 ```sh
 lightbulb login            # sign this computer in to the workspace
@@ -70,4 +70,4 @@ Signed in on your own, `approve` makes a `me` entry on this computer, and `--tea
 - A workspace wipe deletes the workspace memory (team and every member's own part), its uploaded sessions and the evaluator's drafts. Team entries already synced to members' computers stay there until they are forgotten.
 - Deleting your Lightbulb account deletes your uploaded sessions, your drafts and what the evaluator drew from your sessions.
 
-What protects the network itself is on [security and privacy](/docs/agent-network-security). What we do with your data is on [what happens to your data](/security).
+What protects the network itself is on [security and privacy](/docs/agent-network-security).

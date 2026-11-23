@@ -367,7 +367,7 @@ def api(env):
 def _as_org_admin():
     from core.auth import AuthContext
 
-    return AuthContext(user_id=USER, org_id=WS, org_role="org:admin")
+    return AuthContext(user_id=WS, human_session=True)
 
 
 async def test_webhook_secret_put_super_agent_branch(env, api, monkeypatch):

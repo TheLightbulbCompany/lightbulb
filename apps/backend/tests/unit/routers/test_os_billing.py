@@ -40,6 +40,15 @@ def ddb(monkeypatch, jwks):  # noqa: F811
             AttributeDefinitions=[{"AttributeName": "user_id", "AttributeType": "S"}],
             BillingMode="PAY_PER_REQUEST",
         )
+        resource.create_table(
+            TableName=dynamodb.table_name("spark-transcripts"),
+            KeySchema=[{"AttributeName": "user_id", "KeyType": "HASH"}, {"AttributeName": "sk", "KeyType": "RANGE"}],
+            AttributeDefinitions=[
+                {"AttributeName": "user_id", "AttributeType": "S"},
+                {"AttributeName": "sk", "AttributeType": "S"},
+            ],
+            BillingMode="PAY_PER_REQUEST",
+        )
         resource.create_table(  # with the customer index the real workspace handlers query
             TableName=dynamodb.table_name("billing-accounts"),
             KeySchema=[{"AttributeName": "owner_id", "KeyType": "HASH"}],
@@ -783,46 +792,6 @@ async def test_an_expire_that_finds_it_already_expired_goes_on(ddb, clock, fake,
     assert r.headers["location"].endswith("/cs_2") and stored_session(ddb) == "cs_2"
 
 
-# --- account wipes cancel before the users row goes ----------------------------------------------------------
-
-
-async def test_the_workspace_wipe_cancels_a_spark_subscription_before_deleting_the_row(ddb, clock, fake):
-    from core.services.workspace_wipe import _user_rows_run
-
-    await account()
-    subscribe(ddb)
-    fake.subs["sub_1"] = "active"
-    snap = SimpleNamespace(members=[{"user_id": "user_a", "other_orgs": []}], delete_shared_members=False)
-    assert await _user_rows_run(snap) == "deleted 1 users row(s)"
-    assert fake.calls == [("cancel", {"id": "sub_1"})]
-    assert "Item" not in ddb.users.get_item(Key={"user_id": "user_a"})
-
-
-async def test_a_failed_cancel_keeps_the_row_and_fails_the_wipe_step(ddb, clock, fake, monkeypatch):
-    from core.services.workspace_wipe import _user_rows_run
-
-    await account()
-    subscribe(ddb)
-
-    def down(*a, **kw):
-        raise stripe.APIConnectionError("down")
-
-    monkeypatch.setattr(stripe.Subscription, "cancel", down)
-    snap = SimpleNamespace(members=[{"user_id": "user_a", "other_orgs": []}], delete_shared_members=False)
-    with pytest.raises(stripe.APIConnectionError):
-        await _user_rows_run(snap)
-    assert ddb.users.get_item(Key={"user_id": "user_a"})["Item"]["os_subscription_id"] == "sub_1"
-
-
-async def test_a_wipe_of_a_person_without_spark_calls_no_stripe(ddb, clock, fake):
-    from core.services.workspace_wipe import _user_rows_run
-
-    await account()
-    snap = SimpleNamespace(members=[{"user_id": "user_a", "other_orgs": []}], delete_shared_members=False)
-    await _user_rows_run(snap)
-    assert fake.calls == [] and "Item" not in ddb.users.get_item(Key={"user_id": "user_a"})
-
-
 # --- edges: a referral during checkout, a deleted account's checkout and subscription -----------------------
 
 
@@ -838,14 +807,14 @@ async def test_a_referral_during_checkout_is_applied_by_the_first_webhook(ddb, c
     assert [c[1]["trial_end"] for c in fake.calls if c[0] == "modify"] == [START + 4 * DAY]
 
 
-async def test_deleting_an_account_expires_its_open_checkout_session(ddb, clock, fake):
+async def test_deleting_an_account_expires_its_open_checkout_session(ddb, clock, fake, gone):
     await open_link((await account())["checkoutUrl"])
     assert fake.sessions["cs_1"]["status"] == "open"
     await os_billing.cancel_for_deleted_user("user_a")
     assert fake.sessions["cs_1"]["status"] == "expired" and "cancel" not in fake.kinds()
 
 
-async def test_deleting_an_account_with_a_completed_checkout_session_goes_on(ddb, clock, fake):
+async def test_deleting_an_account_with_a_completed_checkout_session_goes_on(ddb, clock, fake, gone):
     await open_link((await account())["checkoutUrl"])
     fake.sessions["cs_1"] |= {"status": "complete", "subscription": {"id": "sub_1", "status": "active"}}
     await os_billing.cancel_for_deleted_user("user_a")  # no raise
@@ -909,18 +878,24 @@ def gone(ddb, monkeypatch):
     dynamodb._dynamodb_resource.create_table(
         TableName=dynamodb.table_name("containers"),
         KeySchema=[{"AttributeName": "owner_id", "KeyType": "HASH"}],
-        AttributeDefinitions=[{"AttributeName": "owner_id", "AttributeType": "S"}],
+        AttributeDefinitions=[
+            {"AttributeName": "owner_id", "AttributeType": "S"},
+            {"AttributeName": "status", "AttributeType": "S"},
+        ],
+        GlobalSecondaryIndexes=[
+            {
+                "IndexName": "status-index",
+                "KeySchema": [{"AttributeName": "status", "KeyType": "HASH"}],
+                "Projection": {"ProjectionType": "ALL"},
+            }
+        ],
         BillingMode="PAY_PER_REQUEST",
     )
-    out = SimpleNamespace(orgs=[], deleted=[], events=[])
-
-    async def orgs_of(user_id, **kw):
-        return out.orgs
+    out = SimpleNamespace(deleted=[], events=[])
 
     async def delete_user(user_id):
         out.deleted.append(user_id)
 
-    monkeypatch.setattr("core.services.clerk_admin.list_user_organizations", orgs_of)
     monkeypatch.setattr("core.services.clerk_admin.delete_user", delete_user)
     monkeypatch.setattr(
         spark_events.product_analytics, "capture_product_event", lambda **kw: out.events.append(kw["event"])
@@ -954,11 +929,26 @@ async def test_delete_without_an_org_removes_everything_and_the_clerk_user(ddb, 
     assert gone.deleted == ["user_a"] and gone.events.count("account_deleted") == 1
 
 
-async def test_delete_with_an_org_keeps_the_clerk_user(ddb, clock, fake, gone):
-    gone.orgs = [{"id": "org_1", "role": "org:admin"}]
+async def test_every_account_deletion_path_deletes_the_transcripts(ddb, clock, fake, gone):
+    """cancel_for_deleted_user is shared by DELETE /os/account and account_wipe (Clerk, /users/me, admin)."""
+    from core.voice import os_voice
+
     await a_spark_account(ddb, fake)
-    assert (await req("DELETE", "/os/account", A)).status_code == 204
-    assert spark_keys(ddb) == {"os_deleted_at"} and gone.deleted == []
+    t = dynamodb.get_table("spark-transcripts")
+    t.put_item(Item={"user_id": "user_a", "sk": f"1#{SID}#1", "text": "hi"})
+    t.put_item(Item={"user_id": "user_b", "sk": f"1#{SID}#1", "text": "hi"})
+    await os_billing.cancel_for_deleted_user("user_a")
+    assert (await os_voice.get(SID))["endedReason"] == "signed_out"
+    assert [i["user_id"] for i in t.scan()["Items"]] == ["user_b"]
+
+
+async def test_deletion_also_ends_a_replaced_session_so_it_saves_nothing_after(ddb, clock, fake, gone):
+    from core.voice import os_voice
+
+    await a_spark_account(ddb, fake)
+    await os_voice.reserve("user_a", "vs_newer", "hold", {}, START)  # SID is replaced, still active
+    await os_billing.cancel_for_deleted_user("user_a")
+    assert (await os_voice.get(SID))["endedReason"] == "signed_out"
 
 
 async def test_delete_twice_is_204_both_times(ddb, clock, fake, gone):
@@ -1038,7 +1028,6 @@ async def test_a_close_that_never_ends_is_ended_by_the_delete(ddb, clock, fake, 
 
 
 async def test_a_deleted_person_is_never_a_referee_again(ddb, clock, fake, gone):
-    gone.orgs = [{"id": "org_1", "role": "org:admin"}]
     await account(A), await account(B)
     assert (await req("DELETE", "/os/account", B)).status_code == 204
     await account(B)
@@ -1048,7 +1037,6 @@ async def test_a_deleted_person_is_never_a_referee_again(ddb, clock, fake, gone)
 
 
 async def test_a_deleted_account_read_again_has_no_new_trial(ddb, clock, fake, gone):
-    gone.orgs = [{"id": "org_1", "role": "org:admin"}]
     await account()
     assert (await req("DELETE", "/os/account", A)).status_code == 204
     again = await account()

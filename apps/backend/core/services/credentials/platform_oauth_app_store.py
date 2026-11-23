@@ -9,7 +9,7 @@ connects run through. Stored at::
 deliberately under the ``integrations/`` prefix so the existing task-role grant
 (``lightbulb/<env>/integrations/*`` — see service-stack.ts) covers it with no IAM
 change. No collision with per-owner secrets is possible: owner segments are
-Clerk ids (``user_…``/``org_…``), never the literal ``platform-oauth``.
+Clerk user ids (``user_…``), never the literal ``platform-oauth``.
 
 Secrets are seeded out-of-band by an operator (``scripts/set_platform_oauth_app.py``)
 — the backend only ever reads. Reads are cached in-process for a few minutes:

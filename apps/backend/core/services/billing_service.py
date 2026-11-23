@@ -9,7 +9,7 @@ import stripe
 from botocore.exceptions import ClientError
 
 from core.config import settings
-from core.observability.metrics import put_metric, timing
+from core.observability.metrics import timing
 from core.repositories import billing_repo
 
 logger = logging.getLogger(__name__)
@@ -29,19 +29,13 @@ _STRIPE_MIN_TRIAL_S = 49 * 3600
 # Founding teams' price lock (owner ruling 2026-10-13: two years).
 _PRICE_LOCK_DAYS = 730
 
-# Members included in the plan price; each human member past this is one seat
-# on STRIPE_SEAT_PRICE_ID (owner ruling: $50 for up to 5, $20 a member from the 6th).
-SEATS_INCLUDED = 5
-
 
 class BillingServiceError(Exception):
     pass
 
 
 class BillingService:
-    async def create_customer_for_owner(
-        self, owner_id: str, owner_type: str = "personal", email: str | None = None
-    ) -> dict:
+    async def create_customer_for_owner(self, owner_id: str, email: str | None = None) -> dict:
         """Resolve a Stripe customer for one workspace billing row only.
 
         A human can administer multiple workspaces, so their email is display
@@ -55,7 +49,7 @@ class BillingService:
 
         with timing("stripe.api.latency", {"op": "customers.create"}):
             customer = stripe.Customer.create(
-                metadata={"workspace_id": owner_id, "owner_id": owner_id, "owner_type": owner_type},
+                metadata={"workspace_id": owner_id, "owner_id": owner_id},
                 idempotency_key=f"workspace-customer:v2:{owner_id}",
             )
         customer_id = customer.id
@@ -84,7 +78,6 @@ class BillingService:
             return await billing_repo.create_if_not_exists(
                 owner_id=owner_id,
                 stripe_customer_id=customer_id,
-                owner_type=owner_type,
             )
         except billing_repo.AlreadyExistsError:
             # Lost the DDB race for this workspace. Delete the Stripe customer
@@ -247,8 +240,7 @@ async def create_workspace_checkout(
             # The in-place plan change below would silently drop the add-on.
             raise BillingServiceError("already_subscribed")
         sub_id = subscription.get("id") or sub_id
-        # The seat item rides along untouched; only the plan item swaps price.
-        items = [i for i in subscription["items"]["data"] if not _is_seat_item(i)]
+        items = list(subscription["items"]["data"])
         if len(items) != 1:
             raise BillingServiceError("This subscription's plan can't be changed automatically")
         item = items[0]
@@ -380,14 +372,7 @@ async def create_workspace_checkout(
                 "success_url": f"{settings.FRONTEND_URL}{_CHECKOUT_RETURNS.get(then or '', '/settings?panel=billing&checkout=success')}",
                 "cancel_url": f"{settings.FRONTEND_URL}/settings?panel=billing&checkout=cancel",
             }
-        seats = await seats_for_workspace(owner_id)
         line_items = [{"price": price_id, "quantity": 1}]
-        if seats:
-            if not settings.STRIPE_SEAT_PRICE_ID:
-                # Fail closed: never sell a 6+ member workspace the 5-member price.
-                put_metric("billing.seat_price_unconfigured")
-                raise BillingServiceError("seat_price_unconfigured")
-            line_items.append({"price": settings.STRIPE_SEAT_PRICE_ID, "quantity": seats})
         if front_desk:
             line_items.append({"price": settings.STRIPE_FRONT_DESK_PRICE_ID, "quantity": 1})
         session = await _build_subscription_checkout(
@@ -404,8 +389,8 @@ async def create_workspace_checkout(
                 # Workspace -> Ultra -> Workspace inside one bucket replays the
                 # first (now expired) session.
                 f":{pending_id or ''}"
-                # The seat quantity and trial end are part of the body.
-                f":{seats}:{trial_end or ''}"
+                # The trial end is part of the body.
+                f":{trial_end or ''}"
                 # Web and app sessions differ in body (return URLs, origin_context);
                 # sharing a key would make Stripe reject the second as a mismatch.
                 f":{return_to}"
@@ -559,79 +544,9 @@ def subscription_item_on_price(items: list[dict], price_id: str) -> dict:
     return next((item for item in items if (item.get("price") or {}).get("id") == price_id), {})
 
 
-def _is_seat_item(item: dict) -> bool:
-    return bool(settings.STRIPE_SEAT_PRICE_ID) and (item.get("price") or {}).get("id") == settings.STRIPE_SEAT_PRICE_ID
-
-
 def _is_front_desk_item(item: dict) -> bool:
     price_id = settings.STRIPE_FRONT_DESK_PRICE_ID
     return bool(price_id) and (item.get("price") or {}).get("id") == price_id
-
-
-async def seats_for_workspace(owner_id: str) -> int:
-    """Billable seats: human members past :data:`SEATS_INCLUDED`.
-
-    Every Clerk org member is a human (agents are not Clerk members). STRICT
-    roster read: a Clerk blip raises rather than reading as zero members. A person's tenant is one human.
-    """
-    from core.auth import is_org_owner_id
-    from core.services.clerk_admin import list_organization_members
-
-    if not is_org_owner_id(owner_id):
-        return 0
-    return max(0, len(await list_organization_members(owner_id, strict=True)) - SEATS_INCLUDED)
-
-
-async def sync_seat_quantity(owner_id: str) -> str:
-    """Set the workspace subscription's seat item to the current member count.
-
-    Absolute, so idempotent: every caller (membership webhooks, every live
-    subscription event) converges on the same quantity, and our own modify
-    fires ``customer.subscription.updated``, which re-syncs against a fresh
-    roster -- so two racing membership events cannot leave a stale count.
-    Prorated both ways. The seat item is never deleted, only set to 0, so the
-    one-time create key stays valid. Returns an outcome string for logs/tests.
-
-    Only a live STRIPE subscription carries seats; an Apple-billed workspace
-    has no seat product and is skipped.
-    """
-    from core.services.apple_iap import stripe_is_live
-    from core.services.provision_gate import LIVE_SUBSCRIPTION_STATUSES
-
-    seat_price = settings.STRIPE_SEAT_PRICE_ID
-    if not seat_price:
-        # Fail closed: charge nothing rather than guess a price.
-        put_metric("billing.seat_price_unconfigured")
-        logger.error("seat price unconfigured; no seats billed for owner %s", owner_id)
-        return "seat_price_unconfigured"
-    account = await billing_repo.get_by_owner_id(owner_id, consistent_read=True)
-    sub_id = (account or {}).get("stripe_subscription_id")
-    if not sub_id or not stripe_is_live(account) or account.get("subscription_source") == "apple_iap":
-        return "not_stripe_billed"
-    seats = await seats_for_workspace(owner_id)
-    with timing("stripe.api.latency", {"op": "subscription.retrieve"}):
-        subscription = stripe.Subscription.retrieve(sub_id)
-    if subscription.get("status") not in LIVE_SUBSCRIPTION_STATUSES:
-        return "not_live"
-    item = subscription_item_on_price(subscription["items"]["data"], seat_price)
-    if int(item.get("quantity") or 0) == seats:
-        return "unchanged"
-    if item:
-        with timing("stripe.api.latency", {"op": "subscription_item.modify"}):
-            stripe.SubscriptionItem.modify(item["id"], quantity=seats, proration_behavior="create_prorations")
-    else:
-        with timing("stripe.api.latency", {"op": "subscription_item.create"}):
-            stripe.SubscriptionItem.create(
-                subscription=sub_id,
-                price=seat_price,
-                quantity=seats,
-                proration_behavior="create_prorations",
-                # Two racing first-seat events must not add two seat items.
-                idempotency_key=f"seat-item:v1:{sub_id}",
-            )
-    put_metric("billing.seat_sync", dimensions={"outcome": "changed"})
-    logger.info("seat sync owner=%s subscription=%s seats=%d", owner_id, sub_id, seats)
-    return "changed"
 
 
 async def add_front_desk_item(owner_id: str) -> str:

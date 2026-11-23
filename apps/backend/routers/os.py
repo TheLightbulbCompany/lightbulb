@@ -5,7 +5,7 @@ account is a few attributes on their users row: `os_trial_ends_at`, `os_created_
 they referred), `os_referral_days` (days they earned by referring; rows from before it existed earned one per
 referral), `os_referred_by` and `os_referral_credited` (whose code they came with, and whether it was credited; a
 web sign-up stores `os_referred_by` before the account exists), `os_invite_bonus_days` (1 when a paying inviter's
-day went on their own trial), and for voice `os_voice_active` (their open session ids) and
+day went on their own trial; it and `os_referral_days` together stop at `MAX_FREE_DAYS` less the trial), and for voice `os_voice_active` (their open session ids) and
 `os_voice_seconds` (their voice total). After they delete it, `os_deleted_at` is all that remains. Voice sessions themselves are `core.voice.os_voice`."""
 
 import json
@@ -37,6 +37,7 @@ router = APIRouter()
 DAY_S = 86400
 TRIAL_S = 3 * DAY_S
 REFERRAL_WINDOW_S = 14 * DAY_S
+MAX_FREE_DAYS = 30  # owner, 2026-11-22: the trial and every invite day a person is given, together
 _USER_ID = re.compile(r"user_[A-Za-z0-9]{1,64}")
 
 
@@ -168,17 +169,16 @@ async def get_account(auth: AuthContext = Depends(get_human_session)) -> Account
 async def delete_account(auth: AuthContext = Depends(get_human_session)) -> Response:
     """Delete the signed-in person's Spark account. Every step is idempotent, so a retry finishes a partial one:
     cancel their Spark subscription, close their open voice session at OpenAI, remove every `os_*` attribute from their
-    users row except the `os_deleted_at` tombstone (a later account starts with no trial), then delete the
-    Clerk user. A person in any Clerk organization keeps their Clerk user, since their other Lightbulb product
-    still uses it; the answer is 204 all the same. Referrers keep what they earned. Ended voice-session rows
+    users row except the `os_deleted_at` tombstone (a later account starts with no trial) and delete their saved
+    voice transcripts, then delete the
+    Clerk user. Referrers keep what they earned. Ended voice-session rows
     are keyed by session id and expire by TTL. A Stripe or Clerk failure is 502 `delete_failed`."""
     from core.services import clerk_admin
 
     uid = auth.user_id
     try:
-        await os_billing.cancel_for_deleted_user(uid)  # raises before any Spark data is removed
-        for sid in (await os_billing._row(uid)).get(os_voice.ACTIVE) or ():
-            await os_voice.close_and_wait(sid, "signed_out")  # OpenAI gets session.close before the cleanup
+        # Stripe first (raises before any Spark data is removed), then open sessions closed, transcripts deleted
+        await os_billing.cancel_for_deleted_user(uid)
         row = await os_billing._row(uid)  # re-read: ending a session adds to os_voice_seconds
         spark = {f"#a{i}": k for i, k in enumerate(k for k in row if k.startswith("os_") and k != "os_deleted_at")}
         if spark:
@@ -190,8 +190,7 @@ async def delete_account(auth: AuthContext = Depends(get_human_session)) -> Resp
                 ExpressionAttributeNames=spark,
                 ExpressionAttributeValues={":now": _now()},
             )
-        if not await clerk_admin.list_user_organizations(uid, limit=100, strict=True):
-            await clerk_admin.delete_user(uid)
+        await clerk_admin.delete_user(uid)
     except Exception:  # noqa: BLE001  Stripe, Clerk or DynamoDB: the app retries
         logger.warning("os account delete failed for %s", uid, exc_info=True)
         raise HTTPException(status_code=502, detail="delete_failed") from None
@@ -233,6 +232,9 @@ _NOT_CREDITED = f"attribute_not_exists(os_referral_credited) AND {_NEVER_DELETED
 
 _ST = "os_subscription_status"
 _EARNS = "SET os_referral_days = if_not_exists(os_referral_days, :prior) + :one"
+_ROOM = "(attribute_not_exists(os_referral_days) OR os_referral_days < :cap)"  # under the month of free days
+# A trial that has ended with no live subscription.
+_ENDED = f"os_trial_ends_at <= :now AND (attribute_not_exists({_ST}) OR NOT {_ST} IN (:active, :trialing))"
 # Who gets the day, by the referrer's row: each condition pins one branch, and the three cover every row.
 _BRANCHES = {
     # Paying: the friend gets the day on their own trial; the referrer's trial and billing are untouched.
@@ -243,13 +245,21 @@ _BRANCHES = {
     # A running trial, or a trialing subscription: the day goes on the end, and `extend_trial` moves Stripe's.
     "referrer": (
         f"attribute_exists(os_trial_ends_at) AND (attribute_not_exists({_ST}) OR {_ST} <> :active)"
-        f" AND (os_trial_ends_at > :now OR {_ST} = :trialing)",
+        f" AND (os_trial_ends_at > :now OR {_ST} = :trialing) AND {_ROOM}",
         f"{_EARNS} ADD os_trial_ends_at :day, os_referrals :one",
     ),
     # An ended trial with no live subscription: the day counts from now.
     "ended": (
-        f"os_trial_ends_at <= :now AND (attribute_not_exists({_ST}) OR NOT {_ST} IN (:active, :trialing))",
+        f"{_ENDED} AND {_ROOM}",
         f"{_EARNS}, os_trial_ends_at = :until ADD os_referrals :one",
+    ),
+    # The month of free days is used up: the invite is counted and nobody gets a day.
+    # ponytail: a row from before `os_referral_days` with a count this high is not matched and is not credited;
+    # none exists (the attribute is written at the first credit).
+    "capped": (
+        f"attribute_exists(os_trial_ends_at) AND (attribute_not_exists({_ST}) OR {_ST} <> :active)"
+        " AND os_referral_days >= :cap",
+        "ADD os_referrals :one",
     ),
 }
 
@@ -260,6 +270,13 @@ def _branch(ref: dict, now: int) -> str:
     return "referrer" if ref.get(_ST) == "trialing" or int(ref["os_trial_ends_at"]) > now else "ended"
 
 
+def _invite_days_left(row: dict) -> int:
+    """How many more invite days this person may earn: `MAX_FREE_DAYS` less the trial, a paying inviter's day and
+    the days already earned."""
+    earned = int(row.get("os_referral_days", row.get("os_referrals", 0)))
+    return MAX_FREE_DAYS - TRIAL_S // DAY_S - int(row.get("os_invite_bonus_days", 0)) - earned
+
+
 async def _credit(user_id: str, referrer: str, expr: str, cond: str, values: dict) -> str:
     """Both rows or neither: the referred person is marked credited (`expr` under `cond`) and the referrer, who
     must have a Spark account, counts one more referral. One friend is one free day: a paying (`active`)
@@ -267,7 +284,9 @@ async def _credit(user_id: str, referrer: str, expr: str, cond: str, values: dic
     trial has ended, from now (an ADD cannot say max(end, now)); the same holds for the friend's own trial. The
     branch comes from the rows read first and is pinned by conditions; a row that crossed a line meanwhile is
     read again, once. Whoever got the day has a trialing Stripe subscription moved with it (`extend_trial`).
-    Returns "friend" or "referrer" (who got the day), or "" when nothing was written."""
+    A person's free days stop at `MAX_FREE_DAYS`, the trial included: past that the invite is still counted and
+    nobody gets a day ("capped"). Returns "friend" or "referrer" (who got the day), "capped", or "" when nothing
+    was written."""
     refused: bool | None = None
     for _ in range(2):
         now = _now()
@@ -275,9 +294,12 @@ async def _credit(user_id: str, referrer: str, expr: str, cond: str, values: dic
         if not ref or "os_trial_ends_at" not in ref:
             return ""
         branch = _branch(ref, now)
+        earned = int(ref.get("os_referral_days", ref.get("os_referrals", 0)))
+        if branch != "friend" and _invite_days_left(ref) <= 0:
+            branch = "capped"
         ref_cond, ref_expr = _BRANCHES[branch]
         every = {":active": "active", ":trialing": "trialing", ":now": now, ":until": now + DAY_S, ":day": DAY_S}
-        every |= {":prior": int(ref.get("os_referrals", 0)), ":one": 1}
+        every |= {":prior": int(ref.get("os_referrals", 0)), ":one": 1, ":cap": earned + max(_invite_days_left(ref), 0)}
         ref_values = {k: every[k] for k in set(re.findall(r":\w+", f"{ref_cond} {ref_expr}"))}
         friend_cond, friend_expr, friend_values = cond, expr, values | {":t": True}
         if branch == "friend":
@@ -287,7 +309,7 @@ async def _credit(user_id: str, referrer: str, expr: str, cond: str, values: dic
             ended = "os_trial_ends_at" in (mine or {}) and _branch(mine, now) == "ended"
             if ended == refused:
                 return ""  # the same choice was refused before: the guard, not the pin
-            pin = _BRANCHES["ended"][0]
+            pin = _ENDED
             friend_cond = f"({cond}) AND {pin}" if ended else f"({cond}) AND NOT ({pin})"
             friend_expr += ", os_invite_bonus_days = :one" + (
                 ", os_trial_ends_at = :until" if ended else " ADD os_trial_ends_at :day"
@@ -312,9 +334,10 @@ async def _credit(user_id: str, referrer: str, expr: str, cond: str, values: dic
                     return ""
                 refused = ended
             continue  # the referrer's row moved across a branch line
-        await os_billing.extend_trial(user_id if branch == "friend" else referrer)
+        if branch != "capped":
+            await os_billing.extend_trial(user_id if branch == "friend" else referrer)
         spark_events.server_event(referrer, "referral_applied", user_id)
-        return "friend" if branch == "friend" else "referrer"
+        return branch if branch in ("friend", "capped") else "referrer"
     return ""
 
 

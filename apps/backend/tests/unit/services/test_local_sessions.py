@@ -15,9 +15,9 @@ from core.services import local_sessions as service
 from core.services.messaging import ApiProblem
 
 OWNER = "org_test"
-ALICE = AuthContext(user_id="user_alice", org_id=OWNER)
-BOB = AuthContext(user_id="user_bob", org_id=OWNER)
-OUTSIDER = AuthContext(user_id="user_outsider", org_id=OWNER, org_role="org:admin")
+ALICE = AuthContext(user_id=OWNER, human_session=True)
+BOB = AuthContext(user_id=OWNER, human_session=True)
+OUTSIDER = AuthContext(user_id=OWNER, human_session=True)
 ROOM = "11111111-1111-4111-8111-111111111111"
 OTHER_ROOM = "22222222-2222-4222-8222-222222222222"
 MAC = "a" * 64

@@ -26,10 +26,10 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from boto3.dynamodb.conditions import Key
-from core.auth import AuthContext, get_current_user, is_org_owner_id, require_org_admin, resolve_owner_id
+from core.auth import AuthContext, get_current_user, resolve_owner_id
 from core.dynamodb import get_item, messaging_table, owner_pk, query_all, run_in_thread, utc_now_iso
 from core.billing import voice_billing, voice_plan
-from core.engine import engine
+from core.engine import client as engine
 from core.engine.contract import ConversationOut
 from core.repositories import billing_repo, container_repo
 from core.services import agent_registry
@@ -188,7 +188,6 @@ async def waitlist(auth: AuthContext = Depends(get_current_user)) -> dict:
 
 @router.delete("/voice/waitlist/{date}/{entry_id}")
 async def remove_waitlist(date: str, entry_id: str, auth: AuthContext = Depends(get_current_user)) -> dict:
-    require_org_admin(auth)
     key = {"pk": owner_pk(resolve_owner_id(auth)), "sk": f"VOICEWAIT#{date}#{entry_id}"}
     if not await get_item(messaging_table(), **key):
         raise HTTPException(status_code=404, detail={"code": "not_found"})
@@ -253,7 +252,6 @@ async def get_agent(auth: AuthContext = Depends(get_current_user)) -> dict:
 
 @router.put("/voice/agent")
 async def put_agent(body: AgentConfigIn, auth: AuthContext = Depends(get_current_user)) -> dict:
-    require_org_admin(auth)
     body.config = store.voice_agent_config(body.config)
     if len(json.dumps(body.config)) > MAX_CONFIG_BYTES:
         raise HTTPException(status_code=413, detail={"code": "too_large"})
@@ -314,7 +312,6 @@ class ForwardCheckIn(BaseModel):
 async def forward_check(body: ForwardCheckIn | None = None, auth: AuthContext = Depends(get_current_user)) -> dict:
     """Onboarding "Keep my number": ring the business line once; the page polls GET /voice/agent for forwardingOk.
     `forwardFrom` is the line the owner just typed (step 4 saves only on Continue); it is kept on the document."""
-    require_org_admin(auth)
     ws = resolve_owner_id(auth)
     cfg = await store.get_voice_agent(ws) or {}
     if body and body.forwardFrom:
@@ -331,7 +328,6 @@ class DraftIn(BaseModel):
 @router.post("/voice/onboarding/draft")
 async def onboarding_draft(body: DraftIn, auth: AuthContext = Depends(get_current_user)) -> dict:
     """One website read in flight per tenant: a second while the first runs is 409 `draft_in_progress`."""
-    require_org_admin(auth)
     lease = f"voice-draft#{resolve_owner_id(auth)}"
     token = await container_repo.try_claim_owner_lifecycle(lease, stale_s=120)  # 4 pages at 5 s + a 45 s model read
     if not token:
@@ -353,16 +349,12 @@ class NumberIn(BaseModel):
 async def assign_number(body: NumberIn | None = None, auth: AuthContext = Depends(get_current_user)) -> dict:
     """With a body: store the onboarding choice (keep and forward, or new), nothing bought. Without: today's step 4,
     the configured line now. ponytail: the bodyless branch goes when Task 30's step 4 sends the choice."""
-    require_org_admin(auth)
     if body and body.path:
         ws = resolve_owner_id(auth)
         choice = await voice_onboarding.reserve(
             ws, body.path, body.areaCode, body.carrier, body.mode, user_id=auth.user_id
         )
         return {"numberChoice": choice}
-    if not is_org_owner_id(resolve_owner_id(auth)):  # a person's number comes with the voice plan, at Go live
-        raise HTTPException(status_code=402, detail={"code": "voice_plan_required"})
-    try:
-        return {"number": await voice_onboarding.assign_number(resolve_owner_id(auth), auth.user_id)}
-    except voice_onboarding.NoNumber as exc:
-        raise HTTPException(status_code=409, detail={"code": str(exc)}) from None
+    raise HTTPException(
+        status_code=402, detail={"code": "voice_plan_required"}
+    )  # a number comes with the voice plan, at Go live

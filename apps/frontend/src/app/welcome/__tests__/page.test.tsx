@@ -25,7 +25,7 @@ beforeEach(() => {
   clerk.user.update.mockImplementation(async (fields: { firstName: string }) => {
     clerk.user = { ...clerk.user!, ...fields };
   });
-  at("?returnTo=%2Fjoin%2Forg_1");
+  at("?returnTo=%2Fonboarding");
 });
 
 describe("/welcome/name", () => {
@@ -42,7 +42,7 @@ describe("/welcome/name", () => {
 
     await waitFor(() => expect(update).toHaveBeenCalledWith({ firstName: "Sam", lastName: "Rivera" }));
     rerender(<NamePage />); // Clerk re-renders its hooks' users with the saved name
-    await waitFor(() => expect(clerk.replace).toHaveBeenCalledWith("/join/org_1"));
+    await waitFor(() => expect(clerk.replace).toHaveBeenCalledWith("/onboarding"));
     expect(clerk.replace).toHaveBeenCalledTimes(1);
   });
 
@@ -56,7 +56,7 @@ describe("/welcome/name", () => {
   it.each([{ firstName: "Ada" }, { firstName: null, username: "ada" }])("sends a person who already has a name straight on: %j", (named) => {
     clerk.user = { ...named, update: vi.fn() };
     render(<NamePage />);
-    expect(clerk.replace).toHaveBeenCalledWith("/join/org_1");
+    expect(clerk.replace).toHaveBeenCalledWith("/onboarding");
     expect(screen.queryByLabelText("First name")).not.toBeInTheDocument();
   });
 

@@ -31,7 +31,7 @@ async def test_presence_is_durably_admitted_and_speech_keeps_credit_accounting(m
         patch.object(meetings.meeting_invites, "_patch_meeting", AsyncMock(side_effect=patch_meeting)),
         patch.object(meetings.meeting_invites.container_repo, "try_claim_owner_lifecycle", AsyncMock(return_value="t")),
         patch.object(meetings.meeting_invites.container_repo, "release_owner_lifecycle_claim", AsyncMock()),
-        patch.object(meetings.clerk_admin, "get_organization", AsyncMock(return_value={})),
+        patch.object(meetings, "saved_name", AsyncMock(return_value=None)),
         patch.object(meetings.billing_repo, "get_by_owner_id", AsyncMock(return_value={})),
         patch.object(meetings.voice_billing.messaging_repo, "put_voice_usage_event", AsyncMock()) as admission,
         patch.object(meetings.voice_billing, "add_month_seconds", AsyncMock()) as allowance,

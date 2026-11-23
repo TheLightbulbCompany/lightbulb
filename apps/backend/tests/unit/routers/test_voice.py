@@ -7,7 +7,7 @@ from core.repositories import messaging_repo
 from core.voice import store
 from tests.unit.services.conftest import repos  # noqa: F401
 
-WS = "org_test_456"
+WS = "user_test_123"
 
 
 @pytest.fixture(autouse=True)
@@ -129,11 +129,6 @@ async def test_agent_config_round_trip_admin_only(repos, async_client_org_admin)
     assert (await async_client_org_admin.get("/api/v1/voice/agent")).json()["config"] == cfg
     big = {"x": "a" * 70_000}
     assert (await async_client_org_admin.put("/api/v1/voice/agent", json={"config": big})).status_code == 413
-
-
-@pytest.mark.asyncio
-async def test_agent_config_member_cannot_write(repos, async_client_org_member):  # noqa: F811
-    assert (await async_client_org_member.put("/api/v1/voice/agent", json={"config": {}})).status_code == 403
 
 
 @pytest.mark.asyncio
@@ -333,17 +328,6 @@ async def test_unavailable_or_foreign_selection_has_no_saved_effect(async_client
     response = await async_client_org_admin.put("/api/v1/voice/agent", json={"config": {"frontAgentId": "foreign"}})
     assert response.status_code == 422
     assert await messaging_repo.get_voice_agent(WS) == {"name": "Unchanged"}
-
-
-@pytest.mark.usefixtures("repos")
-async def test_member_cannot_designate_front_agent(async_client_org_member, monkeypatch):
-    from routers import voice
-
-    lookup = AsyncMock()
-    monkeypatch.setattr(voice.agent_registry, "get", lookup)
-    response = await async_client_org_member.put("/api/v1/voice/agent", json={"config": {"frontAgentId": "someone"}})
-    assert response.status_code == 403
-    lookup.assert_not_awaited()
 
 
 @pytest.mark.usefixtures("repos")

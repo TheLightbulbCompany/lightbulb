@@ -63,7 +63,6 @@ _CONTRACT_TABLES: dict[str, tuple[list[tuple[str, str, str]], dict[str, list[tup
     "oauth-tokens": ([("user_id", "HASH", "S")], {}),
     "oauth-state": ([("state", "HASH", "S")], {}),
     "integrations": ([("owner_id", "HASH", "S"), ("provider", "RANGE", "S")], {}),
-    "workspace-join-links": ([("org_id", "HASH", "S")], {}),
     # The public A2A Agent Card reads the workspace's AGENT# roster rows here.
     "tasks": (
         [("pk", "HASH", "S"), ("sk", "RANGE", "S")],
@@ -73,6 +72,7 @@ _CONTRACT_TABLES: dict[str, tuple[list[tuple[str, str, str]], dict[str, list[tup
         },
     ),
     "setup-requests": ([("id", "HASH", "S")], {}),
+    "spark-transcripts": ([("user_id", "HASH", "S"), ("sk", "RANGE", "S")], {}),
     "paperclip-companies": (
         [("user_id", "HASH", "S")],
         {
@@ -323,7 +323,7 @@ def _signed_in_as_contract_user():
     from main import app
 
     async def _user():
-        return AuthContext(user_id="contract_test_user")
+        return AuthContext(user_id="contract_test_user", human_session=True)
 
     saved = app.dependency_overrides.get(get_current_user)
     app.dependency_overrides[get_current_user] = _user
@@ -337,7 +337,7 @@ def _signed_in_as_contract_user():
 @pytest.fixture
 def mock_auth():
     """Mock auth context for contract tests."""
-    return AuthContext(user_id="contract_test_user")
+    return AuthContext(user_id="contract_test_user", human_session=True)
 
 
 @pytest.fixture

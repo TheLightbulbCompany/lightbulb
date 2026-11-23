@@ -79,7 +79,7 @@ def _list_names_with_prefix(sm, prefix: str) -> list[str]:
 
 def _swept_providers(owner_id: str) -> list[str]:
     """The owner's envelope rows, minus the managed OpenRouter keys (``openrouter/<hash>``): the
-    settlement worker still reads a retiring key, so ``workspace_wipe._delete_openrouter_key`` removes
+    settlement worker still reads a retiring key, so ``account_wipe._delete_openrouter_key`` removes
     those once the key is disabled, exactly as it did their ``openrouter/owners/*`` secrets."""
     return [p for p in integration_secret_store.envelope_providers(owner_id) if not p.startswith("openrouter/")]
 

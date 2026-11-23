@@ -39,8 +39,6 @@ def hermes(monkeypatch):
     monkeypatch.setattr("core.services.user_provision._ensure_trial_row", trial)
     join_room = AsyncMock()
     monkeypatch.setattr("core.services.messaging.join_default_room", join_room)
-    members = AsyncMock(return_value=[{"user_id": "user_creator"}, {"user_id": "user_early"}])
-    monkeypatch.setattr("core.services.clerk_admin.list_organization_members", members)
     return SimpleNamespace(
         prepare=prepare,
         provision=provision,
@@ -96,15 +94,14 @@ async def test_the_brief_drains_after_step_0_and_the_trial_arms_after_the_runtim
     hermes.reconcile.side_effect = lambda _o: order.append("reconcile")
 
     assert await provision_runner.run("org_a") == provision_runner.EXIT_OK
-    assert order == ["seed", "drain", "seat", "seat", "runtime", "arm_trial", "reconcile"]
+    assert order == ["seed", "drain", "seat", "runtime", "arm_trial", "reconcile"]
 
 
-async def test_every_teammate_is_seated_once_the_company_is_active(monkeypatch, hermes, repo):
-    """The status poll used to seat teammates the membership webhook missed (one who joined before
-    #general existed). The executor does it after step 0; a failure never fails the provision."""
-    hermes.join_room.side_effect = [RuntimeError("ddb"), True]
-    assert await provision_runner.run("org_a") == provision_runner.EXIT_OK
-    assert [c.args for c in hermes.join_room.await_args_list] == [("org_a", "user_creator"), ("org_a", "user_early")]
+async def test_the_person_is_seated_once_the_company_is_active(monkeypatch, hermes, repo):
+    """The executor seats the person in #general after step 0; a failure never fails the provision."""
+    hermes.join_room.side_effect = RuntimeError("ddb")
+    assert await provision_runner.run("user_p") == provision_runner.EXIT_OK
+    assert [c.args for c in hermes.join_room.await_args_list] == [("user_p", "user_p")]
     repo.mark_provision_error.assert_not_awaited()
 
 
@@ -116,19 +113,6 @@ async def test_the_trial_row_exists_before_the_owner_key_is_minted(monkeypatch, 
     assert await provision_runner.run("user_p") == provision_runner.EXIT_OK
     hermes.trial.assert_awaited_once_with("user_p")
     assert order == ["trial", "prepare"]
-
-
-async def test_a_user_tenant_seats_the_person_alone(monkeypatch, hermes, repo):
-    assert await provision_runner.run("user_p") == provision_runner.EXIT_OK
-    assert [c.args for c in hermes.join_room.await_args_list] == [("user_p", "user_p")]
-
-
-async def test_a_roster_read_failure_never_fails_the_provision(monkeypatch, hermes, repo):
-    monkeypatch.setattr(
-        "core.services.clerk_admin.list_organization_members", AsyncMock(side_effect=RuntimeError("clerk"))
-    )
-    assert await provision_runner.run("org_a") == provision_runner.EXIT_OK
-    hermes.provision.assert_awaited_once_with("org_a")
 
 
 async def test_drain_and_trial_arm_failures_never_fail_the_provision(monkeypatch, hermes, repo):
@@ -268,25 +252,17 @@ def _stub_proactive(monkeypatch):
 
 
 def _stub_org_seed(monkeypatch, seed=None):
-    """Patch the org seed's collaborators: the Clerk creator lookup and
-    ``_ensure_workspace_for_org`` itself (returned)."""
+    """Patch the seed itself, ``_ensure_owner_workspace`` (returned)."""
     seed = seed or AsyncMock()
-    monkeypatch.setattr("core.services.user_provision._ensure_workspace_for_org", seed)
-    monkeypatch.setattr(
-        "core.services.clerk_admin.get_organization",
-        AsyncMock(return_value={"created_by": "user_c"}),
-    )
+    monkeypatch.setattr("core.services.user_provision._ensure_owner_workspace", seed)
     return seed
 
 
 async def test_seed_helper_user_owner_is_its_own_provisioner(monkeypatch, _stub_proactive):
-    """A user tenant's provisioner is the person: no Clerk org lookup."""
+    """The provisioner is the person."""
     seed = _stub_org_seed(monkeypatch)
-    get_org = AsyncMock()
-    monkeypatch.setattr("core.services.clerk_admin.get_organization", get_org)
     assert await provision_runner._seed_owner_workspace("user_p") == provision_runner.EXIT_OK
-    get_org.assert_not_awaited()
-    seed.assert_awaited_once_with(org_id="user_p", user_id="user_p", is_admin=True)
+    seed.assert_awaited_once_with(owner_id="user_p", owner_user_id="user_p")
 
 
 async def test_seed_helper_leaves_the_schedule_cleanup_to_the_reconcile(monkeypatch, _stub_proactive):
@@ -295,31 +271,6 @@ async def test_seed_helper_leaves_the_schedule_cleanup_to_the_reconcile(monkeypa
     _stub_org_seed(monkeypatch)
     assert await provision_runner._seed_owner_workspace("org_x") == provision_runner.EXIT_OK
     _stub_proactive.assert_not_awaited()
-
-
-async def test_seed_helper_org_resolves_creator_then_calls_ensure_workspace_for_org(monkeypatch):
-    """Org owner_id (org_...): the runner has only owner_id (dispatch drops the
-    triggering user), so the bootstrap identity is the org CREATOR resolved from
-    Clerk (created_by), always an admin."""
-    ensure_org = AsyncMock()
-    monkeypatch.setattr("core.services.user_provision._ensure_workspace_for_org", ensure_org)
-    monkeypatch.setattr(
-        "core.services.clerk_admin.get_organization",
-        AsyncMock(return_value={"created_by": "user_creator"}),
-    )
-    assert await provision_runner._seed_owner_workspace("org_xyz") == provision_runner.EXIT_OK
-    ensure_org.assert_awaited_once_with(org_id="org_xyz", user_id="user_creator", is_admin=True)
-
-
-async def test_seed_helper_org_no_resolvable_creator_is_transient(monkeypatch):
-    """No Clerk creator (org lookup returns None / a Clerk blip): defer as
-    TRANSIENT so SFN retries rather than failing the provision on a blip. The
-    seed helper is never entered."""
-    monkeypatch.setattr("core.services.clerk_admin.get_organization", AsyncMock(return_value=None))
-    ensure_org = AsyncMock()
-    monkeypatch.setattr("core.services.user_provision._ensure_workspace_for_org", ensure_org)
-    assert await provision_runner._seed_owner_workspace("org_xyz") == provision_runner.EXIT_TRANSIENT
-    ensure_org.assert_not_awaited()
 
 
 async def test_seed_helper_deterministic_error_exits_10(monkeypatch):

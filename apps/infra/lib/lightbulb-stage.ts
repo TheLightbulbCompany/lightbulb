@@ -47,13 +47,6 @@ const VOICE_LINE_NUMBER_BY_ENV: Record<string, string> = { prod: "+14842079294" 
 // Set per env once the founder creates the group in Recall; empty = the bot joins anonymously.
 const RECALL_GOOGLE_LOGIN_GROUP_ID_BY_ENV: Record<string, string> = {};
 
-// The Lightbulb workspace per environment — the org every customer's shared
-// `lightbulb-<slug>` channel is shared with. Dev is the founder's dev org.
-const VENDOR_ORG_ID_BY_ENV: Record<string, string> = {
-  prod: "org_3H3viGAfq2SXc9dIdcatmGXg8Td",
-  dev: "org_3JISOofvGAOehDRhYwzZ33C50aw",
-};
-
 export interface LightbulbStageProps extends cdk.StageProps {
   environment: string;
   /**
@@ -270,7 +263,6 @@ export class LightbulbStage extends cdk.Stage {
       // configuration set on outbound sends (core/services/ses_email.py).
       agentMailConfigurationSet: agentMailOutbound?.configurationSetName,
       stripeConnectClientId: STRIPE_CONNECT_CLIENT_ID_BY_ENV[env],
-      vendorOrgId: VENDOR_ORG_ID_BY_ENV[env],
       livekitUrl: LIVEKIT_URL_BY_ENV[env],
       livekitAgentName: LIVEKIT_AGENT_NAME_BY_ENV[env],
       voiceLineNumber: VOICE_LINE_NUMBER_BY_ENV[env],

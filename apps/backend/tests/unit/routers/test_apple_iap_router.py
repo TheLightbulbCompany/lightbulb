@@ -83,9 +83,9 @@ def _app_with_auth(auth: AuthContext) -> FastAPI:
     return app
 
 
-PERSONAL = AuthContext(user_id="user_1", email="a@b.co")
+PERSONAL = AuthContext(user_id="user_1", email="a@b.co", human_session=True)
 ORG = "org_1"
-ORG_ADMIN = AuthContext(user_id="user_1", org_id=ORG, org_role="org:admin", email="a@b.co")
+ORG_ADMIN = AuthContext(user_id=ORG, email="a@b.co", human_session=True)
 
 
 @pytest.mark.asyncio
@@ -115,7 +115,7 @@ async def test_portal_resolves_the_workspace_owner_too():
     assert r.status_code == 404, r.text
 
 
-ORG_MEMBER = AuthContext(user_id="user_2", org_id="org_1", org_role="org:member", email="m@b.co")
+ORG_MEMBER = AuthContext(user_id="org_1", email="m@b.co", human_session=True)
 
 
 @pytest.mark.asyncio
@@ -168,13 +168,6 @@ async def test_intent_refuses_a_stripe_billed_workspace(admin_client, monkeypatc
     )
     r = await admin_client.post("/api/v1/billing/apple/purchase-intent")
     assert r.status_code == 409 and r.json()["detail"] == "stripe_managed"
-
-
-@pytest.mark.asyncio
-async def test_intent_and_link_refuse_a_member(member_client, monkeypatch):
-    monkeypatch.setattr(apple_router.settings, "APPLE_IAP_SELLING", True)
-    assert (await member_client.post("/api/v1/billing/apple/purchase-intent")).status_code == 403
-    assert (await member_client.post("/api/v1/billing/apple/link", json={"signed_transaction": "x"})).status_code == 403
 
 
 @pytest.mark.asyncio

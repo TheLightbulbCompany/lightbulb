@@ -27,15 +27,13 @@ def _auth(token: str) -> dict[str, str]:
 
 def _as_admin(app: FastAPI) -> None:
     app.dependency_overrides[get_current_user] = lambda: AuthContext(
-        user_id="user_admin",
-        email="admin@isol8.co",
+        user_id="user_admin", email="admin@isol8.co", human_session=True
     )
 
 
 def _as_non_admin(app: FastAPI) -> None:
     app.dependency_overrides[get_current_user] = lambda: AuthContext(
-        user_id="user_customer",
-        email="customer@example.com",
+        user_id="user_customer", email="customer@example.com", human_session=True
     )
 
 

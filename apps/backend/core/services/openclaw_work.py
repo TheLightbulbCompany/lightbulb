@@ -554,7 +554,7 @@ class OpenClawWorkWorker:
         from core.services import local_sessions
 
         # live_sessions_for_room withholds the summary itself for a room shared
-        # with another organization (#2644).
+        # with another tenant (#2644).
         sessions = await local_sessions.live_sessions_for_room(owner_id, meta["roomId"], room_members)
         body = await build_ingress_body(
             meta=meta,

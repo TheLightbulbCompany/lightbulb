@@ -68,7 +68,7 @@ it("a member who cannot edit sees why it did not save", async () => {
   cfg.save.mockRejectedValueOnce({ status: 403 });
   render(<Page />);
   fireEvent.click(screen.getByLabelText("Turn action items into follow-ups"));
-  await waitFor(() => expect(screen.getByText("Only an admin of this business can change the assistant. Ask them to make this change.")).toBeInTheDocument());
+  await waitFor(() => expect(screen.getByText("You can't change the assistant from this account.")).toBeInTheDocument());
   expect(screen.queryByText("Saved")).toBeNull();
   expect(screen.getByLabelText("Turn action items into follow-ups")).toBeEnabled();
 });

@@ -139,12 +139,12 @@ async def test_set_and_get_by_metronome_customer_id(dynamodb_table):
 async def test_create_trial_local_if_absent_writes_trial_row(dynamodb_table):
     from core.repositories import billing_repo
 
-    created = await billing_repo.create_trial_local_if_absent("org_trial_1", "org", trial_end=None)
+    created = await billing_repo.create_trial_local_if_absent("org_trial_1", trial_end=None)
 
     assert created is True
     item = await billing_repo.get_by_owner_id("org_trial_1")
     assert item["subscription_status"] == "trial_local"
-    assert item["owner_type"] == "org"
+    assert "owner_type" not in item
     assert "trial_end" not in item
     assert not any(k.startswith("stripe_") for k in item)
 
@@ -189,12 +189,12 @@ async def test_trial_armer_returns_first_ready_plus_thirty_days(dynamodb_table):
 async def test_create_trial_local_if_absent_is_noop_when_row_exists(dynamodb_table):
     from core.repositories import billing_repo
 
-    first_created = await billing_repo.create_trial_local_if_absent("user_trial_2", "personal")
+    first_created = await billing_repo.create_trial_local_if_absent("user_trial_2")
     first = await billing_repo.get_by_owner_id("user_trial_2")
     assert first_created is True
 
     # Second call must not overwrite the existing row.
-    second_created = await billing_repo.create_trial_local_if_absent("user_trial_2", "org")
+    second_created = await billing_repo.create_trial_local_if_absent("user_trial_2")
     second = await billing_repo.get_by_owner_id("user_trial_2")
     assert second == first
     assert second_created is False, "the no-op branch must return False"
@@ -212,7 +212,7 @@ async def test_create_trial_local_if_absent_noop_on_existing_active_row(dynamodb
     )
     before = await billing_repo.get_by_owner_id("user_trial_3")
 
-    created = await billing_repo.create_trial_local_if_absent("user_trial_3", "personal")
+    created = await billing_repo.create_trial_local_if_absent("user_trial_3")
     after = await billing_repo.get_by_owner_id("user_trial_3")
 
     assert after == before
@@ -244,7 +244,7 @@ async def test_set_stripe_customer_id_backfills_existing_trial_local_row(dynamod
     owner reach /billing/trial-checkout."""
     from core.repositories import billing_repo
 
-    created = await billing_repo.create_trial_local_if_absent("user_backfill", "personal")
+    created = await billing_repo.create_trial_local_if_absent("user_backfill")
     assert created is True
     before = await billing_repo.get_by_owner_id("user_backfill")
     assert "stripe_customer_id" not in before
@@ -279,7 +279,7 @@ async def test_set_stripe_customer_id_is_a_first_writer_wins_claim(dynamodb_tabl
 
     from core.repositories import billing_repo
 
-    await billing_repo.create_trial_local_if_absent("workspace_claim", "org")
+    await billing_repo.create_trial_local_if_absent("workspace_claim")
     await billing_repo.set_stripe_customer_id("workspace_claim", stripe_customer_id="cus_winner")
 
     with pytest.raises(ClientError):
@@ -298,7 +298,7 @@ async def test_set_stripe_customer_id_is_a_first_writer_wins_claim(dynamodb_tabl
 async def test_try_claim_checkout_slot_first_claim_wins(dynamodb_table):
     from core.repositories import billing_repo
 
-    await billing_repo.create_if_not_exists(owner_id="slot_owner", stripe_customer_id="cus_s", owner_type="personal")
+    await billing_repo.create_if_not_exists(owner_id="slot_owner", stripe_customer_id="cus_s")
     assert await billing_repo.try_claim_checkout_slot("slot_owner")  # returns a claim token
 
 
@@ -306,7 +306,7 @@ async def test_try_claim_checkout_slot_first_claim_wins(dynamodb_table):
 async def test_try_claim_checkout_slot_blocks_within_ttl(dynamodb_table):
     from core.repositories import billing_repo
 
-    await billing_repo.create_if_not_exists(owner_id="slot_owner", stripe_customer_id="cus_s", owner_type="personal")
+    await billing_repo.create_if_not_exists(owner_id="slot_owner", stripe_customer_id="cus_s")
     assert await billing_repo.try_claim_checkout_slot("slot_owner")
     assert await billing_repo.try_claim_checkout_slot("slot_owner") is None
 
@@ -319,7 +319,7 @@ async def test_try_claim_checkout_slot_self_heals_after_ttl(dynamodb_table, monk
 
     from core.repositories import billing_repo
 
-    await billing_repo.create_if_not_exists(owner_id="slot_owner", stripe_customer_id="cus_s", owner_type="personal")
+    await billing_repo.create_if_not_exists(owner_id="slot_owner", stripe_customer_id="cus_s")
     assert await billing_repo.try_claim_checkout_slot("slot_owner")
     real_now = time.time()
     monkeypatch.setattr(billing_repo, "time", SimpleNamespace(time=lambda: real_now + 241))
@@ -330,7 +330,7 @@ async def test_try_claim_checkout_slot_self_heals_after_ttl(dynamodb_table, monk
 async def test_release_checkout_slot_with_token_allows_immediate_reclaim(dynamodb_table):
     from core.repositories import billing_repo
 
-    await billing_repo.create_if_not_exists(owner_id="slot_owner", stripe_customer_id="cus_s", owner_type="personal")
+    await billing_repo.create_if_not_exists(owner_id="slot_owner", stripe_customer_id="cus_s")
     token = await billing_repo.try_claim_checkout_slot("slot_owner")
     assert token
     await billing_repo.release_checkout_slot("slot_owner", token=token)
@@ -343,7 +343,7 @@ async def test_release_checkout_slot_wrong_token_is_noop(dynamodb_table):
     clear a newer holder's claim (this is what double-charged)."""
     from core.repositories import billing_repo
 
-    await billing_repo.create_if_not_exists(owner_id="slot_owner", stripe_customer_id="cus_s", owner_type="personal")
+    await billing_repo.create_if_not_exists(owner_id="slot_owner", stripe_customer_id="cus_s")
     token = await billing_repo.try_claim_checkout_slot("slot_owner")
     assert token
     # A different request's failure-path release, carrying a stale token.
@@ -532,7 +532,7 @@ async def test_free_tier_row_is_not_clobbered_when_no_provider_has_state(dynamod
     provider, so the derivation must fall back to it rather than blank it."""
     from core.repositories import billing_repo
 
-    await billing_repo.create_trial_local_if_absent("user_2", "personal")
+    await billing_repo.create_trial_local_if_absent("user_2")
     row = await billing_repo.get_by_owner_id("user_2")
     assert row["subscription_status"] == "trial_local"
     assert billing_repo._effective_status(row) == ("trial_local", None)
@@ -769,7 +769,7 @@ async def test_free_tier_names_no_management_source(dynamodb_table):
     so pointing the manage button at either portal is wrong."""
     from core.repositories import billing_repo
 
-    await billing_repo.create_trial_local_if_absent("user_free", "personal")
+    await billing_repo.create_trial_local_if_absent("user_free")
 
     row = await billing_repo.get_by_owner_id("user_free")
     assert row["subscription_status"] == "trial_local"
@@ -785,7 +785,7 @@ async def test_a_lapsed_apple_purchase_does_not_hand_back_the_free_tier(dynamodb
     teardown_if_unentitled treating a lapsed subscriber as still entitled."""
     from core.repositories import billing_repo
 
-    await billing_repo.create_trial_local_if_absent("user_lapsed", "personal")
+    await billing_repo.create_trial_local_if_absent("user_lapsed")
     await billing_repo.set_apple_subscription(
         "user_lapsed", original_transaction_id="2000000000000013", status="active", expires_at=None
     )
@@ -1022,7 +1022,7 @@ async def test_a_free_tier_row_does_not_gain_a_phantom_stripe_trial(dynamodb_tab
     from core.repositories import billing_repo
     from core.services.entitlement_teardown import still_entitled
 
-    await billing_repo.create_trial_local_if_absent("user_conv", "personal")
+    await billing_repo.create_trial_local_if_absent("user_conv")
     await billing_repo.set_apple_subscription(
         "user_conv", original_transaction_id="2000000000000050", status="active", expires_at=None
     )
@@ -1048,7 +1048,7 @@ async def test_a_free_tier_row_does_not_gain_a_phantom_stripe_trial(dynamodb_tab
 async def test_mark_trial_first_agent_response_wins_once_on_a_trial_row(dynamodb_table):
     from core.repositories import billing_repo
 
-    await billing_repo.create_trial_local_if_absent("user_tfr", "personal")
+    await billing_repo.create_trial_local_if_absent("user_tfr")
 
     assert await billing_repo.mark_trial_first_agent_response("user_tfr") is True
     row = await billing_repo.get_by_owner_id("user_tfr")
@@ -1074,7 +1074,7 @@ async def test_mark_trial_first_agent_response_refuses_a_paid_row(dynamodb_table
     began life as trial_local."""
     from core.repositories import billing_repo
 
-    await billing_repo.create_trial_local_if_absent("user_paid", "personal")
+    await billing_repo.create_trial_local_if_absent("user_paid")
     await billing_repo.set_subscription(owner_id="user_paid", subscription_id="sub_x", status="active")
 
     assert await billing_repo.mark_trial_first_agent_response("user_paid") is False

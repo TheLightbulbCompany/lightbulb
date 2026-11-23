@@ -43,7 +43,7 @@ async def test_input_uses_clerk_workspace_and_skips_the_provision_gate(async_cli
         response = await async_client_org_admin.post("/api/v1/browser/input", json={"owner_id": "org_other"})
     assert response.status_code == 200
     assert response.headers["cache-control"] == "no-store"
-    record.assert_awaited_once_with("org_test_456")
+    record.assert_awaited_once_with("user_test_123")
     gate.assert_not_called()
 
 
@@ -62,7 +62,7 @@ async def test_viewing_uses_clerk_workspace_and_the_start_gate(async_client_org_
     ):
         response = await async_client_org_admin.post("/api/v1/browser/viewing", json={"owner_id": "org_other"})
     assert response.status_code == 200 and response.headers["cache-control"] == "no-store"
-    watch.assert_awaited_once_with("org_test_456", "user_test_123", frames=False)
+    watch.assert_awaited_once_with("user_test_123", "user_test_123", frames=False)
     gate.assert_awaited_once()
 
 
@@ -73,7 +73,7 @@ async def test_viewing_without_the_live_view_asks_for_frames(async_client_org_ad
         patch("routers.container.browser_control.watch", return_value=INACTIVE) as watch,
     ):
         await async_client_org_admin.post("/api/v1/browser/viewing", json={"frames": True})
-    watch.assert_awaited_once_with("org_test_456", "user_test_123", frames=True)
+    watch.assert_awaited_once_with("user_test_123", "user_test_123", frames=True)
 
 
 @pytest.mark.asyncio
@@ -94,7 +94,7 @@ async def test_frame_input_uses_clerk_workspace_and_is_bounded(async_client_org_
         ]
     assert ok.status_code == 200
     send.assert_awaited_once_with(
-        "org_test_456", {"runId": "run-1", "type": "click", "x": 10.0, "y": 20.0, "button": "left", "deltaY": 0.0}
+        "user_test_123", {"runId": "run-1", "type": "click", "x": 10.0, "y": 20.0, "button": "left", "deltaY": 0.0}
     )
     assert [r.status_code for r in bad] == [422, 422, 422, 422]
 

@@ -116,22 +116,6 @@ class TestComputeStatusLifecycleScenarios:
         assert contract["chat_available"] is False
 
     @pytest.mark.asyncio
-    async def test_blocked_org_no_billing_row(self):
-        contract = await _compute("org_xyz", container=None, account=None)
-        assert contract["lifecycle"] == "blocked"
-        assert contract["chat_available"] is False
-
-    @pytest.mark.asyncio
-    async def test_provider_selection_required_org_active_no_provider(self):
-        """Orgs have NO free tier — an org with an active workspace
-        subscription but no provider_choice sits here, distinct from
-        personal's trial_local path."""
-        account = _account(subscription_status="active", provider_choice=None)
-        contract = await _compute("org_xyz", container=None, account=account)
-        assert contract["lifecycle"] == "provider_selection_required"
-        assert contract["chat_available"] is False
-
-    @pytest.mark.asyncio
     async def test_no_provider_selection_required_for_trial_local_personal(self):
         """trial_local is personal-only and never needs a provider choice —
         the free tier's provider is a config-path mode, not a stored

@@ -10,8 +10,8 @@ from core.services import messaging, session_chat
 from core.services.messaging import ApiProblem
 
 OWNER = "org_o"
-ALICE = AuthContext(user_id="user_alice", org_id=OWNER)
-BOB = AuthContext(user_id="user_bob", org_id=OWNER)
+ALICE = AuthContext(user_id=OWNER, human_session=True)
+BOB = AuthContext(user_id=OWNER, human_session=True)
 SID = "11111111-1111-4111-8111-111111111111"
 CEO_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 ENG_ID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
@@ -92,8 +92,8 @@ def test_a_session_room_projects_its_session_and_nothing_else_does():
 @pytest.mark.asyncio
 async def test_people_in_a_session_chat_follow_the_session_never_a_hand(monkeypatch):
     with pytest.raises(ApiProblem):
-        messaging._deny_vendor_human_change(META, "human")
-    messaging._deny_vendor_human_change(META, "agent")  # the owner may add agents
+        messaging._deny_managed_human_change(META, "human")
+    messaging._deny_managed_human_change(META, "agent")  # the owner may add agents
     monkeypatch.setattr(messaging, "require_room_member", AsyncMock(return_value=(META, {"role": "owner"})))
     for archived in (True, False):
         with pytest.raises(ApiProblem) as refused:
@@ -124,23 +124,6 @@ async def test_an_agents_unbound_post_stays_in_the_session_chat(monkeypatch):
         await messaging.create_agent_message(OWNER, request)
     assert refused.value.error.code == "MEMBER_NOT_FOUND"  # judged in the session room itself
     output_room.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_silence_removes_every_human_but_the_kept_one_with_rotation(monkeypatch):
-    members = [
-        {"kind": "human", "id": ALICE.user_id},
-        {"kind": "human", "id": BOB.user_id},
-        {"kind": "agent", "id": CEO_ID},
-    ]
-    monkeypatch.setattr(session_chat.messaging_repo, "list_members", AsyncMock(return_value=members))
-    monkeypatch.setattr(session_chat.messaging_repo, "get_room", AsyncMock(return_value=META))
-    remove = AsyncMock(return_value=META)
-    monkeypatch.setattr(messaging, "_remove_member_with_notices", remove)
-    assert await session_chat.silence(OWNER, SID, keep=ALICE.user_id) == 1
-    remove.assert_awaited_once_with(META, "human", BOB.user_id)
-    remove.reset_mock()
-    assert await session_chat.silence(OWNER, SID, keep=None) == 2
 
 
 @pytest.mark.asyncio
@@ -222,22 +205,6 @@ async def test_a_lifecycle_write_that_loses_the_revision_race_is_tried_again(env
 
 
 @pytest.mark.asyncio
-async def test_silence_counts_a_member_someone_else_already_removed_as_done(monkeypatch):
-    """A pause's silence can race the door's own cleanup of the same seat: gone is the goal, not a 500."""
-    from botocore.exceptions import ClientError
-
-    lost = ClientError({"Error": {"Code": "TransactionCanceledException"}}, "TransactWriteItems")
-    members = [{"kind": "human", "id": ALICE.user_id}, {"kind": "human", "id": BOB.user_id}]
-    monkeypatch.setattr(session_chat.messaging_repo, "list_members", AsyncMock(return_value=members))
-    monkeypatch.setattr(session_chat.messaging_repo, "get_room", AsyncMock(return_value=META))
-    monkeypatch.setattr(session_chat.messaging_repo, "get_member", AsyncMock(return_value=None))
-    remove = AsyncMock(side_effect=lost)
-    monkeypatch.setattr(messaging, "_remove_member_with_notices", remove)
-    assert await session_chat.silence(OWNER, SID, keep=ALICE.user_id) == 0
-    remove.assert_awaited_once()
-
-
-@pytest.mark.asyncio
 async def test_archiving_the_chat_closes_its_huddle_and_reopening_does_not(env):
     env["get_room"].return_value = META
     env["session"].return_value = {**ROW, "endedAt": 10}
@@ -262,21 +229,3 @@ async def test_a_late_end_handler_applies_what_the_session_row_says_now(env):
     await session_chat.follow_session(OWNER, SID)
     writes = [c.args[1] for c in env["patch_room_meta"].await_args_list]
     assert writes[0]["archivedAt"] and writes[1] == {"archivedAt": None, "archivedBy": None}
-
-
-@pytest.mark.asyncio
-async def test_a_removed_owners_chats_are_silenced_after_their_stream_is_off(monkeypatch):
-    """The door's check reads the stream: silencing first would leave a gap a late seat slips through."""
-    order: list[str] = []
-    entry = {"meta": META}
-    monkeypatch.setattr(messaging.messaging_repo, "list_rooms_for_member", AsyncMock(return_value=[entry]))
-    monkeypatch.setattr(messaging.messaging_repo, "get_member", AsyncMock(return_value={"id": ALICE.user_id}))
-    monkeypatch.setattr(messaging.messaging_repo, "get_room", AsyncMock(return_value=META))
-    monkeypatch.setattr(messaging, "_remove_member_with_notices", AsyncMock())
-    monkeypatch.setattr(
-        messaging.messaging_repo, "deactivate_user_stream", AsyncMock(side_effect=lambda *a: order.append("stream off"))
-    )
-    monkeypatch.setattr(session_chat, "silence", AsyncMock(side_effect=lambda *a, **k: order.append("silence")))
-    await messaging.revoke_human_membership(OWNER, ALICE.user_id)
-    assert order == ["stream off", "silence"]
-    session_chat.silence.assert_awaited_once_with(OWNER, SID, keep=None)

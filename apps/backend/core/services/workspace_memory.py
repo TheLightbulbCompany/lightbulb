@@ -232,28 +232,14 @@ def _member_namespaces(client, owner_id: str, memory_id: str) -> list[str]:
     return sorted(found)
 
 
-async def _still_gone(label: str, check: Callable[[], Awaitable[bool]] | None) -> bool:
-    """False once the member has rejoined; a failing check also says False, so the tail keeps data."""
-    if check is None:
-        return True
-    try:
-        return await check()
-    except Exception:  # noqa: BLE001 — records never come back; fail safe
-        logger.warning("memory wipe: rejoin check failed for %s; tail skipped", label, exc_info=True)
-        return False
-
-
 async def _tail(
     label: str,
     memory_id: str,
     namespaces: list[str],
     actors: list[str],
     resweep_after_s: float,
-    still_gone: Callable[[], Awaitable[bool]] | None = None,
 ) -> None:
     client = _client()
-    if not await _still_gone(label, still_gone):
-        return
     for actor in actors:
         try:
             events = await run_in_thread(_delete_events, client, actor, memory_id)
@@ -261,8 +247,6 @@ async def _tail(
         except Exception:  # noqa: BLE001 — a background tail; bounded by the event expiry
             logger.warning("memory wipe: event deletion failed for actor=%s", actor, exc_info=True)
     await asyncio.sleep(resweep_after_s)
-    if not await _still_gone(label, still_gone):
-        return
     try:
         late = await run_in_thread(_delete_records, client, label, memory_id, namespaces)
         if late:
@@ -278,14 +262,13 @@ async def _wipe(
     namespaces: list[str],
     actors: list[str],
     resweep_after_s: float,
-    still_gone: Callable[[], Awaitable[bool]] | None = None,
 ) -> None:
     records = await run_in_thread(_delete_records, client, label, memory_id, namespaces)
     logger.info("memory wipe: deleted %d records for %s", records, label)
     # ponytail: in-process tail, lost if this backend task stops within ~RESWEEP_AFTER_S; events
     # then just expire, and a late record needs a retried wipe. Durable follow-up (SFN wait) if a
     # wipe audit ever demands it.
-    task = asyncio.create_task(_tail(label, memory_id, namespaces, actors, resweep_after_s, still_gone))
+    task = asyncio.create_task(_tail(label, memory_id, namespaces, actors, resweep_after_s))
     _tails.add(task)
     task.add_done_callback(_tails.discard)
 
@@ -368,50 +351,6 @@ async def _forget_keys(user_id: str) -> None:
 
     for row in await messaging_repo._query(f"NETKEY#{user_id}"):
         await run_in_thread(messaging_repo._table().delete_item, Key={"pk": row["pk"], "sk": row["sk"]})
-
-
-async def _forget_authored(owner_id: str, user_id: str, memory_api) -> None:
-    """Tombstone, in the network log, every entry written from this person's signed-in computers,
-    and every entry the workspace wrote on their behalf (their own notes from DMs and the member
-    route). The key registry stays: it is the person's, for their other workspaces."""
-    for key in await _computer_keys(user_id):
-        await memory_api.forget_author(owner_id, key)
-    await memory_api.forward_on_behalf_of(owner_id, user_id)  # never raises: a parked member is owed it
-
-
-async def delete_member_memory(
-    owner_id: str,
-    user_id: str,
-    *,
-    resweep_after_s: float = RESWEEP_AFTER_S,
-    still_gone: Callable[[], Awaitable[bool]] | None = None,
-) -> None:
-    """A member left the workspace: delete their private scope at once (no grace period), the
-    same way as the owner wipe, and what they uploaded or were drafted in THIS workspace. Team
-    memory is the workspace's and stays; so do their episodes and computer keys, which are theirs,
-    not this workspace's (``delete_person_memory`` takes those with the account). No-op for an id
-    that can never have a private scope. The tail (events, late re-sweep) runs only while
-    ``still_gone`` says so: a re-add must keep its new memories."""
-    owner_namespace(owner_id)
-    if not _MEMBER_ID.fullmatch(user_id or ""):
-        return
-    from core.services import evaluator, memory_api, session_store  # lazy: import cycles
-
-    memory_id = settings.AGENTCORE_MEMORY_ID
-    actor = f"{owner_id}:{user_id}"
-    steps = [
-        lambda: session_store.delete_sessions(user_id, workspace_id=owner_id),
-        lambda: evaluator.delete_drafts(user_id, workspace_id=owner_id),
-        lambda: _forget_authored(owner_id, user_id, memory_api),
-    ]
-    if memory_id:
-        steps.insert(
-            0,
-            lambda: _wipe(
-                _client(), f"actor={actor}", memory_id, _member_scopes(actor), [actor], resweep_after_s, still_gone
-            ),
-        )
-    await _run_all(f"member wipe for {actor}", steps)
 
 
 async def delete_person_memory(user_id: str, *, resweep_after_s: float = RESWEEP_AFTER_S) -> None:

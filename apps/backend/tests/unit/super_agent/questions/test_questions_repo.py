@@ -45,10 +45,10 @@ async def test_open_question_adds_answerers_to_audience(table):
 
     await repo.open_question(WS, _q())
     task = await tasks_repo.get_task(WS, TASK)
-    assert task["audience"]["userIds"] == ["user_sam", "user_ada"]  # Sam kept, Ada added once
+    assert task["audience"]["userIds"] == [WS, "user_sam", "user_ada"]  # the person kept, the answerers added once
     await repo.open_question(WS, _q())  # a retried open adds nobody twice
     await repo.open_question(WS, _q("q-2", answerers=["user_ada", "user_bo"], baseAnswerers=[]))
-    assert (await tasks_repo.get_task(WS, TASK))["audience"]["userIds"] == ["user_sam", "user_ada", "user_bo"]
+    assert (await tasks_repo.get_task(WS, TASK))["audience"]["userIds"] == [WS, "user_sam", "user_ada", "user_bo"]
 
 
 async def test_open_question_on_a_missing_task_fails(table):

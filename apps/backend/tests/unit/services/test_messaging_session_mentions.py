@@ -91,7 +91,7 @@ def _wire(monkeypatch, *, members=None, foreign=False, kind="channel"):
 
 async def _send(text="look at this", *, sessions=None, mentions=None):
     return await messaging.create_human_message(
-        AuthContext(user_id=USER, org_id=OWNER),
+        AuthContext(user_id=OWNER, human_session=True),
         ROOM,
         messaging.CreateMessageRequest(
             client_message_id=uuid.uuid4(),

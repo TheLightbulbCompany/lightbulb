@@ -45,7 +45,7 @@ class TestDebugEnvironmentAllowlist:
             ("post", "/api/v1/debug/provision", None),
             # Inline call-sites, one per endpoint metric label
             ("delete", "/api/v1/debug/user-data", None),
-            ("get", "/api/v1/debug/ddb-rows", {"owner_id": "org_test_456"}),
+            ("get", "/api/v1/debug/ddb-rows", {"owner_id": "user_test_123"}),
         ],
     )
     async def test_every_surface_refuses_staging(self, async_client, method, path, params):
@@ -157,11 +157,11 @@ class TestDeleteUserData:
         # ``delete_profiles=True`` is this endpoint's answer to the EFS ``rm -rf`` it replaces:
         # the owner's S3 profile prefix IS their workspace content, and the e2e harness's
         # empty-slate contract breaks silently if the next provision restores it.
-        runtime_teardown.assert_awaited_once_with("org_test_456", delete_profiles=True, report={})
+        runtime_teardown.assert_awaited_once_with("user_test_123", delete_profiles=True, report={})
         mock_user_repo.delete.assert_called_once_with("user_test_123")
         # The WORKSPACE row (org-keyed) goes; the caller's identity row stays.
-        mock_paperclip_repo_cls.return_value.delete.assert_called_once_with("org_test_456")
-        mock_paperclip_repo_cls.return_value.delete_pending_brief.assert_called_once_with("org_test_456")
+        mock_paperclip_repo_cls.return_value.delete.assert_called_once_with("user_test_123")
+        mock_paperclip_repo_cls.return_value.delete_pending_brief.assert_called_once_with("user_test_123")
 
     @pytest.mark.asyncio
     @patch("routers.debug.WorkspaceRepo")
@@ -213,7 +213,7 @@ class TestDeleteUserData:
         assert res.status_code == 200
         assert "integrations" in res.json()["deleted"]["ddb"]
         # SM delete only for the real provider, never for the `#`-namespaced rows.
-        mock_secret_store.delete.assert_awaited_once_with("org_test_456", "github")
+        mock_secret_store.delete.assert_awaited_once_with("user_test_123", "github")
         # Every row's DDB record is still removed.
         assert mock_integrations_repo.delete.await_count == 3
 
@@ -224,57 +224,6 @@ class TestDeleteUserData:
         mock_settings.ENVIRONMENT = "prod"
         res = await async_client.delete("/api/v1/debug/user-data")
         assert res.status_code == 403
-
-    @pytest.mark.asyncio
-    @patch("routers.debug.WorkspaceRepo")
-    @patch("routers.debug.container_repo")
-    @patch("routers.debug.billing_repo")
-    @patch("routers.debug.usage_repo")
-    @patch("routers.debug.user_repo")
-    @patch("routers.debug.connection_service")
-    async def test_org_context_uses_user_id_for_user_scoped_tables(
-        self,
-        mock_conn_svc,
-        mock_user_repo,
-        mock_usage_repo,
-        mock_billing_repo,
-        mock_container_repo,
-        mock_paperclip_repo_cls,
-        app,
-        mock_org_admin_user,
-    ):
-        """In an org context, user_repo + connection_service must use the
-        Clerk user_id, while owner-scoped tables (container, billing, etc.)
-        use the org_id from resolve_owner_id."""
-        from httpx import AsyncClient, ASGITransport
-        from core.auth import get_current_user
-
-        mock_container_repo.get_by_owner_id = AsyncMock(return_value=None)
-        mock_container_repo.delete = AsyncMock()
-        mock_billing_repo.delete = AsyncMock()
-        mock_usage_repo.delete_all_for_owner = AsyncMock(return_value=0)
-        mock_user_repo.delete = AsyncMock()
-        mock_conn_svc.delete_all_for_user = AsyncMock(return_value=0)
-        mock_paperclip_repo_cls.return_value.delete = AsyncMock()
-        mock_paperclip_repo_cls.return_value.delete_pending_brief = AsyncMock()
-
-        app.dependency_overrides[get_current_user] = mock_org_admin_user
-        try:
-            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-                res = await client.delete("/api/v1/debug/user-data")
-        finally:
-            app.dependency_overrides.clear()
-
-        assert res.status_code == 200
-        # Owner-scoped: org_id (resolve_owner_id returns org when present)
-        mock_container_repo.delete.assert_called_once_with("org_test_456")
-        mock_billing_repo.delete.assert_called_once_with("org_test_456")
-        # User-scoped: Clerk user_id, NOT org_id
-        mock_user_repo.delete.assert_called_once_with("user_test_123")
-        mock_conn_svc.delete_all_for_user.assert_called_once_with("user_test_123")
-        # paperclip-companies: the WORKSPACE row is owner-scoped (keyed by
-        # org_id); the caller's user-keyed identity row is deliberately kept.
-        mock_paperclip_repo_cls.return_value.delete.assert_called_once_with("org_test_456")
 
     @pytest.mark.asyncio
     @patch("routers.debug.WorkspaceRepo")
@@ -363,26 +312,9 @@ class TestDeleteUserData:
         assert res.status_code == 200
         # Critical: teardown WAS attempted despite no container row.
         # Critical: teardown WAS attempted despite no container row, and with delete_profiles --
-        # this, ``account_wipe`` and ``workspace_wipe`` are the only three terminal callers
-        # that pass it (M6-R42).
-        runtime_teardown.assert_awaited_once_with("org_test_456", delete_profiles=True, report={})
+        # this and ``account_wipe`` are the only two terminal callers that pass it (M6-R42).
+        runtime_teardown.assert_awaited_once_with("user_test_123", delete_profiles=True, report={})
         assert res.json()["deleted"]["runtime"] is True
-
-    @pytest.mark.asyncio
-    async def test_org_member_non_admin_is_rejected(self, app, mock_org_member_user):
-        """Non-admin org members cannot wipe shared org-scoped state via this
-        endpoint, even in dev/staging."""
-        from httpx import AsyncClient, ASGITransport
-        from core.auth import get_current_user
-
-        app.dependency_overrides[get_current_user] = mock_org_member_user
-        try:
-            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-                res = await client.delete("/api/v1/debug/user-data")
-        finally:
-            app.dependency_overrides.clear()
-
-        assert res.status_code == 403
 
 
 class TestDdbRows:
@@ -413,7 +345,7 @@ class TestDdbRows:
 
         res = await async_client.get(
             "/api/v1/debug/ddb-rows",
-            params={"owner_id": "org_test_456"},
+            params={"owner_id": "user_test_123"},
         )
         assert res.status_code == 200
         body = res.json()
@@ -445,15 +377,15 @@ class TestDdbRows:
         async_client,
     ):
         """Single-row repos return 1 when present; multi-row repos return their counts."""
-        mock_user.get_by_user_id = AsyncMock(return_value={"user_id": "org_test_456"})
-        mock_container.get_by_owner_id = AsyncMock(return_value={"owner_id": "org_test_456"})
-        mock_billing.get_by_owner_id = AsyncMock(return_value={"owner_id": "org_test_456"})
+        mock_user.get_by_user_id = AsyncMock(return_value={"user_id": "user_test_123"})
+        mock_container.get_by_owner_id = AsyncMock(return_value={"owner_id": "user_test_123"})
+        mock_billing.get_by_owner_id = AsyncMock(return_value={"owner_id": "user_test_123"})
         mock_usage.count_for_owner = AsyncMock(return_value=4)
         mock_conn.count_for_user = AsyncMock(return_value=5)
 
         res = await async_client.get(
             "/api/v1/debug/ddb-rows",
-            params={"owner_id": "org_test_456"},
+            params={"owner_id": "user_test_123"},
         )
         assert res.status_code == 200
         body = res.json()["tables"]
@@ -476,53 +408,6 @@ class TestDdbRows:
         assert res.status_code == 403
 
     @pytest.mark.asyncio
-    @patch("routers.debug.connection_service")
-    @patch("routers.debug.usage_repo")
-    @patch("routers.debug.billing_repo")
-    @patch("routers.debug.user_repo")
-    @patch("routers.debug.container_repo")
-    async def test_ddb_rows_org_uses_user_id_for_user_scoped_lookups(
-        self,
-        mock_container,
-        mock_user,
-        mock_billing,
-        mock_usage,
-        mock_conn,
-        app,
-        mock_org_admin_user,
-    ):
-        """When caller passes both owner_id (org) and user_id (member),
-        user-scoped lookups (users, ws-connections) must use the user_id;
-        owner-scoped lookups must use the owner_id."""
-        from httpx import AsyncClient, ASGITransport
-        from core.auth import get_current_user
-
-        mock_user.get_by_user_id = AsyncMock(return_value=None)
-        mock_container.get_by_owner_id = AsyncMock(return_value=None)
-        mock_billing.get_by_owner_id = AsyncMock(return_value=None)
-        mock_usage.count_for_owner = AsyncMock(return_value=0)
-        mock_conn.count_for_user = AsyncMock(return_value=0)
-
-        app.dependency_overrides[get_current_user] = mock_org_admin_user
-        try:
-            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-                res = await client.get(
-                    "/api/v1/debug/ddb-rows",
-                    params={"owner_id": "org_test_456", "user_id": "user_test_123"},
-                )
-        finally:
-            app.dependency_overrides.clear()
-
-        assert res.status_code == 200
-
-        # Owner-scoped: org_id
-        mock_container.get_by_owner_id.assert_called_once_with("org_test_456")
-        mock_billing.get_by_owner_id.assert_called_once_with("org_test_456")
-        # User-scoped: explicit user_id, NOT owner_id
-        mock_user.get_by_user_id.assert_called_once_with("user_test_123")
-        mock_conn.count_for_user.assert_called_once_with("user_test_123")
-
-    @pytest.mark.asyncio
     async def test_ddb_rows_rejects_other_owner_id(self, async_client):
         """Caller cannot probe another owner's row counts."""
         res = await async_client.get(
@@ -540,26 +425,6 @@ class TestDdbRows:
             res = await async_client.get("/api/v1/debug/ddb-rows", params={"owner_id": "user_test_123"})
         assert res.status_code == 403
 
-    @pytest.mark.asyncio
-    async def test_ddb_rows_rejects_other_user_id_in_org_context(self, app, mock_org_admin_user):
-        """Org admin cannot probe a different member's user-scoped rows."""
-        from httpx import AsyncClient, ASGITransport
-        from core.auth import get_current_user
-
-        app.dependency_overrides[get_current_user] = mock_org_admin_user
-        try:
-            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-                res = await client.get(
-                    "/api/v1/debug/ddb-rows",
-                    params={
-                        "owner_id": "org_test_456",
-                        "user_id": "user_someone_else",
-                    },
-                )
-        finally:
-            app.dependency_overrides.clear()
-        assert res.status_code == 403
-
 
 class TestAgentCoreDebugRoutes:
     @pytest.fixture(autouse=True)
@@ -572,35 +437,13 @@ class TestAgentCoreDebugRoutes:
     @staticmethod
     def _agentcore_row(**overrides):
         row = {
-            "owner_id": "org_test_456",
+            "owner_id": "user_test_123",
             "status": "running",
             "runtime_host": "agentcore",
             "agentcore_runtime_arn": "arn:aws:bedrock-agentcore:us-east-1:1:runtime/x",
         }
         row.update(overrides)
         return row
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("method", ["post", "patch"])
-    async def test_org_member_cannot_provision_or_rewrite_the_workspace(self, app, mock_org_member_user, method):
-        from httpx import ASGITransport, AsyncClient
-
-        from core.auth import get_current_user
-
-        dispatch, write = AsyncMock(), AsyncMock()
-        app.dependency_overrides[get_current_user] = mock_org_member_user
-        try:
-            with (
-                patch("routers.debug.dispatch_provision", dispatch),
-                patch("core.services.hermes_provisioning.write_profiles", write),
-            ):
-                async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-                    res = await getattr(client, method)("/api/v1/debug/provision")
-        finally:
-            app.dependency_overrides.clear()
-        assert res.status_code == 403
-        dispatch.assert_not_awaited()
-        write.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_post_provision_stands_down_for_a_live_row(self, async_client):
@@ -630,7 +473,7 @@ class TestAgentCoreDebugRoutes:
             res = await async_client.post("/api/v1/debug/provision")
         assert res.status_code == 200
         assert res.json()["status"] == "provisioning"
-        dispatch.assert_awaited_once_with("org_test_456")
+        dispatch.assert_awaited_once_with("user_test_123")
 
     @pytest.mark.asyncio
     async def test_delete_provision_tears_the_runtime_down(self, async_client):
@@ -642,7 +485,7 @@ class TestAgentCoreDebugRoutes:
         # M6-R42: the routine reprovision door NEVER passes delete_profiles -- destroying a
         # workspace's memory/skills/SOUL.md is /debug/user-data's job, and this route is what a
         # dev hits repeatedly.
-        teardown.assert_awaited_once_with("org_test_456")
+        teardown.assert_awaited_once_with("user_test_123")
 
     @pytest.mark.asyncio
     async def test_delete_provision_surfaces_a_teardown_failure_as_a_503(self, async_client):
@@ -671,7 +514,7 @@ class TestAgentCoreDebugRoutes:
         assert res.status_code == 200, res.text
         body = res.json()
         assert body["status"] == "profiles_rewritten"
-        write_profiles.assert_awaited_once_with("org_test_456")
+        write_profiles.assert_awaited_once_with("user_test_123")
         stop_session.assert_called_once()
 
     @pytest.mark.asyncio

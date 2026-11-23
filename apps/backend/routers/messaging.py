@@ -27,7 +27,6 @@ from core.repositories import container_repo, messaging_repo, user_repo
 from core.services import chat_gate
 from core.services import messaging as service
 from core.services import (
-    clerk_admin,
     local_sessions,
     openclaw_work,
 )
@@ -71,32 +70,22 @@ async def local_session_invocation(request: Request) -> local_session_grants.Age
     )
 
 
-async def workspace_people(owner_id: str) -> frozenset[str]:
-    """Everyone in the workspace (Clerk). Empty when Clerk cannot say: nothing is workspace-wide then."""
-    try:
-        return frozenset(m["user_id"] for m in await clerk_admin.list_organization_members(owner_id, strict=True))
-    except Exception:  # noqa: BLE001 -- fails closed
-        logger.warning("workspace member list unavailable owner=%s", owner_id, exc_info=True)
-        return frozenset()
-
-
-def workspace_wide(room, people: frozenset[str]) -> bool:
-    """A channel every person in the workspace is in: what any teammate could already read. Every room
-    is private to its members (no channel can be browsed or joined), so this is the only public one."""
-    seated = {m.id for m in room.members if m.kind == "human"}
-    return room.kind == "channel" and bool(people) and people <= seated
+def workspace_wide(room, owner_id: str) -> bool:
+    """A channel the workspace's person is in. Every room is private to its members (no channel can be
+    browsed or joined), so this is the only public one."""
+    return room.kind == "channel" and any(m.id == owner_id and m.kind == "human" for m in room.members)
 
 
 async def rooms_for(auth: AuthContext, query: str = "", limit: int = 30, workspace_only: bool = False) -> dict:
     """`workspace_only`: a Google Meet's read as its inviter (owner ruling 2026-10-13): workspace-wide
     channels only. Filtered before the limit and the total, so neither says anything about the rest."""
     rooms = (await service.list_rooms(auth)).rooms
-    people = await workspace_people(auth.org_id) if workspace_only else frozenset()
+    owner_id = resolve_owner_id(auth)
     needle = query.casefold().strip()
     matches = [
         room
         for room in rooms
-        if (not workspace_only or workspace_wide(room, people))
+        if (not workspace_only or workspace_wide(room, owner_id))
         and (
             not needle
             or needle in (room.name or "").casefold()
@@ -160,13 +149,15 @@ async def agent_reader(
     person = auth.requester_id or auth.reader_id
     if not person or not auth.room_id:
         raise ApiProblem("ROOM_FORBIDDEN", "No signed-in person asked for this, so no rooms can be read for it.")
+    if person != auth.owner_id:  # the tenant is one person: only they read their rooms
+        raise ApiProblem("ROOM_FORBIDDEN", "Only the account's own person can read its rooms.")
     # The turn's room, re-checked on every read as a local-session read is: the agent still a member
     # (a removed agent's unexpired grant reads nothing), and no other org in the room to hear it.
     await local_sessions.require_caller(auth, auth.room_id)
     # And the person still in it: someone who left or was removed is no longer who this turn acts for.
     if await messaging_repo.get_member(auth.room_id, "human", person) is None:
         raise ApiProblem("ROOM_FORBIDDEN", "The person who asked is no longer in this room.")
-    return AgentRead(AuthContext(user_id=person, org_id=auth.owner_id), workspace_only=not auth.requester_id)
+    return AgentRead(AuthContext(user_id=person, human_session=True), workspace_only=not auth.requester_id)
 
 
 @router.get("/messaging/agent-read/rooms")
@@ -178,9 +169,7 @@ async def agent_find_rooms(query: str = "", limit: int = 30, read: AgentRead = D
 async def agent_read_messages(
     room_id: str, after_seq: int | None = None, limit: int = 25, read: AgentRead = Depends(agent_reader)
 ):
-    if read.workspace_only and not workspace_wide(
-        await service.get_room(read.auth, room_id), await workspace_people(read.auth.org_id)
-    ):
+    if read.workspace_only and not workspace_wide(await service.get_room(read.auth, room_id), read.auth.user_id):
         raise ApiProblem("ROOM_FORBIDDEN", "In a meeting only channels the whole workspace is in can be read.")
     return await messages_for(read.auth, room_id, after_seq, limit)
 
@@ -283,10 +272,10 @@ async def live_config(auth: AuthContext = Depends(get_current_user)):
     owner_id = resolve_owner_id(auth)
     key = await messaging_repo.ensure_user_stream(owner_id, auth.user_id)
     if key is None:  # removed from the workspace: a stale JWT never revives the stream
-        raise ApiProblem("WORKSPACE_MEMBERSHIP_REQUIRED", "You are no longer a member of this workspace.")
+        raise ApiProblem("WORKSPACE_MEMBERSHIP_REQUIRED", "You no longer have access to this account.")
     workspace_id = await messaging_repo.enroll_sessions_member(owner_id, auth.user_id, key)
     if workspace_id is None:  # removed while this request ran
-        raise ApiProblem("WORKSPACE_MEMBERSHIP_REQUIRED", "You are no longer a member of this workspace.")
+        raise ApiProblem("WORKSPACE_MEMBERSHIP_REQUIRED", "You no longer have access to this account.")
     return LiveConfig(
         http_endpoint=settings.APPSYNC_EVENTS_HTTP_ENDPOINT,
         realtime_endpoint=settings.APPSYNC_EVENTS_REALTIME_ENDPOINT,

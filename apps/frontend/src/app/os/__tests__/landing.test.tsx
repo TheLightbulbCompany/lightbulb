@@ -140,4 +140,5 @@ describe("/os landing page (dev only)", () => {
     canvases.forEach((c) => expect(c).toHaveAttribute("aria-hidden", "true"));
     expect(screen.getByRole("img").getAttribute("aria-label")).toMatch(/^Spark: a small blue creature/);
   });
+
 });

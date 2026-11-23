@@ -11,7 +11,7 @@ from core.voice.phone import voice_outbound
 from routers import voice_phone
 from tests.unit.services.conftest import repos  # noqa: F401
 
-WS = "org_test_456"  # the conftest org admin's workspace
+WS = "user_test_123"  # the conftest org admin's workspace
 CFG = {"name": "Nova", "number": "+14155550100", "forwardFrom": "(415) 555-0177"}
 
 
@@ -51,14 +51,6 @@ async def test_forward_check_dials_business_line(repos, monkeypatch):  # noqa: F
     cfg = await messaging_repo.get_voice_agent(WS)
     assert cfg["forwardingCheck"]["callId"] == req.room_name.removeprefix("phone-out-")
     assert cfg["forwardingCheck"]["startedAt"] and "forwardingOk" not in cfg  # a new check clears the old tick
-
-
-async def test_forward_check_owner_only(repos, async_client_org_member, monkeypatch):  # noqa: F811
-    lk = fake_livekit(monkeypatch)
-    monkeypatch.setattr(settings, "VOICE_OUTBOUND_TRUNK_ID", "ST_out")
-    await store.put_voice_agent(WS, CFG, "u")
-    assert (await async_client_org_member.post("/api/v1/voice/forward-check")).status_code == 403
-    lk.sip.create_sip_participant.assert_not_called()
 
 
 async def _ready(monkeypatch, **cfg) -> MagicMock:

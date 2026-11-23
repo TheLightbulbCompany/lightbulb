@@ -12,7 +12,7 @@ from botocore.stub import Stubber
 
 from core.config import settings
 from core.repositories import messaging_repo as store
-from core.services import evaluator, memory_api, workspace_memory
+from core.services import evaluator, workspace_memory
 from tests.unit.repositories.test_messaging_repo import table  # noqa: F401
 
 MEM = "mem-test-000001"  # the sessions memory: the workspace memory is never the evaluator's
@@ -89,34 +89,6 @@ def s3_keys():
     return sorted(
         o["Key"] for o in boto3.client("s3", region_name="us-east-1").list_objects_v2(Bucket=BUCKET).get("Contents", [])
     )
-
-
-async def test_member_wipe_removes_only_what_belongs_to_that_workspace():
-    session("user_a", "s1", "org_x")
-    session("user_a", "s2", "org_y")  # another workspace's
-    session("user_a", "s3")  # free tier
-    draft("user_a", "dx", "org_x", mirrored=True)
-    draft("user_a", "dy", "org_y", mirrored=True)
-    due("user_a", "org_x")
-    due("user_a", "org_y")
-    keys, forget, episodes = AsyncMock(return_value=[]), AsyncMock(), AsyncMock()
-    with (
-        patch.object(workspace_memory, "_wipe", return_value=None),
-        patch.object(workspace_memory, "_computer_keys", keys),
-        patch.object(workspace_memory, "_forget_keys", forget),
-        patch.object(memory_api, "forget_on_behalf_of", AsyncMock(return_value=0)),
-        patch.object(evaluator, "delete_episodes", episodes),
-    ):
-        await workspace_memory.delete_member_memory("org_x", "user_a", resweep_after_s=0)
-    keys.assert_awaited_once_with("user_a")
-    forget.assert_not_awaited()  # the key registry is the person's: their other workspaces need it
-    episodes.assert_not_awaited()  # so are their episodes
-    assert rows("SESSIONS#user_a") == ["S#s2", "S#s3"]
-    assert (
-        rows("DRAFTS#user_a") == ["D#dy"] and rows("WDRAFTS#org_x") == [] and rows("WDRAFTS#org_y") == ["D#user_a#dy"]
-    )
-    assert rows("EVALDUE") == ["U#user_a#W#org_y"]
-    assert s3_keys() == ["sessions/free/user_a/s3.json", "sessions/workspace/user_a/s2.json"]
 
 
 async def test_person_wipe_removes_everything_of_the_persons_own():

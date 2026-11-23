@@ -1,4 +1,4 @@
-"""The engine's operations over HTTP (`settings.ENGINE_TRANSPORT == "http"`): the same functions, signatures, values
+"""The engine's operations over HTTP: the same functions, signatures, values
 and refusals as `core.engine.api`, each one call to the engine service at `settings.ENGINE_URL`
 (`routers/engine_api.py`). The wire, its bearer and its one retry are `core.engine.transport`'s."""
 

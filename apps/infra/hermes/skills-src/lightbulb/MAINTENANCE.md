@@ -106,7 +106,7 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  Members), workspace/InvitePeoplePanel + InvitePeopleDialog (email invites, pending/revoke,
                                  opened by the chat sidebar's Invite someone row, messaging/RoomDirectory.tsx), app/onboarding JoinTeamBlock (paste a join link), and
                                  MessagingWorkspaceContext.copyJoinLink (channel/group-chat Members section, not DMs).
-  - Data page ............... references/surfaces.md ("Your data" row) <- apps/frontend/src/app/security/page.tsx
+  - Data page ............... references/surfaces.md ("Your data" row) <- apps/frontend/src/app/privacy/page.tsx
   - Away email / daily summary references/surfaces.md ("Away email and daily summary" row)
                               <- core/services/needs_you_email.py (5 min, quiet hours, per-room cap, membership),
                                  core/services/daily_digest.py, components/settings/DailySummaryCard.tsx

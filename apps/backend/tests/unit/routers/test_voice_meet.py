@@ -61,7 +61,7 @@ def m():
                 }
             ),
         ),
-        patch.object(messaging_repo, "get_room", AsyncMock(return_value={"ownerId": "org_1", "meeting": meeting})),
+        patch.object(messaging_repo, "get_room", AsyncMock(return_value={"ownerId": "user_maya", "meeting": meeting})),
         patch.object(records.livekit_huddles, "set_meet_phase", AsyncMock()) as phase,
         patch.object(voice_meet.engine, "read_lines", AsyncMock(return_value={"messages": [], "after": 41})),
     ):
@@ -74,7 +74,7 @@ async def test_announce_once(m):
     with (
         patch.object(voice_meet, "assistant_name", AsyncMock(return_value="Nova")),
     ):
-        body = voice_meet.StartIn(ownerId="org_1", roomToken="t", company="Maya's Studio")
+        body = voice_meet.StartIn(ownerId="user_maya", roomToken="t", company="Maya's Studio")
         assert (await voice_meet.start(ROOM, body))["assistantName"] == "Nova"
         await voice_meet.start(ROOM, body)  # a restarted worker does not say it again
         await asyncio.sleep(0)
@@ -91,7 +91,7 @@ async def test_a_failed_announcement_still_starts_the_meeting(m, caplog):
     with (
         patch.object(voice_meet, "assistant_name", AsyncMock(return_value="Nova")),
     ):
-        out = await voice_meet.start(ROOM, voice_meet.StartIn(ownerId="org_1", roomToken="t"))
+        out = await voice_meet.start(ROOM, voice_meet.StartIn(ownerId="user_maya", roomToken="t"))
         await asyncio.sleep(0)
     assert out["assistantName"] == "Nova"
     assert "announce failed 400" in caplog.text
@@ -111,13 +111,13 @@ async def test_end_keeps_the_record(m):
 
 async def test_assistant_name_from_the_agent_page(m):
     with patch.object(room_lines.store, "get_voice_agent", AsyncMock(side_effect=[{"name": " Nova "}, None])):
-        assert await room_lines.assistant_name("org_1") == "Nova"
-        assert await room_lines.assistant_name("org_1") == "Lightbulb"
+        assert await room_lines.assistant_name("user_maya") == "Nova"
+        assert await room_lines.assistant_name("user_maya") == "Lightbulb"
 
 
 def _meet_task(status="idle"):
     return {"taskId": "k1", "title": "Draft the holiday-hours post", "status": status,
-            "pk": "WS#org_1", "origin": "meeting", "audience": {"kind": "room", "roomId": ROOM},
+            "pk": "WS#user_maya", "origin": "meeting", "audience": {"kind": "room", "roomId": ROOM},
             "triggerId": "chat:actual-ask", "attemptCount": 1}  # fmt: skip
 
 
@@ -132,7 +132,7 @@ async def test_meeting_task_done_posts_link_in_chat(m):
         patch.object(activities.task_conversation, "post_as_lightbulb", AsyncMock()),
         patch.object(records, "_tile_phase", AsyncMock()),  # no real 60 s clear task
     ):
-        await activities._announce("org_1", "k1", "idle")
+        await activities._announce("user_maya", "k1", "idle")
     m["say"].assert_awaited_once()
     line = m["say"].await_args.args[1]
     assert m["say"].await_args.args[0] == "bot_1"
@@ -197,12 +197,12 @@ async def test_an_addressed_line_is_the_inviters_message_naming_who_said_it(m):
         "create_human_message",
         AsyncMock(return_value=SimpleNamespace(message_id="m1", message_seq=1)),
     ) as ch:
-        body = voice_meet.AskIn(ownerId="org_1", roomToken="t", text="Nova, what shipped?", participantId="12")
+        body = voice_meet.AskIn(ownerId="user_maya", roomToken="t", text="Nova, what shipped?", participantId="12")
         assert await voice_meet.ask(ROOM, body) == {"posted": True, "messageId": "m1"}
         await voice_meet.ask(ROOM, body)  # a retry
     first, again = ch.await_args_list
     auth, room, req = first.args
-    assert (auth.user_id, auth.org_id, room) == ("user_maya", "org_1", ROOM)  # the inviter's authority
+    assert (auth.user_id, room) == ("user_maya", ROOM)  # the inviter's authority
     assert req.text == "Sam said in the meeting: Nova, what shipped?"
     assert first.kwargs == {"via": "voice", "wake": True}  # wakes the meeting room's Router
     assert again.args[2].client_message_id == req.client_message_id
@@ -212,7 +212,7 @@ async def test_no_inviter_posts_nothing(m):
     m["meeting"].pop("invitedBy")
     m["meeting"]["roster"] = {}
     with patch.object(engine_messaging, "create_human_message", AsyncMock()) as ch:
-        out = await voice_meet.ask(ROOM, voice_meet.AskIn(ownerId="org_1", roomToken="t", text="Nova, hi there"))
+        out = await voice_meet.ask(ROOM, voice_meet.AskIn(ownerId="user_maya", roomToken="t", text="Nova, hi there"))
     assert out == {"posted": False, "reason": "no_inviter"}
     ch.assert_not_awaited()
 
@@ -246,7 +246,7 @@ async def test_the_voice_says_only_the_rooms_new_agent_lines():
         },  # fmt: skip
     ]
     with patch.object(messaging_repo, "list_messages", AsyncMock(return_value=(rows, None))) as lm:
-        out = await api._agent_lines("org_1", ROOM, 4)
+        out = await api._agent_lines("user_maya", ROOM, 4)
     lm.assert_awaited_once_with(ROOM, 4, 100)
     # inReplyTo: the human message a line answers, so the voice matches it to that spoken ask; action: the phone's
     assert out == {"messages": [{"id": "a1", "seq": 6, "text": "Checking GitHub.", "waiting": False, "inReplyTo": "h1"},
@@ -254,12 +254,12 @@ async def test_the_voice_says_only_the_rooms_new_agent_lines():
                                 {"id": "a5", "seq": 11, "text": "Putting you through.", "waiting": False, "action": "transfer"}],
                    "after": 11}  # fmt: skip
     with patch.object(messaging_repo, "list_messages", AsyncMock(return_value=([], None))):
-        assert await api._agent_lines("org_1", ROOM, 10) == {"messages": [], "after": 10}
+        assert await api._agent_lines("user_maya", ROOM, 10) == {"messages": [], "after": 10}
 
 
 async def test_start_gives_the_first_cursor(m):
     with patch.object(voice_meet, "assistant_name", AsyncMock(return_value="Nova")):
-        out = await voice_meet.start(ROOM, voice_meet.StartIn(ownerId="org_1", roomToken="t"))
+        out = await voice_meet.start(ROOM, voice_meet.StartIn(ownerId="user_maya", roomToken="t"))
     assert out == {"assistantName": "Nova", "title": "Monday", "after": 41, "notTranscribed": []}
 
 
@@ -279,7 +279,7 @@ async def test_a_worker_question_in_a_thread_is_said_with_its_ref():
                    "threadRootMessageId": "t"}]  # fmt: skip
     with _open_questions("q-17b4"), patch.object(messaging_repo, "list_messages",
                                                  AsyncMock(return_value=(rows, None))):  # fmt: skip
-        out = await api._agent_lines("org_1", ROOM, 4)
+        out = await api._agent_lines("user_maya", ROOM, 4)
     assert out["messages"] == [{"id": "q1", "seq": 8, "text": QROW["text"], "waiting": False,
                                 "taskIds": ["k1"],
                                 "question": {"taskId": "k1", "qid": "q-17b4"}}]  # fmt: skip
@@ -291,11 +291,11 @@ def _open_questions(*qids):
     from core.repositories import questions_repo
 
     async def get(ws, task_id, qid):
-        assert ws == "org_1"
+        assert ws == "user_maya"
         return {"qid": qid, "state": "open" if qid in qids else "answered"}
 
     stack = ExitStack()
-    stack.enter_context(patch.object(messaging_repo, "get_room", AsyncMock(return_value={"ownerId": "org_1"})))
+    stack.enter_context(patch.object(messaging_repo, "get_room", AsyncMock(return_value={"ownerId": "user_maya"})))
     stack.enter_context(patch.object(questions_repo, "get_question", get))
     return stack
 
@@ -305,12 +305,12 @@ async def test_an_answered_or_closed_question_is_never_said():
     vera = {**QROW, "messageId": "q2", "messageSeq": 9, "taskRefs": [{"taskId": "k2", "role": "started", "qid": "q-2"}]}
     with _open_questions("q-2"), patch.object(messaging_repo, "list_messages",
                                               AsyncMock(return_value=([QROW, vera], None))):  # fmt: skip
-        out = await api._agent_lines("org_1", ROOM, 4)
+        out = await api._agent_lines("user_maya", ROOM, 4)
     assert [m["id"] for m in out["messages"]] == ["q2"] and out["after"] == 9
 
 
 def _ask(**over):
-    return voice_meet.AskIn(ownerId="org_1", roomToken="t", text="We close at 2 on Christmas Eve.", participantId="12",
+    return voice_meet.AskIn(ownerId="user_maya", roomToken="t", text="We close at 2 on Christmas Eve.", participantId="12",
                             answers={"taskId": "k1", "qid": "q-17b4"}, **over)  # fmt: skip
 
 
@@ -338,7 +338,7 @@ async def test_the_line_after_a_said_question_answers_it_like_a_typed_answer(m):
     assert first.args[2].text == "Sam said in the meeting: We close at 2 on Christmas Eve."
     assert again.args[2].client_message_id == first.args[2].client_message_id
     ws, task_id, qid, me, body = sa.await_args.args
-    assert (ws, task_id, qid, me, body.option_id) == ("org_1", "k1", "q-17b4", "user_maya", "answer")
+    assert (ws, task_id, qid, me, body.option_id) == ("user_maya", "k1", "q-17b4", "user_maya", "answer")
     assert body.text == "Sam said in the meeting: We close at 2 on Christmas Eve."
 
 
@@ -369,7 +369,7 @@ async def test_a_refused_or_foreign_question_falls_back_to_a_message(m):
 def _made_task():
     """A Router thread started from a meeting message (a `chat:` trigger, no follow-up), that made a document."""
     return {"taskId": "k9", "title": "Draft the holiday-hours post", "status": "idle", "triggerId": "chat:m7",
-            "pk": "WS#org_1", "origin": "meeting",
+            "pk": "WS#user_maya", "origin": "meeting",
             "attemptCount": 1, "audience": {"kind": "room", "roomId": ROOM},
             "outputs": [{"id": "file:a1", "kind": "document", "title": "holiday-hours-post.md"}]}  # fmt: skip
 
@@ -384,10 +384,12 @@ async def _announce_made(m, task):
         patch.object(activities.tasks_repo, "get_task_tree", AsyncMock(return_value=tree)),
         patch.object(activities.task_conversation, "ensure_task_room", AsyncMock()),
         patch.object(activities.task_conversation, "post_as_lightbulb", post),
-        patch.object(messaging_repo, "get_room", AsyncMock(return_value={"ownerId": "org_1", "meeting": m["meeting"]})),
+        patch.object(
+            messaging_repo, "get_room", AsyncMock(return_value={"ownerId": "user_maya", "meeting": m["meeting"]})
+        ),
         patch.object(records, "_tile_phase", AsyncMock()),
     ):
-        await activities._announce("org_1", task["taskId"], "idle")
+        await activities._announce("user_maya", task["taskId"], "idle")
     return next(c.kwargs["text"] for c in post.await_args_list if c.kwargs.get("kind") == "task_line")
 
 
@@ -413,7 +415,7 @@ async def test_after_the_call_the_room_line_still_has_the_link_and_an_answer_get
 
 async def test_a_thread_outside_a_meeting_keeps_its_line():
     with patch.object(messaging_repo, "get_room", AsyncMock(return_value={"kind": "dm"})):
-        assert await records.with_link("org_1", "dm-1", _made_task(), "Done.") == "Done."
+        assert await records.with_link("user_maya", "dm-1", _made_task(), "Done.") == "Done."
 
 
 async def test_a_caller_threads_lines_are_in_the_call_rooms_main_chat():
@@ -433,12 +435,12 @@ async def test_a_caller_threads_lines_are_in_the_call_rooms_main_chat():
          "text": "You’re booked for the founding team setup on Saturday, November 14 at 12:00 PM."},
     ]  # fmt: skip
     with patch.object(messaging_repo, "list_messages", AsyncMock(return_value=(rows, None))):
-        out = await api._agent_lines("org_1", ROOM, 1)
+        out = await api._agent_lines("user_maya", ROOM, 1)
     assert [m["id"] for m in out["messages"]] == ["m2", "m4", "m6"] and out["after"] == 6
 
 
 def _tx(pid: str, name: str, opt_out: bool = True):
-    return voice_meet.TranscriptionIn(ownerId="org_1", roomToken="t", participantId=pid, name=name, optOut=opt_out)
+    return voice_meet.TranscriptionIn(ownerId="user_maya", roomToken="t", participantId=pid, name=name, optOut=opt_out)
 
 
 async def test_opt_out_persists_by_id_and_name_through_rejoin_and_worker_restart(m):
@@ -449,7 +451,7 @@ async def test_opt_out_persists_by_id_and_name_through_rejoin_and_worker_restart
     await voice_meet.transcription(ROOM, _tx("19", "sam"))
     assert m["meeting"]["notTranscribed"] == [{"id": "11", "name": "Maya"}, {"id": "19", "name": "sam"}]
     with patch.object(voice_meet, "assistant_name", AsyncMock(return_value="Nova")):
-        started = await voice_meet.start(ROOM, voice_meet.StartIn(ownerId="org_1", roomToken="t"))
+        started = await voice_meet.start(ROOM, voice_meet.StartIn(ownerId="user_maya", roomToken="t"))
     assert started["notTranscribed"] == m["meeting"]["notTranscribed"]
     out = await voice_meet.transcription(ROOM, _tx("19", "sam", opt_out=False))
     assert out["notTranscribed"] == [{"id": "11", "name": "Maya"}]
@@ -480,7 +482,7 @@ async def test_voice_events_distinguish_a_task_ack_from_the_terminal_answer():
         },
     ]
     with patch.object(messaging_repo, "list_messages", AsyncMock(return_value=(rows, None))):
-        out = await api._agent_lines("org_1", ROOM, 0)
+        out = await api._agent_lines("user_maya", ROOM, 0)
     assert [(m["waiting"], m["taskIds"]) for m in out["messages"]] == [(True, ["k1"]), (False, ["k1"])]
 
 
@@ -513,11 +515,11 @@ async def test_ask_records_who_spoke_before_the_message_exists_and_events_carry_
 
     with patch.object(engine_messaging, "create_human_message", AsyncMock(side_effect=create)):
         await voice_meet.ask(
-            ROOM, voice_meet.AskIn(ownerId="org_1", roomToken="t", text="Nova, stop", participantId="12")
+            ROOM, voice_meet.AskIn(ownerId="user_maya", roomToken="t", text="Nova, stop", participantId="12")
         )
     ((seen, client_id),) = order
     assert seen == {client_id: "12"}  # already in the meeting's record when the message is created
     m["meeting"]["notTranscribed"] = [{"id": "12", "name": "Sam"}]
     with patch.object(voice_meet.engine, "read_lines", AsyncMock(return_value={"messages": [], "after": 3})):
-        out = await voice_meet.events(ROOM, voice_meet.EventsIn(ownerId="org_1", roomToken="t", after=3))
+        out = await voice_meet.events(ROOM, voice_meet.EventsIn(ownerId="user_maya", roomToken="t", after=3))
     assert out == {"messages": [], "after": 3, "notTranscribed": [{"id": "12", "name": "Sam"}]}

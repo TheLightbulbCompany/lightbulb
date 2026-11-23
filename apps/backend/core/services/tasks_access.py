@@ -9,43 +9,19 @@ from __future__ import annotations
 
 import logging
 import re
-import time
 from collections.abc import Collection
 from typing import Any
 
 from core import tasks_schema as ts
 from core.repositories import messaging_repo, tasks_repo
-from core.services import clerk_admin, questions
+from core.services import questions
 
 _log = logging.getLogger(__name__)
-_ORG_TTL_S = 60.0
-_ORG_CACHE_MAX = 10_000
-_org_cache: dict[str, tuple[float, set[str]]] = {}
 
 
-async def _user_org_ids(user_id: str) -> set[str]:
-    # ponytail: per-process 60 s cache of a user's Clerk orgs; a removed member keeps workspace-task access
-    # for up to a minute. Swap for the auth context's org when routes pass it.
-    hit = _org_cache.get(user_id)
-    if hit and hit[0] > time.monotonic():
-        return hit[1]
-    if len(_org_cache) >= _ORG_CACHE_MAX:
-        _org_cache.clear()
-    orgs = {o["id"] for o in await clerk_admin.list_user_organizations(user_id, limit=100) if o.get("id")}
-    _org_cache[user_id] = (time.monotonic() + _ORG_TTL_S, orgs)
-    return orgs
-
-
-async def _is_workspace_member(ws: str, user_id: str) -> bool:
-    if ws.startswith("user_"):
-        return ws == user_id
-    return ws in await _user_org_ids(user_id)
-
-
-async def can_view(task: dict, user_id: str, *, member: bool = False) -> bool:
+async def can_view(task: dict, user_id: str) -> bool:
     """DM ⇒ requester; room ⇒ current members of the home room; workspace ⇒ every member; plus anyone in
-    `audience.userIds` (Lane Q adds a Question's answerers there when it opens, contracts §5). `member`: the caller
-    already vouches that `user_id` is the workspace's member (an engine operation's member principal)."""
+    `audience.userIds` (Lane Q adds a Question's answerers there when it opens, contracts §5)."""
     if not user_id:
         return False
     audience = task.get("audience") or {}
@@ -55,7 +31,7 @@ async def can_view(task: dict, user_id: str, *, member: bool = False) -> bool:
     if kind == "room" and audience.get("roomId"):
         return await messaging_repo.get_member(audience["roomId"], "human", user_id) is not None
     if kind == "workspace":
-        return member or await _is_workspace_member(task["pk"].removeprefix("WS#"), user_id)
+        return task["pk"].removeprefix("WS#") == user_id
     return False
 
 

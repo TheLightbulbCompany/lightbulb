@@ -9,15 +9,11 @@ from botocore.exceptions import ClientError
 from moto import mock_aws
 
 from core.services.webhook_dedup import (
-    MembershipLifecycleInProgress,
     WebhookProcessingInProgress,
     WebhookDedupResult,
-    begin_membership_lifecycle,
     begin_event_processing,
-    complete_membership_lifecycle,
     complete_event_processing,
     get_active_top_up,
-    membership_lifecycle_key,
     record_event_or_skip,
     set_active_top_up_status,
 )
@@ -215,59 +211,3 @@ async def test_old_request_acknowledgement_cannot_advance_new_pointer(dedup_tabl
         is False
     )
     assert (await get_active_top_up("org_1"))["status"] == "pending"
-
-
-@pytest.mark.asyncio
-async def test_container_independent_membership_epoch_serializes_and_rejects_stale_events(dedup_table, monkeypatch):
-    monkeypatch.setenv("WEBHOOK_DEDUP_TABLE", dedup_table)
-    owner_id = "org_without_container"
-    alias = "clerk-" + "a" * 64 + "@identity.lightbulb.invalid"
-    delete_sequence = "00000000000000000001:1:msg_delete"
-    create_sequence = "00000000000000000002:0:msg_create"
-
-    delete_claim = await begin_membership_lifecycle(
-        owner_id,
-        alias,
-        event_id="msg_delete",
-        sequence=delete_sequence,
-        access_state="revoked",
-    )
-    assert delete_claim is not None
-    with pytest.raises(MembershipLifecycleInProgress):
-        await begin_membership_lifecycle(
-            owner_id,
-            alias,
-            event_id="msg_create",
-            sequence=create_sequence,
-            access_state="allowed",
-        )
-
-    await complete_membership_lifecycle(owner_id, alias, delete_claim)
-    create_claim = await begin_membership_lifecycle(
-        owner_id,
-        alias,
-        event_id="msg_create",
-        sequence=create_sequence,
-        access_state="allowed",
-    )
-    assert create_claim is not None
-    await complete_membership_lifecycle(owner_id, alias, create_claim)
-
-    assert (
-        await begin_membership_lifecycle(
-            owner_id,
-            alias,
-            event_id="msg_delete_late",
-            sequence=delete_sequence,
-            access_state="revoked",
-        )
-        is None
-    )
-    stored = (
-        boto3.resource("dynamodb", region_name="us-east-1")
-        .Table(dedup_table)
-        .get_item(Key={"event_id": membership_lifecycle_key(owner_id, alias)}, ConsistentRead=True)["Item"]
-    )
-    assert stored["lifecycle_event_id"] == "msg_create"
-    assert stored["sequence"] == create_sequence
-    assert stored["access_state"] == "allowed"

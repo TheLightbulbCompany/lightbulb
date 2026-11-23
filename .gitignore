@@ -86,10 +86,6 @@ graphify-out/
 # 6.4k-line duplicate this replaced.
 apps/infra/hermes/skills/
 
-# Load-test fixtures: live Clerk client JWTs per test user (apps/backend/scripts/load/README.md)
-apps/backend/scripts/load/fixtures.json
-apps/backend/scripts/load/mac_sessions.json
-
 __pycache__/
 .pytest_cache/
 

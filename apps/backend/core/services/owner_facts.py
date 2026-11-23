@@ -58,8 +58,6 @@ def build_owner_facts(
     connected_integrations: list[dict] | None = None,
 ) -> dict:
     """Render the facts dict from a billing row. Pure — no I/O."""
-    from core.auth import is_org_owner_id
-
     # Single row-level mapping shared with the provision surface — handles
     # the trial_local short-circuit (trial rows carry NO provider_choice)
     # and the managed default. Lazy import: container_provision
@@ -135,7 +133,6 @@ def build_owner_facts(
         else format_provider_label(provider_choice, byo_provider),
         "provider_choice": provider_choice,
         "company_stripe": company_stripe,
-        "owner_kind": "org" if is_org_owner_id(owner_id) else "personal",
         # This environment's app host. One image serves dev and prod, so the bundled skill's
         # links say thelightbulb.company and agents swap this in when they hand the owner a link.
         "app_url": (settings.FRONTEND_URL or "").rstrip("/"),
@@ -178,24 +175,15 @@ async def _lookup_email_address(owner_id: str) -> str | None:
 
 
 async def _lookup_owner_timezone(owner_id: str) -> str:
-    """The workspace owner's timezone, else ``"UTC"``. Never raises.
+    """The owner's timezone, else ``"UTC"``. Never raises.
 
-    The owner is the Clerk org's CREATOR -- the same stable choice
-    ``provision_runner``'s step 0 makes for the company's bootstrap identity;
-    members are never consulted. ``user_repo.get_timezone`` applies its own
-    default for a user with none set; UTC is only for an unresolvable owner.
+    ``user_repo.get_timezone`` applies its own default for a user with none set; UTC is
+    only for an unresolvable owner.
     """
     try:
-        from core.auth import is_org_owner_id
         from core.repositories import user_repo
-        from core.services import clerk_admin
 
-        if not is_org_owner_id(owner_id):
-            return "UTC"
-        creator = ((await clerk_admin.get_organization(owner_id)) or {}).get("created_by")
-        if not creator:
-            return "UTC"
-        return await user_repo.get_timezone(creator)
+        return await user_repo.get_timezone(owner_id)
     except Exception as e:  # noqa: BLE001 — facts must never block callers
         logger.warning("owner_facts: owner timezone lookup failed for %s: %s", owner_id, e)
         return "UTC"

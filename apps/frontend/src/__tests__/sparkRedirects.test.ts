@@ -19,4 +19,18 @@ describe("Spark redirects", () => {
       permanent: false,
     });
   });
+
+  it("send the Windows downloads to the spark-windows release", async () => {
+    const redirects = await nextConfig.redirects!();
+    expect(redirects).toContainEqual({
+      source: "/download/spark-windows",
+      destination: "https://github.com/TheLightbulbCompany/lightbulb/releases/download/spark-windows/Spark-Setup-x64.exe",
+      permanent: false,
+    });
+    expect(redirects).toContainEqual({
+      source: "/download/spark-windows-arm64",
+      destination: "https://github.com/TheLightbulbCompany/lightbulb/releases/download/spark-windows/Spark-Setup-arm64.exe",
+      permanent: false,
+    });
+  });
 });

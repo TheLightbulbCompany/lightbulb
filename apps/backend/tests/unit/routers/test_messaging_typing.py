@@ -14,7 +14,6 @@ ROOM = "22222222-2222-4222-8222-222222222222"
 
 def _auth(user_id: str):
     auth = MagicMock()
-    auth.org_id = "org_1"
     auth.user_id = user_id
     return auth
 

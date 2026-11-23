@@ -3,10 +3,8 @@ import { auth } from "@clerk/nextjs/server";
 
 import { EmptyState } from "@/components/admin/EmptyState";
 import { ErrorBanner } from "@/components/admin/ErrorBanner";
-import { OrgBanner } from "@/components/admin/OrgBanner";
 import {
   listAgents,
-  type AdminOrgContext,
   type AgentSummary,
 } from "@/app/admin/_lib/api";
 import { formatRelativeTime } from "@/app/admin/_lib/time";
@@ -73,10 +71,7 @@ export default async function AdminUserAgentsPage({ params, searchParams }: Page
         agents: [],
         cursor: null,
         container_status: "unknown" as string,
-        org: null as AdminOrgContext | null,
       };
-
-  const orgBanner = result.org ? <OrgBanner org={result.org} /> : null;
 
   // Container in a non-running state — render explanatory empty/error states
   // rather than an empty table (CEO U1).
@@ -84,7 +79,6 @@ export default async function AdminUserAgentsPage({ params, searchParams }: Page
     return (
       <div className="space-y-6">
         <Header />
-        {orgBanner}
         <EmptyState
           title="Container is stopped"
           body="The user's runtime is not running, so their agents can't be read."
@@ -97,7 +91,6 @@ export default async function AdminUserAgentsPage({ params, searchParams }: Page
     return (
       <div className="space-y-6">
         <Header />
-        {orgBanner}
         <EmptyState
           title="No container provisioned"
           body="This user hasn't provisioned a container yet."
@@ -110,7 +103,6 @@ export default async function AdminUserAgentsPage({ params, searchParams }: Page
     return (
       <div className="space-y-6">
         <Header />
-        {orgBanner}
         <ErrorBanner
           error={result.error || "Gateway RPC failed"}
           source="Agent runtime"
@@ -124,7 +116,6 @@ export default async function AdminUserAgentsPage({ params, searchParams }: Page
     return (
       <div className="space-y-6">
         <Header />
-        {orgBanner}
         <EmptyState title="No agents yet" body="The user hasn't created any agents." />
       </div>
     );
@@ -135,7 +126,6 @@ export default async function AdminUserAgentsPage({ params, searchParams }: Page
   return (
     <div className="space-y-6">
       <Header />
-      {orgBanner}
       <div className="overflow-x-auto rounded-md border border-border">
         <table className="w-full min-w-[720px] table-fixed text-sm">
           <thead className="bg-card text-left text-xs uppercase tracking-caps text-muted-foreground">

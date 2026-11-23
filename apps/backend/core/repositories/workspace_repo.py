@@ -412,10 +412,6 @@ class WorkspaceRepo:
         # workspace row (a pre-migration human row, a sentinel): not a workspace.
         if not item or "status" not in item:
             return None
-        # A workspace provisioned before the native store keeps its legacy ``company_id`` on the old row.
-        old = await run_in_thread(self._table().get_item, Key={"user_id": org_id}, ConsistentRead=consistent_read)
-        if (old.get("Item") or {}).get("company_id"):
-            item["company_id"] = old["Item"]["company_id"]
         return self._item_to_workspace(item)
 
     @staticmethod
@@ -1217,31 +1213,6 @@ class WorkspaceRepo:
         ):
             for item in page.get("Items", []):
                 out[item["pk"].removeprefix("WS#")] = set(item.get("memberUserIds") or ())
-        return out
-
-    async def scan_purge_due(self, now: datetime) -> list[Workspace]:
-        """Disabled workspaces whose ``scheduled_purge_at <= now`` (the ``ws-meta`` index; each hit is re-read)."""
-        from boto3.dynamodb.conditions import Attr
-
-        out: list[Workspace] = []
-        pages = self._query_pages(
-            self._ws_table(),
-            IndexName="ws-meta",
-            KeyConditionExpression=Key("metaKind").eq("workspace"),
-            FilterExpression=Attr("status").eq("disabled") & Attr("scheduledPurgeAt").lte(now.isoformat()),
-            ProjectionExpression="pk",
-        )
-        async for page in pages:
-            for item in page.get("Items", []):
-                org_id = item["pk"].removeprefix("WS#")
-                ws = await self.get_workspace(org_id)
-                if ws is not None:
-                    out.append(ws)
-                else:
-                    logger.warning(
-                        "workspace_repo.scan_purge_due: GSI returned %s but base item missing",
-                        org_id,
-                    )
         return out
 
 

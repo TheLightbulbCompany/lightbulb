@@ -17,7 +17,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
 
-from core.auth import AuthContext, get_current_user, require_org_admin, resolve_owner_id
+from core.auth import AuthContext, get_current_user, resolve_owner_id
 from core.config import settings
 from core.repositories import billing_repo, oauth_state_repo
 from core.services import effect_doors, link_wallet, purchases
@@ -36,7 +36,6 @@ internal_router = APIRouter(dependencies=[Depends(_enabled)])
 
 
 def _owner(auth: AuthContext) -> str:
-    require_org_admin(auth)
     return resolve_owner_id(auth)
 
 

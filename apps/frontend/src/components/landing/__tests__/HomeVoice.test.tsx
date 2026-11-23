@@ -74,7 +74,7 @@ describe("Phone page voice", () => {
   it("links only to pages that exist after the pivot", () => {
     const { container } = page();
     const allowed = new Set([
-      "/", "/phone", "/meetings", "/os", "/pricing", "/compare", "/request-setup", "/security", "/support",
+      "/", "/phone", "/meetings", "/os", "/pricing", "/compare", "/request-setup", "/support",
       "/sign-in", "/sign-up", "/network", "/privacy", "/terms", "/cookies", "/disclaimer", "/eula",
       "/acceptable-use", "/accessibility", "#voices",
       "https://invoca.com/reports/the-invoca-lead-conversion-benchmarks-report-2026",

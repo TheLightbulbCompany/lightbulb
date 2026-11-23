@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import logging
 
-from core.engine import engine
+from core.engine import client as engine
 from core.engine.contract import EventIn, Principal
 from core.voice.meetings import meeting_context
 

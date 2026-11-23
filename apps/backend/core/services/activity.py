@@ -548,10 +548,7 @@ async def _run_join_action(
     return await current()
 
 
-LOGIN_ADMIN_ONLY = "Only a workspace admin can add website sign-ins."
-
-
-def render_login_request(row: dict, *, seen: str | None, admin: bool) -> ActivityItem:
+def render_login_request(row: dict, *, seen: str | None) -> ActivityItem:
     """An agent's ask for a website login (``website_logins.create_request``), rendered from the
     request's current row: open only while the agent is still waiting. (A sign-in code is typed
     into the shared browser and never becomes an item.)"""
@@ -568,7 +565,7 @@ def render_login_request(row: dict, *, seen: str | None, admin: bool) -> Activit
         "The password never enters chat."
     )
     actions: list[ActivityAction] = []
-    if open_ and admin:
+    if open_:
         actions = [
             ActivityAction(
                 id="provide",
@@ -593,19 +590,19 @@ def render_login_request(row: dict, *, seen: str | None, admin: bool) -> Activit
         summary=ActivitySummary(
             title=_clip(website_logins.request_title(row), TITLE_CHARS),
             requester=actor,
-            reason=reason if admin or not open_ else f"{reason} {LOGIN_ADMIN_ONLY}",
+            reason=reason,
             links=links,
         ),
         actions=actions,
     )
 
 
-async def _render_login_rows(owner_id: str, rows: list[dict], seen: str | None, admin: bool) -> list[ActivityItem]:
+async def _render_login_rows(owner_id: str, rows: list[dict], seen: str | None) -> list[ActivityItem]:
     from core.services import website_logins
 
     rows = [row for row in rows if row.get("kind") == "login"]
     found = await asyncio.gather(*(website_logins.get_request(owner_id, str(row.get("requestId"))) for row in rows))
-    return [render_login_request(req, seen=seen, admin=admin) for req in found if req]
+    return [render_login_request(req, seen=seen) for req in found if req]
 
 
 def render_extension_request(row: dict, *, seen: str | None) -> ActivityItem:
@@ -742,13 +739,11 @@ async def _render_rows(
     rows: list[dict],
     seen: str | None,
     gates: dict[str, tuple[dict, dict]] | None = None,
-    *,
-    admin: bool = False,
 ) -> list[ActivityItem]:
     messages, sessions, logins, extensions, reconnects = await asyncio.gather(
         _render_message_rows(owner_id, user_id, rows, seen, gates),
         _render_session_rows(owner_id, user_id, rows, seen),
-        _render_login_rows(owner_id, rows, seen, admin),
+        _render_login_rows(owner_id, rows, seen),
         _render_extension_rows(owner_id, rows, seen),
         _render_reconnect_rows(owner_id, rows, seen),
     )
@@ -886,14 +881,14 @@ async def list_activity(auth: AuthContext, *, cursor: str | None, limit: int) ->
     next_cursor = _encode_cursor(rows[-1]["sk"]) if len(rows) == limit else None
     if cursor:
         # Later pages: history only. Paperclip items are live decisions on page 1.
-        items = await _render_rows(owner_id, user_id, rows, seen, admin=auth.is_org_admin)
+        items = await _render_rows(owner_id, user_id, rows, seen)
         return ActivityPage(items=items, next=next_cursor, unseen_count=None, sources=ActivitySources(paperclip="ok"))
 
     assert live_task is not None
     try:
         unseen_rows = await messaging_repo.list_activity_since(owner_id, user_id, seen, UNSEEN_CAP)
         gates = await _room_gates(owner_id, user_id, {r["roomId"] for r in rows + unseen_rows if r.get("roomId")})
-        items = await _render_rows(owner_id, user_id, rows, seen, gates, admin=auth.is_org_admin)
+        items = await _render_rows(owner_id, user_id, rows, seen, gates)
     except BaseException:
         live_task.cancel()
         raise
@@ -913,7 +908,7 @@ async def list_activity(auth: AuthContext, *, cursor: str | None, limit: int) ->
         + sum(
             1
             for item in pinned
-            # A login ask badges only the people who can answer it (admins get its actions).
+            # A login ask badges while it has actions to take.
             if item.kind in ("session", "reconnect")
             or (item.kind in ("login", "extension") and item.actions)
             or (item.kind not in ("login", "extension") and not _newer_than(item.created_at, seen))
@@ -1031,11 +1026,9 @@ async def _run_login_action(
     row = await website_logins.get_request(owner_id, request_id)
     if row is None:
         raise ApiProblem("ACTIVITY_NOT_FOUND", "Activity item not found.")
-    item = render_login_request(row, seen=None, admin=auth.is_org_admin)
+    item = render_login_request(row, seen=None)
     if item.state != "open":
-        return item  # answered by someone else, declined, or the agent stopped waiting
-    if not auth.is_org_admin:
-        raise ApiProblem("ACTION_UNAVAILABLE", LOGIN_ADMIN_ONLY)
+        return item  # answered, declined, or the agent stopped waiting
     _require_action(item, action_id)
     answer: dict[str, str] | None = None
     if action_id == "provide":
@@ -1052,7 +1045,7 @@ async def _run_login_action(
         )
     except website_logins.LoginError as exc:
         raise ApiProblem("INVALID_REQUEST", str(exc)) from exc
-    return render_login_request(row, seen=None, admin=True)
+    return render_login_request(row, seen=None)
 
 
 async def _run_extension_action(auth: AuthContext, request_id: str, action_id: str) -> ActivityItem:

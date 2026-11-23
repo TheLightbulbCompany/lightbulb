@@ -84,17 +84,13 @@ MENTIONS = {
     "core/services/session_keys.py",
     "core/services/stripe_webhook_handlers.py",
     "core/services/trigger_fire_url.py",
-    "core/services/update_service.py",
-    "core/services/workspace_wipe.py",
     "core/tasks_schema.py",
     "core/temporal/activities.py",
     "routers/automations.py",
     "routers/container.py",
     "routers/debug.py",
     "routers/memory.py",
-    "routers/orgs.py",
     "routers/teams/agents.py",
-    "routers/webhooks.py",
 }
 
 

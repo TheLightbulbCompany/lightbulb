@@ -25,7 +25,7 @@ class _Req:
 
 def _auth() -> AuthContext:
     """Real AuthContext so the decorator's isinstance check passes."""
-    return AuthContext(user_id="user_admin_123")
+    return AuthContext(user_id="user_admin_123", human_session=True)
 
 
 @pytest.mark.asyncio
@@ -84,7 +84,7 @@ async def test_audit_captures_specified_kwargs_as_payload():
     from core.auth import AuthContext
 
     with patch("core.repositories.admin_actions_repo.create", new=create_mock):
-        await handler(slug="pitch", request=_Req(), auth=AuthContext(user_id="user_admin"))
+        await handler(slug="pitch", request=_Req(), auth=AuthContext(user_id="user_admin", human_session=True))
 
     row = create_mock.await_args.kwargs
     assert row["payload"] == {"slug": "pitch"}
@@ -115,7 +115,7 @@ async def test_audit_captures_pydantic_model_via_capture_params():
         await handler(
             req=DummyReq(agent_id="agent_abc", slug="pitch"),
             request=_Req(),
-            auth=AuthContext(user_id="user_admin"),
+            auth=AuthContext(user_id="user_admin", human_session=True),
         )
 
     row = create_mock.await_args.kwargs
@@ -147,7 +147,7 @@ async def test_audit_falls_back_to_body_when_capture_params_absent():
             user_id="user_xyz",
             body=DummyBody(note="hello"),
             request=_Req(),
-            auth=AuthContext(user_id="user_admin"),
+            auth=AuthContext(user_id="user_admin", human_session=True),
         )
 
     row = create_mock.await_args.kwargs

@@ -11,7 +11,6 @@ vi.mock("@/app/admin/_lib/api", () => ({
   getActions: async () => ({ items: [], cursor: null }),
   getOverview: async () => ({
     identity: { email_addresses: [{ email_address: "owner@example.com" }] },
-    org: { id: "org_123", name: "Acme" },
   }),
 }));
 
@@ -23,7 +22,6 @@ describe("ActionsPage danger zone", () => {
     });
     render(ui);
 
-    expect(screen.getAllByRole("button", { name: "Wipe workspace" })).toHaveLength(1);
     expect(screen.getAllByRole("button", { name: "Wipe account" })).toHaveLength(1);
     expect(screen.getAllByText("Danger zone")).toHaveLength(1);
   });

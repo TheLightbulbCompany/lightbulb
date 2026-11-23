@@ -22,13 +22,11 @@ logger = logging.getLogger(__name__)
 TIMEOUT_S = 2.0
 TTL_S = 60.0
 GOOGLE_S = 1.0  # the week's freeBusy; past it external availability is unknown
-ORG_S, ORG_TTL_S = 1.0, 3600.0  # the business's name (Clerk): bounded, and cached once read
 DAYS = 7
 # A salon with 18 services and 15 saved answers is ~2.5k characters of facts; 1,200 cut it mid-answer. 4,000 keeps a
 # realistic Agent page whole; a larger one is marked partial (business_facts has the rest).
 _FACTS_MAX, _SLOTS_MAX, _BOOKINGS_MAX = 4000, 600, 200
 _cache: dict[tuple[str, str | None], tuple[float, str]] = {}
-_names: dict[str, tuple[float, str]] = {}
 
 
 def _cap(text: str, limit: int) -> str:
@@ -52,7 +50,7 @@ async def facts_text(ws: str, cfg: dict | None = None, *, max_chars: int | None 
     not facts). As on the phone (voice_phone.start_call), the facts are left out when the Agent page's "answer
     questions" is off or the line is paused. The explicit facts tool reads the complete saved facts;
     only the caller profile requests an excerpt."""
-    from core.services import clerk_admin
+    from core.services.workspace_name import saved_name
     from core.voice import store
     from core.voice.phone import calls as vp
 
@@ -60,7 +58,7 @@ async def facts_text(ws: str, cfg: dict | None = None, *, max_chars: int | None 
         if not await store.get_voice_agent(ws):
             return ""
         cfg = await vp.agent_config(ws)
-    head = f"Business: {await _org_name(ws, clerk_admin) or 'not named'}. Time zone: {vp._tz(cfg).key}."
+    head = f"Business: {await saved_name(ws) or 'not named'}. Time zone: {vp._tz(cfg).key}."
     if not cfg["allow"].get("answer") or cfg.get("paused"):
         return head
     facts = vp._facts(cfg)
@@ -68,24 +66,6 @@ async def facts_text(ws: str, cfg: dict | None = None, *, max_chars: int | None 
         notice = "\n[Partial profile; complete saved answers are available from business_facts.]"
         facts = _cap(facts, max_chars - len(notice)) + notice
     return f"{head}\n{facts}"
-
-
-async def _org_name(ws: str, clerk_admin) -> str:
-    """The workspace's name from Clerk, ORG_S at most and cached ORG_TTL_S; "" when unknown or slow."""
-    if not ws.startswith("org_"):
-        return ""
-    hit = _names.get(ws)
-    if hit and time.monotonic() - hit[0] < ORG_TTL_S:
-        return hit[1]
-    try:
-        org = await asyncio.wait_for(clerk_admin.get_organization(ws), ORG_S)
-    except Exception:  # noqa: BLE001 -- the facts go out without the name rather than not at all
-        logger.warning("business name unavailable ws=%s", ws, exc_info=True)
-        return hit[1] if hit else ""
-    name = (org or {}).get("name") or ""
-    if name:
-        _names[ws] = (time.monotonic(), name)
-    return name
 
 
 async def _open_days(ws: str, cfg: dict, now: datetime, minutes: int) -> str:
@@ -212,7 +192,7 @@ async def caller_of(ws: str, trigger: dict | None) -> str | None:
     ref = (trigger or {}).get("ref") or {}
     if ref.get("origin") != "phone_contact" or not ref.get("callId"):
         return None
-    from core.engine import engine
+    from core.engine import client as engine
 
     conv = await engine.get_conversation(ws, ref["callId"])
     call = (conv.annotations.get("call") if conv else None) or {}

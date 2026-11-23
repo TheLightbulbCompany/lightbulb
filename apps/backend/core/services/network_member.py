@@ -41,14 +41,14 @@ async def sessions_exist(owner_id: str) -> bool:
 
 async def write_sessions(owner_id: str) -> dict:
     """Write ``sessions.json``: one address per roster agent, and the workspace's people."""
-    from core.services import clerk_admin
     from core.services.company_identity import slugify
     from core.services.hermes_profiles import put_owner_object
     from core.services.messaging import load_agent_roster
     from core.services.website_logins import _humans_to_ask
+    from core.services.workspace_name import saved_name
 
-    roster, org, members = await asyncio.gather(
-        load_agent_roster(owner_id), clerk_admin.get_organization(owner_id), _humans_to_ask(owner_id, None)
+    roster, business, members = await asyncio.gather(
+        load_agent_roster(owner_id), saved_name(owner_id), _humans_to_ask(owner_id, None)
     )
     if len(roster) > MAX_SESSIONS:
         raise ApiProblem("INVALID_REQUEST", f"This workspace has reached {MAX_SESSIONS} network addresses.")
@@ -72,7 +72,7 @@ async def write_sessions(owner_id: str) -> dict:
     # ``members``: the sidecar's gate, the workspace's people; ``revoked_keys``: their signed-out computers, whose
     # proofs stay valid until they expire (30 days). ponytail: goes with the member sidecar
     doc = {
-        "workspace": (org or {}).get("name") or owner_id,
+        "workspace": business or owner_id,
         "sessions": sessions,
         "members": members,
         "revoked_keys": await revoked_keys(members),

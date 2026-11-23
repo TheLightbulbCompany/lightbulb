@@ -12,7 +12,7 @@ import logging
 
 from fastapi import APIRouter, WebSocket
 
-from core.engine import engine
+from core.engine import client as engine
 from core.observability.metrics import put_metric
 from core.voice import livekit_huddles
 from core.voice.meetings import meet_bridge

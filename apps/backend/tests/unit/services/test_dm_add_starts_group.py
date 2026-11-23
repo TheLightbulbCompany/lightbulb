@@ -34,7 +34,7 @@ async def test_the_new_member_cannot_read_the_old_dm_and_the_dm_is_unchanged(wir
     await _post(dm_id, text="my salary is 90k", client_id="private-1")
     await repo.put_noted(dm_id, "00000000-0000-4000-8000-000000000001", "Salary is 90k.")
     before = await repo.get_room(dm_id)
-    ann = AuthContext(user_id=USER_A, org_id=OWNER)
+    ann = AuthContext(user_id=OWNER, human_session=True)
 
     group = await messaging.upsert_member(
         ann, dm_id, messaging.UpsertRoomMemberRequest(kind="human", id=USER_B, role="member", listen_mode=None)

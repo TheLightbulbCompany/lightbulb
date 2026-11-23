@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const auth = vi.hoisted(() => ({ isLoaded: true, userId: "user_a" as string | null }));
 const api = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn() }));
-vi.mock("@clerk/nextjs", () => ({ useAuth: () => auth })); // no orgId: a person's session has none
+vi.mock("@clerk/nextjs", () => ({ useAuth: () => auth }));
 vi.mock("@/lib/api", () => ({ useApi: () => api }));
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn() }) }));
 

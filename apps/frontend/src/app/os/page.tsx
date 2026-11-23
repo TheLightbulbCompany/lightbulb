@@ -5,7 +5,7 @@ import { Footer } from "@/components/landing/Footer";
 import { Navbar } from "@/components/landing/Navbar";
 import { pageMetadata } from "@/lib/seo";
 
-import { OsInvite } from "./OsInvite";
+import { DownloadBlock, OsInvite } from "./OsInvite";
 import { OsLanding, type SparkPrice } from "./OsLanding";
 
 // ponytail: the landing page is live everywhere; SPARK_SHORT_PAGE=1 brings the short page back. Delete the
@@ -37,7 +37,7 @@ function ShortPage({ ready, price }: { ready: boolean; price: SparkPrice }) {
         <p className="mt-6 text-lg leading-8 text-[var(--lb-ink-soft)]">
           One-click voice interface for your Mac.
         </p>
-        <Suspense>
+        <Suspense fallback={<DownloadBlock ready={ready} />}>
           <OsInvite ready={ready} />
         </Suspense>
         {price && (

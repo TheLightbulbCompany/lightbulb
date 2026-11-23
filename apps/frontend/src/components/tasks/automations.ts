@@ -46,17 +46,16 @@ export function useAutomationActions() {
   return { act, remove, edit, refresh };
 }
 
-/** Who may turn a proposal on or resume it (shared `canDecide`, the server's two predicates). The signed-in person owns
- *  the account, so they are its admin; the server still decides. */
+/** Who may turn a proposal on or resume it (shared `canDecide`); the server still decides. */
 export function useCanDecide(): (a: Pick<AutomationView, "deliverTo" | "ownerUserId" | "match">) => boolean {
   const { userId } = useAuth();
-  return useCallback((a) => canDecide(a, { userId: userId ?? null, admin: true }), [userId]);
+  return useCallback((a) => canDecide(a, { userId: userId ?? null }), [userId]);
 }
 
-/** Who may pause it, run it now or drop a proposal (the server's `_may_edit`): the account's owner. */
+/** Who may pause it, run it now or drop a proposal: the automation's owner. */
 export function useCanEdit(): (a: Pick<AutomationView, "ownerUserId">) => boolean {
   const { userId } = useAuth();
-  return useCallback((a) => canEdit(a, { userId: userId ?? null, admin: true }), [userId]);
+  return useCallback((a) => canEdit(a, { userId: userId ?? null }), [userId]);
 }
 
 export type { RunNowOutcome };
@@ -76,7 +75,7 @@ export const withCronTime = (cron: readonly string[], time: string): string[] =>
   return [[m, h, ...rest].join(" ")];
 };
 
-export { budgetLine, deliveryWords, money, runNowReason, runsPerMonth, scheduleWords, viewerTimeZone, waitingWords } from "@lightbulb/shared";
+export { budgetLine, deliveryWords, money, runNowReason, runsPerMonth, scheduleWords, viewerTimeZone } from "@lightbulb/shared";
 
 /** "Finance" for an automation's specialist: an agent id by its name (the live provider's agent names). */
 export function useSpecialistLabel(): (specialistId: string | null | undefined) => string {

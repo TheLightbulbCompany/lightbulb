@@ -20,7 +20,7 @@ def _no_front_seat(monkeypatch):
     monkeypatch.setattr(messaging, "_front_agent_id", AsyncMock(return_value=None))
 
 
-OWNER = "org_1"
+OWNER = "user_owner"
 USER = "user_owner"
 AGENT = str(uuid.UUID(int=1))
 OTHER_AGENT = str(uuid.UUID(int=2))
@@ -125,7 +125,7 @@ def _wire_human_message(
 
 async def _send_human(text: str = "hey @friday", mentions: list[dict] | None = None):
     return await messaging.create_human_message(
-        AuthContext(user_id=USER, org_id=OWNER),
+        AuthContext(user_id=USER, human_session=True),
         ROOM,
         messaging.CreateMessageRequest(
             clientMessageId=uuid.uuid4(),
@@ -194,7 +194,7 @@ async def test_wake_false_stores_the_message_without_dispatching_the_agent(monke
     request = messaging.CreateMessageRequest(
         clientMessageId=uuid.uuid4(), text="record", mentions=[], replyToMessageId=None, threadRootMessageId=None
     )
-    auth = AuthContext(user_id=USER, org_id=OWNER)
+    auth = AuthContext(user_id=USER, human_session=True)
 
     await messaging.create_human_message(auth, ROOM, request, wake=False)
     quiet_dims = [m["dimensions"] for m in _metrics(put_metric, "messaging.message.created")]
@@ -528,7 +528,7 @@ async def test_creating_a_room_reports_the_room_and_each_member(monkeypatch, tel
     monkeypatch.setattr(messaging, "_room_detail", AsyncMock())
 
     await messaging.create_room(
-        AuthContext(user_id=USER, org_id=OWNER),
+        AuthContext(user_id=USER, human_session=True),
         messaging.CreateRoomRequest(
             clientRoomId=uuid.uuid4(),
             name="planning",
@@ -565,6 +565,7 @@ async def test_the_seeded_starter_room_reports_system_membership(monkeypatch, te
         AsyncMock(return_value=[{"id": agent_id, "name": key} for key, agent_id in starter_ids.items()]),
     )
     monkeypatch.setattr(messaging, "human_display_name", AsyncMock(return_value="Owner"))
+    monkeypatch.setattr(messaging, "saved_name", AsyncMock(return_value=None))
     monkeypatch.setattr(messaging.messaging_repo, "ensure_user_stream", AsyncMock())
     monkeypatch.setattr(messaging.messaging_repo, "create_room", AsyncMock(return_value={"kind": "channel"}))
     monkeypatch.setattr(messaging.messaging_repo, "create_message", AsyncMock(return_value=({}, False)))
@@ -596,7 +597,7 @@ async def test_adding_a_member_reports_the_adders_role(monkeypatch, telemetry):
     monkeypatch.setattr(messaging, "_room_detail", AsyncMock())
 
     await messaging.upsert_member(
-        AuthContext(user_id=USER, org_id=OWNER),
+        AuthContext(user_id=USER, human_session=True),
         ROOM,
         messaging.UpsertRoomMemberRequest(kind="agent", id=AGENT, role="member", listenMode="mentions"),
     )

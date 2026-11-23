@@ -14,14 +14,9 @@ from fastapi import HTTPException
 os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 
 
-def _auth(user_id: str = "user_paid", org_id: str | None = "org_paid") -> MagicMock:
+def _auth(user_id: str = "user_paid") -> MagicMock:
     auth = MagicMock()
     auth.user_id = user_id
-    auth.org_id = org_id
-    # A bare MagicMock auto-creates ``is_org_context``/``is_org_admin`` as truthy mocks; set them
-    # to match the real ``AuthContext`` property semantics.
-    auth.is_org_context = org_id is not None
-    auth.is_org_admin = True
     return auth
 
 
@@ -58,7 +53,7 @@ async def test_provision_dispatches_without_a_billing_gate(billing):
         result = await container_mod.container_provision(auth=_auth())
 
     assert initialized, "the trial row is initialized first"
-    dispatch.assert_awaited_once_with("org_paid")
+    dispatch.assert_awaited_once_with("user_paid")
     gate.assert_not_awaited()
     assert result["already_existed"] is False
 
@@ -76,11 +71,11 @@ async def test_retry_dispatches_an_errored_workspace_without_a_billing_gate():
         patch.object(
             container_mod.container_repo,
             "get_by_owner_id",
-            new=AsyncMock(return_value={"owner_id": "org_paid", "status": "error"}),
+            new=AsyncMock(return_value={"owner_id": "user_paid", "status": "error"}),
         ),
     ):
         assert await container_mod.container_retry(auth=_auth()) == {"ok": True}
-    dispatch.assert_awaited_once_with("org_paid")
+    dispatch.assert_awaited_once_with("user_paid")
     gate.assert_not_awaited()
 
 
@@ -109,7 +104,7 @@ async def test_provision_reports_an_existing_workspace_without_re_provisioning_i
 
     async def initialize(_auth, owner_id):
         nonlocal initialized
-        assert owner_id == "org_paid"
+        assert owner_id == "user_paid"
         initialized = True
 
     gate = AsyncMock()
@@ -119,7 +114,7 @@ async def test_provision_reports_an_existing_workspace_without_re_provisioning_i
         patch.object(
             container_mod.container_repo,
             "get_by_owner_id",
-            new=AsyncMock(return_value={"status": "stopped", "owner_id": "org_paid"}),
+            new=AsyncMock(return_value={"status": "stopped", "owner_id": "user_paid"}),
         ),
         patch.object(container_mod, "evaluate_provision_gate", gate),
         patch.object(container_mod, "dispatch_provision", dispatch),
@@ -127,7 +122,7 @@ async def test_provision_reports_an_existing_workspace_without_re_provisioning_i
         result = await container_mod.container_provision(auth=_auth())
 
     assert initialized is True
-    assert result == {"status": "stopped", "owner_id": "org_paid", "already_existed": True}
+    assert result == {"status": "stopped", "owner_id": "user_paid", "already_existed": True}
     gate.assert_not_awaited()
     dispatch.assert_not_awaited()
 
@@ -145,7 +140,6 @@ async def test_provision_402_returns_structured_blocked_payload():
         action_label="Top up now",
         action_href="/settings/billing#credits",
         action_admin_only=False,
-        owner_role="admin",
     )
 
     with patch(
@@ -157,10 +151,7 @@ async def test_provision_402_returns_structured_blocked_payload():
         from routers.container import _assert_provision_allowed
 
         with pytest.raises(HTTPException) as exc:
-            await _assert_provision_allowed(
-                owner_id="user_x",
-                is_admin=True,
-            )
+            await _assert_provision_allowed(owner_id="user_x")
 
     assert exc.value.status_code == 402
     assert isinstance(exc.value.detail, dict)
@@ -186,7 +177,6 @@ async def test_provision_402_subscription_required_payload():
         action_label="Subscribe",
         action_href="/onboarding",
         action_admin_only=True,
-        owner_role="admin",
     )
 
     with patch(
@@ -198,10 +188,7 @@ async def test_provision_402_subscription_required_payload():
         from routers.container import _assert_provision_allowed
 
         with pytest.raises(HTTPException) as exc:
-            await _assert_provision_allowed(
-                owner_id="user_x",
-                is_admin=True,
-            )
+            await _assert_provision_allowed(owner_id="user_x")
 
     assert exc.value.status_code == 402
     assert isinstance(exc.value.detail, dict)

@@ -14,7 +14,7 @@ from moto import mock_aws
 
 from core.repositories import messaging_repo as repo
 
-OWNER = "org_1"
+OWNER = "user_A"  # the tenant is the person
 USER_A = "user_A"
 USER_B = "user_B"
 FRIDAY = "11111111-1111-4111-8111-111111111111"
@@ -74,11 +74,11 @@ def _member(kind, mid, role="member", listen="active", name=None, handle=None):
     }
 
 
-async def _room(members=None, client_room_id="c-room-1", name="launch", kind="channel"):
+async def _room(members=None, client_room_id="c-room-1", name="launch", kind="channel", owner=OWNER):
     members = members or [_member("human", USER_A, "owner"), _member("agent", FRIDAY, handle="friday")]
-    room_id = repo.deterministic_room_id(OWNER, USER_A, client_room_id)
+    room_id = repo.deterministic_room_id(owner, USER_A, client_room_id)
     meta = await repo.create_room(
-        owner_id=OWNER,
+        owner_id=owner,
         room_id=room_id,
         client_room_id=client_room_id,
         creator_user_id=USER_A,
@@ -725,7 +725,7 @@ async def test_mark_unread_races_with_read_and_new_message_without_clearing_unre
 
 
 @pytest.mark.asyncio
-async def test_user_stream_is_stable_then_fresh_after_deactivation(table):
+async def test_user_stream_is_stable_and_stays_off_after_deactivation(table):
     first = await repo.ensure_user_stream(OWNER, USER_A)
     assert await repo.ensure_user_stream(OWNER, USER_A) == first
     reverse = await repo.get_stream(first)
@@ -734,12 +734,9 @@ async def test_user_stream_is_stable_then_fresh_after_deactivation(table):
     assert await repo.deactivate_user_stream(OWNER, USER_A) is False
     assert (await repo.get_stream(first))["active"] is False  # old channel goes permanently silent
     assert await repo.list_active_user_streams(OWNER) == []
-    # A removed member (stale JWT) never revives the stream; only a real rejoin does.
+    # A deactivated user (stale JWT) never revives the stream.
     assert await repo.ensure_user_stream(OWNER, USER_A) is None
     assert (await repo.get_user_stream(OWNER, USER_A))["active"] is False
-    second = await repo.ensure_user_stream(OWNER, USER_A, rejoin=True)
-    assert second != first and (await repo.get_stream(second))["active"] is True
-    assert (await repo.get_stream(first))["active"] is False
 
 
 @pytest.mark.asyncio
@@ -1212,12 +1209,6 @@ async def test_removal_notice_carries_its_own_owner(table):
     assert [(r["userId"], r["ownerId"]) for r in live] == [("user_v", VENDOR)]
 
 
-def test_vendor_room_id_is_deterministic_per_customer():
-    assert repo.vendor_room_id(OWNER) == repo.vendor_room_id(OWNER)
-    assert repo.vendor_room_id(OWNER) != repo.vendor_room_id(VENDOR)
-    assert repo.vendor_room_id(OWNER) == str(uuid.uuid5(uuid.NAMESPACE_URL, f"lightbulb-vendor-room|{OWNER}"))
-
-
 def test_member_item_carries_the_mode_marker_only_when_set():
     base = {"kind": "agent", "id": "a1", "role": "member", "listenMode": "mentions"}
     assert "modeSetBy" not in repo._member_item("r", "o", base, 1, 1, "t")
@@ -1357,8 +1348,8 @@ def _switch_on(monkeypatch, org_name="Acme"):
     monkeypatch.setattr(messaging, "load_agent_roster", lambda _owner: asyncio.sleep(0, result=roster))
     monkeypatch.setattr(messaging, "human_display_name", lambda _user: asyncio.sleep(0, result="Workspace Owner"))
     monkeypatch.setattr(agent_registry, "roster", AsyncMock(return_value=roster))
-    org = AsyncMock(return_value={"name": org_name})
-    monkeypatch.setattr(messaging.clerk_admin, "get_organization", org)
+    org = AsyncMock(return_value=org_name)
+    monkeypatch.setattr(messaging, "saved_name", org)
     return messaging, ceo, org
 
 
@@ -1375,13 +1366,13 @@ async def test_with_the_switch_the_welcome_and_chips_go_to_the_owners_lightbulb_
         return await real_create_room(**kwargs)
 
     monkeypatch.setattr(repo, "create_room", create_room)
-    general = await messaging.ensure_default_room(OWNER, USER_A)
-    dm = await messaging._agent_dm_room_id(OWNER, USER_A, ceo)
+    general = await messaging.ensure_default_room(USER_A, USER_A)
+    dm = await messaging._agent_dm_room_id(USER_A, USER_A, ceo)
     assert next(c for c in created if c["kind"] == "dm")["extra"] == {
         "firstRun": True,
         "frontAgentId": ceo,
     }  # one atomic write
-    org.return_value = {"name": "Acme Renamed"}
+    org.return_value = "Acme Renamed"
     for _ in range(2):
         (welcome,), _ = await repo.list_messages(dm, 0, 100)
         assert (welcome["text"], welcome["kind"], welcome["author"]["displayName"]) == (
@@ -1393,16 +1384,16 @@ async def test_with_the_switch_the_welcome_and_chips_go_to_the_owners_lightbulb_
         assert dm_meta["firstRun"] is True and dm_meta["frontAgentId"] == ceo
         (line,), _ = await repo.list_messages(general, 0, 100)
         assert (line["text"], line["kind"]) == (messaging.team_welcome("Acme"), messaging.TEAM_WELCOME_KIND)
-        assert await messaging.ensure_default_room(OWNER, USER_A) == general
+        assert await messaging.ensure_default_room(USER_A, USER_A) == general
         # #general's welcome is the done signal; a second seed of the DM alone (a retry) replays under the new name.
-        await messaging._post_first_run_welcome(OWNER, USER_A, ceo, messaging.default_room_welcome("Acme Renamed"))
-    summaries = {s.room_id: s for s in await messaging._room_summaries(OWNER, USER_A)}
+        await messaging._post_first_run_welcome(USER_A, USER_A, ceo, messaging.default_room_welcome("Acme Renamed"))
+    summaries = {s.room_id: s for s in await messaging._room_summaries(USER_A, USER_A)}
     assert summaries[uuid.UUID(dm)].first_run and not summaries[uuid.UUID(general)].first_run
 
     # The owner's first answer closes the first run; a later replay of the seed never reopens it.
     await messaging.close_first_run(dm)
     assert "firstRun" not in await repo.get_room(dm)
-    await messaging._post_first_run_welcome(OWNER, USER_A, ceo, messaging.default_room_welcome("Acme"))
+    await messaging._post_first_run_welcome(USER_A, USER_A, ceo, messaging.default_room_welcome("Acme"))
     assert "firstRun" not in await repo.get_room(dm)
 
 
@@ -1411,15 +1402,15 @@ async def test_an_owner_who_wrote_before_setup_finished_still_gets_the_welcome_a
     from core.auth import AuthContext
 
     messaging, ceo, _ = _switch_on(monkeypatch)
-    dm = await messaging._agent_dm_room_id(OWNER, USER_A, ceo)  # opened before provisioning seeded the welcome
+    dm = await messaging._agent_dm_room_id(USER_A, USER_A, ceo)  # opened before provisioning seeded the welcome
     await messaging.create_human_message(
-        AuthContext(user_id=USER_A, org_id=OWNER),
+        AuthContext(user_id=USER_A, human_session=True),
         dm,
         messaging.CreateMessageRequest(
             client_message_id=uuid.uuid4(), text="hello?", reply_to_message_id=None, thread_root_message_id=None
         ),
     )
-    await messaging.ensure_default_room(OWNER, USER_A)
+    await messaging.ensure_default_room(USER_A, USER_A)
     rows, _ = await repo.list_messages(dm, 0, 100)
     assert [(r["author"]["kind"], r.get("kind")) for r in rows] == [
         ("human", None),

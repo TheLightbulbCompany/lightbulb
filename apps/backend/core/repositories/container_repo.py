@@ -69,8 +69,8 @@ async def get_by_status(status: str) -> list[dict]:
     return items
 
 
-#: Every non-owner row in this table keys on ``__<what>__#…``. A Clerk owner id is ``org_…``
-#: or ``user_…`` and never starts with ``_``, so ``scan_all`` can exclude all of them with one
+#: Every non-owner row in this table keys on ``__<what>__#…``. A Clerk owner id is ``user_…``
+#: and never starts with ``_``, so ``scan_all`` can exclude all of them with one
 #: ``begins_with`` -- and a reserved row added later is excluded by construction rather than by
 #: remembering to widen a list. ``PASS_KEY_PREFIX`` and ``LIFECYCLE_KEY_PREFIX`` both start here.
 RESERVED_KEY_PREFIX = "__"
@@ -824,8 +824,7 @@ async def mark_provision_error(owner_id: str, *, last_error: str, retryable: boo
     """Record a failed provision: ``status="error"`` with its cause.
 
     ``retryable`` records the cause's class (True transient, False deterministic);
-    either way the row waits for a retry (the ``organization.created`` redelivery or
-    ``POST /container/retry``).
+    either way the row waits for a retry (``POST /container/retry``).
     Never overwrites a ``running`` row -- a concurrent run that already
     succeeded wins, and a failed reconcile of a live workspace leaves it live.
     No-op when the row is gone.
@@ -1103,62 +1102,6 @@ async def retry_conflict(call):
             if not conflict or attempt == 7:
                 raise
             await asyncio.sleep(random.uniform(0, min(0.5, 0.025 * 2**attempt)))
-
-
-async def mark_paired_device_revoking(owner_id: str, device_id: str, *, user_id: str | None = None) -> bool:
-    """Flag a paired device as being revoked: every command resolution refuses it from now
-    on (``connection_service``), except the one internal clear that runs before the entry
-    is removed. With ``user_id``, only while the entry still belongs to that member (a
-    re-pair rewrites the whole entry). False when not paired (or re-paired meanwhile)."""
-    condition = "attribute_exists(#pd.#did)"
-    names = {"#pd": "paired_devices", "#did": device_id, "#rv": "revoking"}
-    values: dict = {":t": True}
-    if user_id is not None:
-        condition += " AND #pd.#did.#uid = :uid"
-        names["#uid"] = "userId"
-        values[":uid"] = user_id
-    try:
-        await retry_conflict(
-            lambda: run_in_thread(
-                _get_table().update_item,
-                Key={"owner_id": owner_id},
-                UpdateExpression="SET #pd.#did.#rv = :t",
-                ConditionExpression=condition,
-                ExpressionAttributeNames=names,
-                ExpressionAttributeValues=values,
-            )
-        )
-        return True
-    except ClientError as e:
-        if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
-            raise
-        return False
-
-
-async def remove_revoked_paired_device(owner_id: str, device_id: str, user_id: str) -> bool:
-    """Remove a pairing only while it is still that member's REVOKING entry: a fresh re-pair
-    (which rewrites the entry without the flag) survives. False when it did not match."""
-    try:
-        await retry_conflict(
-            lambda: run_in_thread(
-                _get_table().update_item,
-                Key={"owner_id": owner_id},
-                UpdateExpression="REMOVE #pd.#did",
-                ConditionExpression="#pd.#did.#rv = :t AND #pd.#did.#uid = :uid",
-                ExpressionAttributeNames={
-                    "#pd": "paired_devices",
-                    "#did": device_id,
-                    "#rv": "revoking",
-                    "#uid": "userId",
-                },
-                ExpressionAttributeValues={":t": True, ":uid": user_id},
-            )
-        )
-        return True
-    except ClientError as e:
-        if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
-            raise
-        return False
 
 
 async def touch_last_interactive(owner_id: str, *, at: int | None = None) -> bool:

@@ -1,4 +1,4 @@
-"""The workspace owner's email (users repo, then Clerk): the agent mail sender identity."""
+"""The owner's email (users repo, then Clerk): the agent mail sender identity."""
 
 from __future__ import annotations
 
@@ -8,12 +8,8 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 
-async def lookup_owner_email(*, org_id: Optional[str], fallback_user_id: Optional[str]) -> Optional[str]:
-    """Pull the org owner's email so ``provision_member`` can sign them in.
-
-    For ``organizationMembership.created`` Clerk's payload includes
-    ``data.organization.created_by`` (the owner's user_id), but NOT the
-    owner's email. We read it from the ``users`` repo where the
+async def lookup_owner_email(user_id: Optional[str]) -> Optional[str]:
+    """The owner's email. We read it from the ``users`` repo where the
     ``user.created`` webhook persisted it.
 
     Fallback to Clerk Backend API (``clerk_admin.get_user``) when the
@@ -24,27 +20,20 @@ async def lookup_owner_email(*, org_id: Optional[str], fallback_user_id: Optiona
         no row at all, and
       * older rows that predate the email field on ``users``.
 
-    Without the Clerk fallback the resolver returns None forever and
-    member onboarding stays permanently ``pending``. Returns None
-    (not raises) on Clerk failure so the retry worker can try again
-    next cycle without crashing the webhook.
-
-    ``org_id`` is optional and only used for log context — pass it
-    when known (webhook handlers) or ``None`` when not (retry worker
-    payloads omit org_id).
+    Returns None (not raises) on Clerk failure so the caller can try again.
     """
-    if not fallback_user_id:
+    if not user_id:
         return None
     from core.repositories import user_repo
 
     # Fast path: users repo already has the email (populated by the
     # ``user.created`` webhook).
     try:
-        row = await user_repo.get(fallback_user_id)
+        row = await user_repo.get(user_id)
         if row and row.get("email"):
             return row["email"]
     except Exception:
-        logger.exception("owner email lookup (user_repo) failed for org=%s", org_id)
+        logger.exception("owner email lookup (user_repo) failed for user=%s", user_id)
 
     # Fallback: ask Clerk directly. Mirrors the email-extraction
     # pattern in ``routers/teams/agents.py:_resolve_user_email``
@@ -52,7 +41,7 @@ async def lookup_owner_email(*, org_id: Optional[str], fallback_user_id: Optiona
     try:
         from core.services import clerk_admin
 
-        user = await clerk_admin.get_user(fallback_user_id)
+        user = await clerk_admin.get_user(user_id)
         if not user:
             return None
         primary_id = user.get("primary_email_address_id")
@@ -70,6 +59,6 @@ async def lookup_owner_email(*, org_id: Optional[str], fallback_user_id: Optiona
                 if addr:
                     return addr
     except Exception:
-        logger.exception("owner email lookup (clerk_admin) failed for org=%s", org_id)
+        logger.exception("owner email lookup (clerk_admin) failed for user=%s", user_id)
 
     return None

@@ -267,7 +267,6 @@ async def test_meeting_spend_always_carded_even_in_auto_mode(api, mode):
 
 
 async def test_always_allow_rule_lets_the_second_identical_action_through(api, mode, monkeypatch):
-    monkeypatch.setattr(questions, "_admins", AsyncMock(return_value=["user_ada"]))
     tid = await _started()
     ops = {"to": "x@example.com"}
     first = await api.post(_url(), json=await _body(tid, "c1", "mail.send", ops), headers=H)
@@ -309,19 +308,17 @@ async def test_an_existing_always_allow_rule_never_lets_money_or_a_provider_skip
     tid = await _started()
     resp = await api.post(_url(), json=await _body(tid, "c1", kind, operands), headers=H)
     assert resp.json()["decision"] == "needs_approval"
-    monkeypatch.setattr(questions, "_admins", AsyncMock(return_value=["user_ada"]))
     before = dict(rules_doc)
     await questions.add_always_allow(WS, kind, operands, by="user_sam")
     assert rules_doc == before
 
 
 async def test_add_always_allow_keeps_the_a2a_defaults_and_is_idempotent(monkeypatch):
-    monkeypatch.setattr(questions, "_admins", AsyncMock(return_value=["user_ada"]))
     await questions.add_always_allow(WS, "mail.send", {"to": "x@example.com"}, by="user_sam")
     await questions.add_always_allow(WS, "mail.send", {"to": "x@example.com"}, by="user_sam")
     rules = Rules.model_validate(await a2a_repo.get_rules(WS))
     ids = [r.id for r in rules.rules]
-    assert "r1" in ids and rules.holders["agent:*"] == ["user_ada"]  # the A2A defaults survive
+    assert "r1" in ids and rules.holders["agent:*"] == [WS]  # the A2A defaults survive
     [mine] = [r for r in rules.rules if r.skill == "mail.send"]
     assert (mine.resource, mine.requesters, mine.effect) == ("agent:*", [f"org:{WS}"], "allow")
     assert mine.when.operands_equal == {"to": "x@example.com"}
@@ -331,7 +328,6 @@ async def test_add_always_allow_keeps_the_a2a_defaults_and_is_idempotent(monkeyp
 async def test_add_always_allow_retries_over_a_concurrent_rules_change(monkeypatch, rules_doc):
     """An admin's rules PUT landing between the read and the write is never overwritten: the write is conditional on
     the revision read, and the retry re-reads the admin's document and appends to it."""
-    monkeypatch.setattr(questions, "_admins", AsyncMock(return_value=["user_ada"]))
     admin_doc = {"revision": "admin-1", "holders": {}, "rules": [], "default": "hold"}
     calls = {"n": 0}
 
@@ -351,7 +347,6 @@ async def test_add_always_allow_retries_over_a_concurrent_rules_change(monkeypat
 
 async def test_add_always_allow_gives_up_after_three_lost_races(monkeypatch, rules_doc):
     monkeypatch.setattr(a2a_repo, "put_rules_if", AsyncMock(return_value=False))
-    monkeypatch.setattr(questions, "_admins", AsyncMock(return_value=[]))
     with pytest.raises(questions.RulesBusy):
         await questions.add_always_allow(WS, "mail.send", {"to": "x@example.com"}, by="user_sam")
     assert a2a_repo.put_rules_if.await_count == 3

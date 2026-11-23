@@ -23,25 +23,14 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-def _owner_role(auth: AuthContext) -> str:
-    """ "admin" | "member" — the role a Gate payload is rendered for."""
-    is_admin = auth.is_org_admin
-    return "admin" if is_admin else "member"
-
-
-async def _assert_provision_allowed(
-    owner_id: str,
-    *,
-    is_admin: bool = True,
-    actor_user_id: str | None = None,
-) -> None:
+async def _assert_provision_allowed(owner_id: str, *, actor_user_id: str | None = None) -> None:
     """Raise 402 with a structured `blocked` payload if the workspace gate is up.
 
     Only the browser's start-on-view door uses it now: starting a browser session spends, and
     provisioning does not. ``actor_user_id`` is the caller, so a trial-expired block lands on
     their PostHog person.
     """
-    gate = await evaluate_provision_gate(owner_id=owner_id, is_admin=is_admin, actor_user_id=actor_user_id)
+    gate = await evaluate_provision_gate(owner_id=owner_id, actor_user_id=actor_user_id)
     if gate is not None:
         raise HTTPException(status_code=402, detail=gate.to_payload())
 
@@ -51,14 +40,12 @@ async def _assert_provision_allowed(
     summary="Get container metadata for current user",
     description=(
         "A cold read of the workspace's status contract, fetched on mount and after a "
-        "live event. It triggers no provisioning: a new workspace is provisioned by the "
-        "Clerk organization.created webhook, and a failed one is retried by that event's "
-        "redelivery or POST /container/retry. Its one write is creating an admin's "
+        "live event. It triggers no provisioning: a first provision starts from "
+        "POST /container/provision, and a failed one is retried by POST /container/retry. Its one write is creating an admin's "
         "missing trial row (create-if-absent), so a read that beats the webhook sees the trial."
     ),
     operation_id="container_status",
     responses={
-        202: {"description": "Org-member: owner's container not ready yet"},
         402: {"description": "Chat and orb cannot run now (structured blocked payload)"},
     },
 )
@@ -73,17 +60,13 @@ async def container_status(
     if not container:
         # No row: surface a gate as its structured 402 payload so the frontend renders the
         # picker / "top up" CTA instead of a generic "no container" state. An admin's first
-        # read can beat the organization.created webhook, so the trial row is created here
+        # read can beat the trial row's creation, so it is created here
         # too (create-if-absent -- a write, not a trigger) or the gate would read "no
         # billing" and flash the paywall.
-        if auth.is_org_admin:
-            await ensure_workspace_trial_default(auth, owner_id)
-        gate = await evaluate_provision_gate(owner_id=owner_id, is_admin=auth.is_org_admin, actor_user_id=auth.user_id)
+        await ensure_workspace_trial_default(auth, owner_id)
+        gate = await evaluate_provision_gate(owner_id=owner_id, actor_user_id=auth.user_id)
         if gate is not None:
             raise HTTPException(status_code=402, detail=gate.to_payload())
-        # Org members ride the owner's container: 202 renders "workspace pending".
-        if auth.is_org_context and not auth.is_org_admin:
-            raise HTTPException(status_code=202, detail="team workspace pending")
         # compute_status handles container=None (runtime_phase="provisioning") and keeps a
         # preserved onboarding state (funnel_state=="complete") across a container-only
         # recreation, so onboarded is never hardcoded False here.
@@ -101,9 +84,7 @@ async def container_status(
     if container.get("status") in ("error", "stopped"):
         from core.services import provision_gate, trial_cap
 
-        trial_gate = provision_gate.gate_for_trial_reason(
-            await trial_cap.trial_block_reason(owner_id), _owner_role(auth)
-        )
+        trial_gate = provision_gate.gate_for_trial_reason(await trial_cap.trial_block_reason(owner_id))
         if trial_gate is not None:
             raise HTTPException(status_code=402, detail=trial_gate.to_payload())
 
@@ -205,7 +186,7 @@ async def browser_viewing(
     Start) and keeps it from idle-stopping while someone is watching."""
     response.headers["Cache-Control"] = "no-store"
     owner_id = resolve_owner_id(auth)
-    await _assert_provision_allowed(owner_id, is_admin=auth.is_org_admin, actor_user_id=auth.user_id)
+    await _assert_provision_allowed(owner_id, actor_user_id=auth.user_id)
     return await _browser_result(browser_control.watch(owner_id, auth.user_id, frames=bool(body and body.frames)))
 
 

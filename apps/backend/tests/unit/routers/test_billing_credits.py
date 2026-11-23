@@ -48,7 +48,7 @@ async def test_get_balance_reconciles_the_callers_exact_top_up(
     async_client, intent_state, pointer_matches, pointer_status, expected_status
 ):
     exact_request = "8e22fb41-07e3-4f9d-920c-68ce9a7710b7"
-    exact_event = f"metronome-top-up:org_test_456:{exact_request}"
+    exact_event = f"metronome-top-up:user_test_123:{exact_request}"
     with (
         patch("core.services.metronome_gate.read_net_balance_microcents", new=AsyncMock(return_value=0)),
         patch("core.services.metronome_gate.apply_fresh_balance", new=AsyncMock()),
@@ -58,7 +58,7 @@ async def test_get_balance_reconciles_the_callers_exact_top_up(
                 return_value={
                     "intent_event_id": exact_event
                     if pointer_matches
-                    else "metronome-top-up:org_test_456:another-request",
+                    else "metronome-top-up:user_test_123:another-request",
                     "request_id": exact_request if pointer_matches else "another-request",
                     "amount_cents": 5000,
                     "status": pointer_status,
@@ -71,7 +71,7 @@ async def test_get_balance_reconciles_the_callers_exact_top_up(
                 return_value={
                     "event_id": exact_event,
                     "kind": "metronome-top-up",
-                    "owner_id": "org_test_456",
+                    "owner_id": "user_test_123",
                     "request_id": exact_request,
                     "amount_cents": 2000,
                     "state": intent_state,

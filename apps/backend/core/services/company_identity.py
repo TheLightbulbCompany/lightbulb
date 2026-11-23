@@ -16,14 +16,12 @@ import re
 import unicodedata
 
 from core.repositories import company_slug_repo
-from core.services import clerk_admin
 
 logger = logging.getLogger(__name__)
 
 _SLUG_STRIP_RE = re.compile(r"[^a-z0-9]+")
 MAX_SLUG_LEN = 32
 _FALLBACK_SLUG = "company"
-_FALLBACK_COMPANY_NAME = "My Company"
 
 # These become email local parts, so they must never be handed to a tenant.
 #
@@ -132,54 +130,6 @@ def slugify(value: str) -> str:
     return slug[:MAX_SLUG_LEN].strip("-")
 
 
-def prettify_email_local_part(email: str) -> str:
-    """``jane.doe+tag@gmail.com`` -> ``Jane Doe``."""
-    local = email.split("@", 1)[0]
-    local = local.split("+", 1)[0]
-    words = [w for w in re.split(r"[._\-]+", local) if w]
-    return " ".join(w.capitalize() for w in words) or local
-
-
-async def generate_company_name(*, org_id: str | None, owner_email: str) -> str:
-    """The initial company name.
-
-    Org owners get their Clerk organization's real name; personal owners
-    get a prettified form of their email local part. Never raises — a
-    Clerk hiccup falls back to the email, and a malformed (non-string)
-    ``owner_email`` falls back to a generic name rather than propagating.
-    Never returns an empty/whitespace string either: a pathological
-    ``owner_email`` (e.g. ``"@example.com"``) prettifies to ``""``, and the
-    ``create_company(name=...)`` call site is NOT inside this function's
-    try/except — an empty name would 400 and fail a net-new owner's
-    provision, so both the Clerk-org path (empty org name) and the
-    email-fallback path funnel through the same non-empty guard below.
-    """
-    if org_id:
-        try:
-            org = await clerk_admin.get_organization(org_id)
-        except Exception as e:  # noqa: BLE001 — naming must not block provisioning
-            logger.warning("company_identity: Clerk org lookup failed for %s: %s", org_id, e)
-            org = None
-        if org:
-            try:
-                name = (org.get("name") or "").strip()
-            except AttributeError:
-                # Malformed Clerk payload (e.g. `name` isn't a string) — fall
-                # back to the email rather than propagate.
-                name = ""
-            if name:
-                return name
-    try:
-        name = prettify_email_local_part(owner_email)
-    except (AttributeError, TypeError) as e:
-        # `owner_email` wasn't a string (e.g. None from a malformed caller) —
-        # fall back to a generic name rather than raise. The docstring says
-        # "Never raises" and must stay true for this path too.
-        logger.warning("company_identity: owner_email was not a string (%s); using fallback name", e)
-        return _FALLBACK_COMPANY_NAME
-    return name if name.strip() else _FALLBACK_COMPANY_NAME
-
-
 def slug_format_problem(slug: str) -> str | None:
     """``invalid`` or ``reserved`` -- the reasons that need no lookup."""
     if not slug or slugify(slug) != slug:
@@ -205,8 +155,7 @@ async def slug_unavailable_reason(slug: str, *, user_id: str) -> str | None:
 
 
 async def allocate_company_slug(*, owner_id: str, name: str) -> str | None:
-    """The owner's email slug: the one they chose at "Create your workspace" (handed over
-    by the ``organization.created`` webhook), else -- only for workspaces created before
+    """The owner's email slug: the one they chose at "Set up your business", else -- only for accounts created before
     that choice existed -- ``slugify(name)`` if it is free.
 
     There are NO numeric suffixes (owner ruling 2026-09-24): a derived slug that is taken

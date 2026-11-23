@@ -29,7 +29,7 @@ async def test_blocked_owner_returns_credits_required_gate():
         ),
         patch("core.services.metronome_gate.is_owner_blocked", new=blocked),
     ):
-        gate = await evaluate_provision_gate(owner_id="org_Y", is_admin=True)
+        gate = await evaluate_provision_gate(owner_id="org_Y")
     assert gate is not None
     assert gate.code == "credits_required"
     blocked.assert_awaited_once_with("org_Y")
@@ -51,7 +51,7 @@ async def test_unblocked_owner_passes_balance_layer():
         ),
         patch("core.services.metronome_gate.is_owner_blocked", new=blocked),
     ):
-        gate = await evaluate_provision_gate(owner_id="org_Y", is_admin=True)
+        gate = await evaluate_provision_gate(owner_id="org_Y")
     # openrouter_managed with a non-blocked gate clears the balance layer; any
     # gate returned here is NOT credits_required.
     assert gate is None or gate.code != "credits_required"
@@ -67,5 +67,5 @@ async def test_non_bedrock_provider_never_reads_credits_gate():
         ),
         patch("core.services.metronome_gate.is_owner_blocked", new=blocked),
     ):
-        await evaluate_provision_gate(owner_id="org_Y", is_admin=True)
+        await evaluate_provision_gate(owner_id="org_Y")
     blocked.assert_not_called()

@@ -35,14 +35,15 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from core.dynamodb import get_item, messaging_table, owner_pk, run_in_thread, utc_now_iso
-from core.engine import engine
-from core.engine.contract import EngineError, LineIn, OpenIn, Principal
+from core.engine import client as engine
+from core.engine.contract import LineIn, OpenIn, Principal
 from core.engine.contract import QuestionRef as AnswerRef, StartIn as TaskIn
 from core.billing import voice_billing, voice_plan
 from core.observability.metrics import put_metric
 from core.repositories import agent_registry_repo, billing_repo
 from core.voice import store
-from core.services import push_service, clerk_admin
+from core.services import push_service
+from core.services.workspace_name import saved_name
 from core.voice import rooms
 from core.voice.phone import phone_pin, voice_booking, voice_outbound, voice_preferences
 from core.voice.worker_api import _problem, _Worker
@@ -215,8 +216,7 @@ async def start_call(body: StartIn) -> dict:
     # The name the owner typed at setup is what callers know; the workspace name is only a fallback.
     business = (cfg.get("business") or "").strip()
     if not business:
-        org = await clerk_admin.get_organization(owner_id) if owner_id.startswith("org_") else None
-        business = (org or {}).get("name") or "the business"
+        business = await saved_name(owner_id) or "the business"
     assistant = cfg["name"].strip() or "Lightbulb"
     if cfg.get("bookingsGo") == "google":  # a cold grant takes seconds; the in-call Google calls get 2 s
         _warming.add(t := asyncio.create_task(voice_booking.warm_google(owner_id)))
@@ -285,23 +285,25 @@ async def start_call(body: StartIn) -> dict:
         "unknown": [],
         **({"limited": limited} if limited else {}),
     }
-    room = await engine.open_conversation(
-        OpenIn(
-            tenant_id=owner_id,
-            conversation_id=call_id,
-            client_key=f"call:{body.livekitRoom}",
-            kind="call",
-            name=f"Call · {call['callerName'] or caller or 'unknown'}"[:60],
-            creator=Principal(kind="member", id=line["ownerUserId"], display_name=business),
-            hidden=True,
-            # Lightbulb (the Router's voice) is seated, so its replies and the Front desk's answers land here
-            seat_front_agent=not forward_to,
-            annotations={
-                "call": call,
-                "ownerUserId": line["ownerUserId"],
-                "callToken": token,  # beside the record, never in it: the Home reads META.call
-                **({"liveSlot": slot} if slot else {}),
-            },
+    room = await engine.http(
+        engine.open_conversation(
+            OpenIn(
+                tenant_id=owner_id,
+                conversation_id=call_id,
+                client_key=f"call:{body.livekitRoom}",
+                kind="call",
+                name=f"Call · {call['callerName'] or caller or 'unknown'}"[:60],
+                creator=Principal(kind="member", id=line["ownerUserId"], display_name=business),
+                hidden=True,
+                # Lightbulb (the Router's voice) is seated, so its replies and the Front desk's answers land here
+                seat_front_agent=not forward_to,
+                annotations={
+                    "call": call,
+                    "ownerUserId": line["ownerUserId"],
+                    "callToken": token,  # beside the record, never in it: the Home reads META.call
+                    **({"liveSlot": slot} if slot else {}),
+                },
+            )
         )
     )
     front = room.front_agent_id
@@ -366,12 +368,14 @@ async def _cursor(ws: str, room_id: str) -> int:
 
 async def owner_dm(ws: str, member: str) -> str:
     """The member's DM with the assistant, where the orb talks (found or created, as /voice/lightbulb opens it)."""
-    room = await engine.open_conversation(
-        OpenIn(
-            tenant_id=ws,
-            client_key=f"lightbulb-owner-dm|{ws}|{member}",
-            kind="dm",
-            creator=Principal(kind="member", id=member),
+    room = await engine.http(
+        engine.open_conversation(
+            OpenIn(
+                tenant_id=ws,
+                client_key=f"lightbulb-owner-dm|{ws}|{member}",
+                kind="dm",
+                creator=Principal(kind="member", id=member),
+            )
         )
     )
     return room.conversation_id
@@ -392,7 +396,7 @@ async def owner_pin(call_id: str, body: PinIn, ws: _Owner) -> dict:
     if member:
         try:
             dm = await owner_dm(ws, member)
-        except EngineError:  # a removed member, or no assistant yet
+        except HTTPException:  # the engine refused: no assistant yet
             member = None
     if not member:
         await _patch_call(ws, call_id, lambda c: {"steps": _step(c, "A phone PIN was entered and refused")})

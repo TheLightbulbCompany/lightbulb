@@ -4,6 +4,12 @@ import { Component, ErrorInfo, ReactNode } from "react";
 
 import { isChunkLoadError, reloadForChunkError } from "@/components/DeployRefresh";
 import { SupportTicketDialog } from "@/components/support/SupportTicketDialog";
+import { captureException } from "@/lib/analytics";
+
+// PostHogInit (a sibling under PostHogProvider) loads PostHog in an effect after this commit, and
+// captureException does nothing until it has. ponytail: one fixed delay, not a queue; an error caught
+// before PostHog loads within this window is still lost.
+export const REPORT_DELAY_MS = 2000;
 
 interface Props {
   children: ReactNode;
@@ -18,6 +24,10 @@ interface State {
 }
 
 export class ErrorBoundary extends Component<Props, State> {
+  // ponytail: one silent retry per boundary (the root one lives for the whole page load). The first render
+  // after an OAuth redirect threw once and passed on Try Again (2026-11-23). A second throw shows the screen.
+  private retried = false;
+
   constructor(props: Props) {
     super(props);
     this.state = { hasError: false, error: null, componentStack: null, reportOpen: false };
@@ -32,6 +42,12 @@ export class ErrorBoundary extends Component<Props, State> {
     // of showing "Something went wrong".
     if (isChunkLoadError(error)) return reloadForChunkError();
     console.error("Error caught by boundary:", error, errorInfo);
+    const route = window.location.pathname;
+    setTimeout(() => captureException(error, { route, source: "error_boundary" }), REPORT_DELAY_MS);
+    if (!this.retried) {
+      this.retried = true;
+      return this.handleRetry();
+    }
     this.setState({ componentStack: errorInfo.componentStack ?? null });
   }
 

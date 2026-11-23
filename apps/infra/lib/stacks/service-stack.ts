@@ -193,11 +193,6 @@ export interface ServiceStackProps extends cdk.StackProps {
    */
   agentMailConfigurationSet?: string;
   /**
-   * The Lightbulb workspace's Clerk org id (lightbulb-stage.ts VENDOR_ORG_ID_BY_ENV).
-   * Every other org gets a channel shared with it. Empty ⇒ feature off.
-   */
-  vendorOrgId?: string;
-  /**
    * Connect platform client id (ca_…) for the Standard-OAuth "connect an
    * existing Stripe account" flow. Public, not a secret — see
    * STRIPE_CONNECT_CLIENT_ID_BY_ENV in isol8-stage.ts. Undefined/empty until
@@ -1683,11 +1678,6 @@ export class ServiceStack extends cdk.Stack {
         env === "prod"
           ? (process.env.STRIPE_ULTRA_PRICE_ID_PROD ?? "")
           : (process.env.STRIPE_ULTRA_PRICE_ID_DEV ?? ""),
-      // Per-member seat Price (T04), same live/test split. Empty fails closed.
-      STRIPE_SEAT_PRICE_ID:
-        env === "prod"
-          ? (process.env.STRIPE_SEAT_PRICE_ID_PROD ?? "")
-          : (process.env.STRIPE_SEAT_PRICE_ID_DEV ?? ""),
       // Front desk add-on Price, same live/test split. Empty fails closed.
       STRIPE_FRONT_DESK_PRICE_ID:
         env === "prod"
@@ -1782,6 +1772,8 @@ export class ServiceStack extends cdk.Stack {
         env === "prod"
           ? (process.env.STRIPE_SPARK_PRICE_ID_PROD ?? "")
           : (process.env.STRIPE_SPARK_PRICE_ID_DEV ?? ""),
+      // Save Spark voice transcripts. Dev only: prod waits for the owner's yes and the privacy text.
+      SPARK_TRANSCRIPTS_ENABLED: env === "dev" ? "1" : "0",
       METRONOME_VOICE_METRIC_ID: env === "dev"
         ? "17a42d84-c10c-4c6a-907d-feb2ab02d080"
         : "8065419d-79f8-4b8e-ad1d-d933479521cc",
@@ -1855,9 +1847,6 @@ export class ServiceStack extends cdk.Stack {
       // wherever that stack isn't deployed — sends stay unstamped, a
       // harmless no-op.
       AGENT_MAIL_CONFIGURATION_SET: props.agentMailConfigurationSet ?? "",
-      // The Lightbulb workspace's Clerk org id (lightbulb-stage.ts
-      // VENDOR_ORG_ID_BY_ENV). Empty ⇒ the vendor-shared-channel feature is off.
-      VENDOR_ORG_ID: props.vendorOrgId ?? "",
       // Platform sender identities, on the apex of the mail domain. Set here
       // rather than left to core/config.py's defaults so the mail domain has a
       // SINGLE source of truth (lib/domains.ts) and a move cannot leave the
@@ -1868,10 +1857,9 @@ export class ServiceStack extends cdk.Stack {
       EMAIL_FROM_WELCOME: `Lightbulb <hello@${platformMailDomain}>`,
       EMAIL_SUPPORT_ADDRESS: `support@${platformMailDomain}`,
       EMAIL_FROM_TICKETS: `Lightbulb Support <tickets@${platformMailDomain}>`,
-      // The engine's transport (core/config.py). `http`: the products call the engine service, and the engine's
-      // processes call the products back, over HTTP. Both URLs are the internal ALB: the engine service on :8082,
-      // and the backend's /api/v1/internal/engine/* callbacks on :80, which the public API Gateway refuses (api-stack.ts).
-      ENGINE_TRANSPORT: "http",
+      // The engine's wire (core/config.py): the products call the engine service, and the engine's processes call
+      // the products back, over HTTP. Both URLs are the internal ALB: the engine service on :8082, and the backend's
+      // /api/v1/internal/engine/* callbacks on :80, which the public API Gateway refuses (api-stack.ts).
       ENGINE_URL: `http://${props.albDnsName}:8082`,
       PRODUCT_CALLBACK_URL: `http://${props.albDnsName}`,
     };

@@ -28,7 +28,6 @@ import logging
 from datetime import datetime, timezone
 from email.utils import getaddresses
 
-from core.auth import is_org_owner_id
 from core.config import settings
 from core.observability.metrics import put_metric
 from core.repositories import agent_email_repo, agent_mail_inbox_repo, container_repo
@@ -79,10 +78,7 @@ async def consume_cap(owner_id: str) -> bool:
 
 async def _owner_email(owner_id: str) -> str | None:
     onboarding = await WorkspaceRepo().get_onboarding_state(owner_id) or {}
-    return await lookup_owner_email(
-        org_id=owner_id if is_org_owner_id(owner_id) else None,
-        fallback_user_id=onboarding.get("user_id") or owner_id,
-    )
+    return await lookup_owner_email(onboarding.get("user_id") or owner_id)
 
 
 async def send(

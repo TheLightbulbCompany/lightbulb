@@ -51,9 +51,8 @@ async def reserve(*, slug: str, owner_id: str) -> bool:
         raise
 
 
-#: A slug chosen at "Create your workspace" is held for the USER before the Clerk org exists
-#: (the org is only created once the hold is won), then handed to the org by the
-#: ``organization.created`` webhook. An abandoned create frees its slug after ``HOLD_TTL_S``.
+#: A slug chosen at "Set up your business" is held for the USER, then claimed for their tenant
+#: (the person's own id). An abandoned hold frees its slug after ``HOLD_TTL_S``.
 PENDING_PREFIX = "pending:"
 HOLD_TTL_S = 30 * 60
 
@@ -144,7 +143,7 @@ async def claim(*, slug: str, user_id: str, owner_id: str) -> bool:
 
 
 async def claim_hold(*, user_id: str, owner_id: str) -> str | None:
-    """The ``organization.created`` backstop: claim the user's live hold, found through the
+    """Claim the user's live hold, found through the
     eventually consistent ``by-owner`` GSI. Returns the slug, or None (no live hold)."""
     for row in await _pending_rows(user_id):
         if not is_stale_hold(row) and await claim(slug=row["slug"], user_id=user_id, owner_id=owner_id):

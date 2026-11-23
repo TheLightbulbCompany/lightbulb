@@ -13,8 +13,8 @@ export const needsName = (user: Named | null | undefined): boolean =>
 /**
  * Sends a signed-in person with no name to /welcome/name and brings them back.
  * True while that is happening: the caller holds whatever it was about to do
- * (create a workspace, redeem a join link) so teammates first see a real name.
- * The return path is the path and query only, never the fragment (a join token).
+ * (set up the business) so the account never starts under a nameless person.
+ * The return path is the path and query only, never the fragment.
  */
 export function useNameGate(enabled = true): boolean {
   const router = useRouter();

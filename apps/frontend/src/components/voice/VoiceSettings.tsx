@@ -66,7 +66,7 @@ function CalendarCard() {
         onClick={async () => {
           setBusy(true); setErr("");
           try { await startOAuth("google"); }
-          catch (e) { setErr((e as { status?: number })?.status === 403 ? "Ask an admin of this business to connect the calendar." : "Couldn't open Google. Try again."); }
+          catch (e) { setErr((e as { status?: number })?.status === 403 ? "You can't connect the calendar from this account." : "Couldn't open Google. Try again."); }
           finally { setBusy(false); }
         }}>
         {isLoading ? "Loading…" : busy ? "Opening Google…" : google?.status === "reconnect_required" ? "Reconnect Google" : "Connect Google Calendar"}</Button>}

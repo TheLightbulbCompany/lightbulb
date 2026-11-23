@@ -50,7 +50,7 @@ class ProposeIn(BaseModel):
     tz: str | None = None
     specialist_id: str | None = None
     deliver_to: str | None = Field(default=None, pattern=r"^(none|room:\S+|dm:\S+)$")
-    budget_per_run_usd: float = Field(default=1.0, gt=0, le=100)
+    budget_per_run_usd: float = Field(default=1.0, ge=0.01, le=100)
     # The batch's trigger ids: the room, requester and thread come from their rows unless given.
     trigger_ids: list[str] = []
     requester_user_id: str | None = None
@@ -60,7 +60,7 @@ class ProposeIn(BaseModel):
     match: RuleMatchIn | None = None
     speculative: bool = False
     time_limit_s: int | None = Field(default=None, ge=60, le=7200)
-    daily_cap_usd: float = Field(default=10.0, gt=0, le=100)
+    daily_cap_usd: float = Field(default=10.0, ge=0.01, le=100)
     builtin: RuleBuiltin | None = None
     # A cron that pins one date is a one-off; "yearly" keeps it every year on that date.
     repeat: Literal["yearly"] | None = None

@@ -186,7 +186,6 @@ class Gate:
     action_label: str
     action_href: str
     action_admin_only: bool
-    owner_role: str  # "admin" | "member"
 
     def to_payload(self) -> dict[str, Any]:
         """Build the FastAPI HTTPException detail payload.
@@ -207,12 +206,11 @@ class Gate:
                     "href": self.action_href,
                     "admin_only": self.action_admin_only,
                 },
-                "owner_role": self.owner_role,
             },
         }
 
 
-def _team_billing_required_gate(owner_role: str) -> Gate:
+def _team_billing_required_gate() -> Gate:
     """The workspace subscription paywall gate.
 
     An org owner without an active workspace subscription is always routed
@@ -226,7 +224,6 @@ def _team_billing_required_gate(owner_role: str) -> Gate:
         action_label="Set up billing",
         action_href="/settings/billing",
         action_admin_only=True,
-        owner_role=owner_role,
     )
 
 
@@ -250,7 +247,7 @@ async def _has_oauth_tokens(token_owner: str, owner_id: str) -> bool:
     return await oauth_service.has_active_oauth(user_id=token_owner, bound_to=owner_id)
 
 
-def trial_daily_cap_gate(owner_role: str) -> Gate:
+def trial_daily_cap_gate() -> Gate:
     """The blocked-gate a trial_local owner sees once they cross the $3/day
     $3/day trial cap. Shared so the provision gate and the /container/status wake
     path render an identical 'daily limit' card (not a spinner)."""
@@ -261,11 +258,10 @@ def trial_daily_cap_gate(owner_role: str) -> Gate:
         action_label="Upgrade",
         action_href="/settings?panel=billing",
         action_admin_only=False,
-        owner_role=owner_role,
     )
 
 
-def gate_for_trial_reason(reason: str | None, owner_role: str) -> Gate | None:
+def gate_for_trial_reason(reason: str | None) -> Gate | None:
     """Map a ``trial_cap.trial_block_reason`` result to the card it renders.
 
     The ONE reason->Gate mapping. Every door that can start, wake, or dispatch
@@ -277,15 +273,15 @@ def gate_for_trial_reason(reason: str | None, owner_role: str) -> Gate | None:
     unrepresentable. Returns None when the owner is not blocked.
     """
     if reason == trial_cap.TRIAL_EXPIRED:
-        return trial_expired_gate(owner_role)
+        return trial_expired_gate()
     if reason == trial_cap.DAILY_CAP:
-        return trial_daily_cap_gate(owner_role)
+        return trial_daily_cap_gate()
     if reason == trial_cap.INCLUDED_CAP:
-        return included_daily_cap_gate(owner_role)
+        return included_daily_cap_gate()
     return None
 
 
-def included_daily_cap_gate(owner_role: str) -> Gate:
+def included_daily_cap_gate() -> Gate:
     """A PAYING capped owner (Base, or Workspace/Ultra on the interim managed default) at the
     daily included limit. Never the trial card: they are paying. Final copy is keyed on this
     code by the frontend; this text is the neutral fallback."""
@@ -296,11 +292,10 @@ def included_daily_cap_gate(owner_role: str) -> Gate:
         action_label="Billing",
         action_href="/settings?panel=billing",
         action_admin_only=False,
-        owner_role=owner_role,
     )
 
 
-def trial_expired_gate(owner_role: str) -> Gate:
+def trial_expired_gate() -> Gate:
     """The blocked-gate a trial_local owner sees once their 30-day window
     (``trial_end``, armed by the first canonical ready status poll) has
     passed. Mirrors ``trial_daily_cap_gate`` field-for-field
@@ -313,14 +308,12 @@ def trial_expired_gate(owner_role: str) -> Gate:
         action_label="See the plan",
         action_href="/settings?panel=billing",
         action_admin_only=False,
-        owner_role=owner_role,
     )
 
 
 async def evaluate_provision_gate(
     *,
     owner_id: str,
-    is_admin: bool = True,  # server-side callers (webhooks, wake paths) read as the workspace admin
     actor_user_id: str | None = None,  # the human polling, when there is one: the PostHog person
 ) -> Gate | None:
     """Evaluate the provision gate, emitting a metric on a blocked decision.
@@ -334,7 +327,7 @@ async def evaluate_provision_gate(
     invisible to a {env,service} query. Re-adding that call would DOUBLE-COUNT
     every block on the rollup and halve W64's effective threshold.
     """
-    gate = await _evaluate_provision_gate_inner(owner_id=owner_id, is_admin=is_admin)
+    gate = await _evaluate_provision_gate_inner(owner_id=owner_id)
     if gate is not None:
         # Bounded ``code`` set → safe metric dimension. Best-effort: a metrics
         # outage must never block the gate decision (which is the request path).
@@ -350,7 +343,7 @@ async def evaluate_provision_gate(
     return gate
 
 
-async def probe_provision_gate(*, owner_id: str, is_admin: bool = True) -> Gate | None:
+async def probe_provision_gate(*, owner_id: str) -> Gate | None:
     """Metric-free gate evaluation for diagnostic reads (the admin surface).
 
     ``evaluate_provision_gate``'s blocked-metric stream feeds the W64
@@ -364,18 +357,17 @@ async def probe_provision_gate(*, owner_id: str, is_admin: bool = True) -> Gate 
     other owner poll would — an admin read can self-heal an owner's gate state
     as a side effect of merely looking at it.
     """
-    return await _evaluate_provision_gate_inner(owner_id=owner_id, is_admin=is_admin)
+    return await _evaluate_provision_gate_inner(owner_id=owner_id)
 
 
 async def _evaluate_provision_gate_inner(
     *,
     owner_id: str,
-    is_admin: bool = True,
 ) -> Gate | None:
     """Return a Gate if the workspace's chat and orb cannot run right now, else None.
 
     The voice product's gate. It no longer gates provisioning: a workspace on the shared pool
-    costs nothing until it runs, so sign-up provisions unconditionally (``provision_new_workspace``)
+    costs nothing until it runs, so sign-up provisions unconditionally (``POST /container/provision``)
     and this only answers ``/container/status``. Phone is not judged here: going live needs the
     voice plan (``voice_onboarding.provision_at_go_live`` refuses with ``voice_payment_required``).
 
@@ -386,8 +378,6 @@ async def _evaluate_provision_gate_inner(
        cards; a credit-drawing owner gets the credits card when the Metronome fast-gate blocks.
     3. That provider's own sign-in: ChatGPT tokens for the connector, a legacy BYO row's provider.
     """
-    owner_role = "admin" if is_admin else "member"
-
     # Layer 1 — a live subscription (the trial included).
     account = await billing_repo.get_by_owner_id(owner_id)
     if not account:
@@ -401,7 +391,6 @@ async def _evaluate_provision_gate_inner(
                 action_label="Update payment",
                 action_href="/settings/billing",
                 action_admin_only=True,
-                owner_role=owner_role,
             )
         # A row checkout would 409 (TRIAL_BLOCKED_STATUSES: canceled, unpaid, a pending voice
         # invoice, ...) goes to billing management; anything else (an abandoned checkout's
@@ -414,14 +403,13 @@ async def _evaluate_provision_gate_inner(
                 action_label="Manage subscription",
                 action_href="/settings/billing",
                 action_admin_only=True,
-                owner_role=owner_role,
             )
-        return _team_billing_required_gate(owner_role)
+        return _team_billing_required_gate()
 
     # Layer 2 — spend guards. A capped owner's valve is OpenRouter's per-key daily limit (and the
     # trial's 30 days), never credits: the same predicate as gate_chat and the openrouter-gate.
     if trial_cap.is_managed_capped(account):
-        return gate_for_trial_reason(await trial_cap.reason_for_account(owner_id, account), owner_role)
+        return gate_for_trial_reason(await trial_cap.reason_for_account(owner_id, account))
 
     from core.services.container_provision import provider_choice_from_row
 
@@ -440,7 +428,6 @@ async def _evaluate_provision_gate_inner(
                 action_label="Top up now",
                 action_href="/settings?panel=providers",
                 action_admin_only=False,
-                owner_role=owner_role,
             )
         return None
 
@@ -458,7 +445,6 @@ async def _evaluate_provision_gate_inner(
                 action_label="Sign in with ChatGPT",
                 action_href="/chat?provider=chatgpt_oauth",
                 action_admin_only=True,
-                owner_role=owner_role,
             )
 
     if provider_choice == "byo_key" and not byo_provider:
@@ -473,7 +459,6 @@ async def _evaluate_provision_gate_inner(
             action_label="Change provider",
             action_href="/settings?panel=billing",
             action_admin_only=True,
-            owner_role=owner_role,
         )
 
     return None

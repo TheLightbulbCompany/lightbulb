@@ -1348,7 +1348,7 @@ SESSION_SUMMARY_CAP = 24
 async def live_sessions_for_room(owner: str, room_id: str, members: list[dict]) -> list[dict]:
     """Bounded projection of the room's live sessions for agent ingress.
     Never raises: a missing summary is worse than a blocked dispatch, but not by much.
-    Session visibility is workspace-wide, so a room shared with another organization
+    Session visibility is workspace-wide, so a room shared with another tenant
     (#2644) gets no summary: any member whose home differs from the room's owner
     blanks the whole result before anything is queried."""
     if any(messaging_repo.member_home(member, owner) != owner for member in members):
@@ -1364,7 +1364,7 @@ async def live_sessions_for_room(owner: str, room_id: str, members: list[dict]) 
                 **s.model_dump(by_alias=True, include=include),
                 "title": s.display_title or s.title,
                 "humanUserId": s.human_user_id,
-                "displayName": names.get(s.human_user_id) or "Workspace member",
+                "displayName": names.get(s.human_user_id) or "Someone",
             }
             for s in sessions
         ]
@@ -1378,7 +1378,7 @@ async def referenced_sessions(owner: str, members: list[dict], session_ids: list
     """The sessions a room message references, projected for agent ingress. A reference is a
     link, not a wake (owner ruling 2026-10-02), so offline and ended sessions resolve too --
     under the message writer's own rule: shared, interactive, owner still in the room, and
-    no member from another organization. Never raises: a missing line beats a lost turn."""
+    no member from another tenant. Never raises: a missing line beats a lost turn."""
     if any(messaging_repo.member_home(member, owner) != owner for member in members):
         return []
     humans = {member["id"] for member in members if member.get("kind") == "human"}
@@ -1831,8 +1831,6 @@ async def decide_join(
 
     action = "join_allowed" if decision == "allow" else "join_declined"
     row, audit = await _change_session(auth, session_id, change, action, user_id)
-    if audit is not None and decision == "allow" and answered.get("outsider"):
-        await _admit_outsider(auth, session_id, user_id, row, answered["request"])
     if audit is not None:  # only a write that landed; a repeated answer is a no-op
         if answered.get("outsider"):  # 06 §2's funnel: a stranger's ask from the public page
             latency = int(time.time()) - int(answered["askedAt"]) if answered.get("askedAt") else None
@@ -1844,37 +1842,8 @@ async def decide_join(
     return _session_public(row, auth.user_id)
 
 
-async def _admit_outsider(auth: AuthContext, session_id: str, user_id: str, row: dict, request: dict) -> None:
-    """D1: Allow on an ask from the public page also makes that person a workspace member, as the
-    join link does (``org:member``, never more). After the Allow committed, so a decline or an end
-    that won the race never grants membership; if Clerk refuses, the Allow is undone (the ask is
-    pending again) and the error stands, so the owner can try again."""
-    from core.services import clerk_admin
-
-    # The call is idempotent (an existing member reads as `already_member`), so a lost response is
-    # settled by asking again: only a second refusal is a real one, and only then is the Allow undone.
-    try:
-        try:
-            await clerk_admin.create_organization_membership(org_id=row["ownerId"], user_id=user_id, role="org:member")
-        except Exception:
-            await clerk_admin.create_organization_membership(org_id=row["ownerId"], user_id=user_id, role="org:member")
-    except Exception:
-
-        def undo(current: dict) -> dict | None:
-            if user_id not in (current.get("allowedSenders") or []):
-                return None
-            requests = {**(current.get("joinRequests") or {}), user_id: request}
-            senders = [u for u in current.get("allowedSenders") or [] if u != user_id]
-            return {**current, "joinRequests": requests, "allowedSenders": senders}
-
-        await _change_session(auth, session_id, undo, "join_allow_undone", user_id, allow_ended=True)
-        raise
-
-
 #: What Allow on an outside ask grants, said where the owner decides (Activity, the push).
-OUTSIDER_ALLOW_COPY = (
-    "They watched it from its public link. Allow makes them a member of your workspace and lets them use this session."
-)
+OUTSIDER_ALLOW_COPY = "They watched it from its public link. Allow lets them use this session."
 
 
 def pending_pickups(row: dict) -> dict[str, str]:

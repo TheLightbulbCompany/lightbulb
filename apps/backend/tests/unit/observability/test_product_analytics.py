@@ -335,30 +335,6 @@ class _InlineExecutor:
         fn(*args)
 
 
-def test_org_distinct_id_becomes_workspace_and_creator_is_the_person(monkeypatch):
-    mock_client = MagicMock()
-    monkeypatch.setattr(product_analytics, "_org_creators", {})
-    product_analytics.remember_org_creator("org_1", "user_creator")
-    with patch.object(product_analytics, "_client_or_none", return_value=mock_client):
-        product_analytics.capture_product_event(distinct_id="org_1", event="trial_started")
-    distinct_id, _, props = mock_client.capture.call_args.args
-    assert distinct_id == "user_creator"
-    assert props["workspace_id"] == "org_1"
-
-
-def test_unknown_org_creator_is_resolved_off_thread(monkeypatch):
-    mock_client = MagicMock()
-    monkeypatch.setattr(product_analytics, "_org_creators", {})
-    monkeypatch.setattr(product_analytics, "_RESOLVER", _InlineExecutor())
-    monkeypatch.setattr(product_analytics, "_fetch_org_creator", lambda org: "user_c")
-    with patch.object(product_analytics, "_client_or_none", return_value=mock_client):
-        product_analytics.capture_product_event(distinct_id="org_2", event="agent_run_completed", event_uuid="u1")
-    mock_client.capture.assert_called_once()
-    assert mock_client.capture.call_args.args[0] == "user_c"
-    assert mock_client.capture.call_args.kwargs == {"uuid": "u1"}
-    assert product_analytics._org_creators["org_2"] == "user_c"
-
-
 def test_user_distinct_id_is_untouched(monkeypatch):
     mock_client = MagicMock()
     with patch.object(product_analytics, "_client_or_none", return_value=mock_client):

@@ -490,7 +490,7 @@ class Provider(BaseModel):
     # everyone else. E.g. Instagram pre-App-Review: dev-open for all dev owners,
     # plus the founder's prod container here, while every other prod user stays
     # dark (no dead "Connect" button they can't complete pre-review). Owner ids
-    # are Clerk org_/user_ ids. None/empty = no extra owners.
+    # are Clerk user ids. None/empty = no extra owners.
     owner_allowlist: list[str] | None = None
     # What a gate MEANS for this provider when it excludes an owner.
     #

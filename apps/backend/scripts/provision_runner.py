@@ -46,25 +46,14 @@ async def _seed_owner_workspace(owner_id: str) -> int:
     the runtime work. Returns an exit code from the runner's ABI (0 ok / 10 deterministic /
     11 transient).
 
-    The provisioner is the person for a user tenant, and for an org the Clerk org CREATOR
-    (``get_organization().created_by``): always an admin, and a stable per-org choice (the
-    dispatch carries only ``owner_id``). A missing creator is a Clerk blip, so transient. A seed
-    failure is classified like a runtime failure (``classify_provision_error``).
+    The provisioner is the person. A seed failure is classified like a runtime failure
+    (``classify_provision_error``).
     """
-    from core.auth import is_org_owner_id
     from core.repositories.container_repo import classify_provision_error
-    from core.services import clerk_admin
-    from core.services.user_provision import _ensure_workspace_for_org
+    from core.services.user_provision import _ensure_owner_workspace
 
     try:
-        creator_user_id = owner_id
-        if is_org_owner_id(owner_id):
-            org = await clerk_admin.get_organization(owner_id)
-            creator_user_id = (org or {}).get("created_by")
-            if not creator_user_id:
-                logger.warning("seed step 0: org %s has no resolvable Clerk creator — deferring (transient)", owner_id)
-                return EXIT_TRANSIENT
-        await _ensure_workspace_for_org(org_id=owner_id, user_id=creator_user_id, is_admin=True)
+        await _ensure_owner_workspace(owner_id=owner_id, owner_user_id=owner_id)
     except Exception as exc:  # noqa: BLE001 — classified into the exit-code ABI
         logger.exception("seed step 0 (owner workspace) failed for owner %s", owner_id)
         _, retryable = classify_provision_error(exc)
@@ -135,29 +124,15 @@ async def _drain_pending_brief(owner_id: str) -> None:
 
 
 async def _seat_workspace_rooms(owner_id: str) -> None:
-    """Step 0 just made the workspace active: seat every current teammate in ``#general`` (the
-    person alone for a user tenant). An org member who joined before the room existed was missed by
-    the ``organizationMembership.created`` webhook's seat. Idempotent (a removed member is never
-    re-seated: the AUTOJOIN marker stays). Never fails the provision."""
-    from core.auth import is_org_owner_id
+    """Step 0 just made the workspace active: seat the person (the owner is a person tenant) in ``#general``. Idempotent (a
+    removed member is never re-seated: the AUTOJOIN marker stays). Never fails the provision."""
     from core.observability.metrics import put_metric
-    from core.services.clerk_admin import list_organization_members
     from core.services.messaging import join_default_room
 
     try:
-        people = (
-            [m["user_id"] for m in await list_organization_members(owner_id)]
-            if is_org_owner_id(owner_id)
-            else [owner_id]
-        )
-        for user_id in people:
-            try:
-                await join_default_room(owner_id, user_id)
-            except Exception:  # noqa: BLE001
-                logger.exception("provision: default room join failed for owner %s user %s", owner_id, user_id)
-                put_metric("messaging.default_room.error")
-    except Exception:  # noqa: BLE001 — a roster read failure never fails the provision
-        logger.exception("provision: teammate roster read failed for owner %s", owner_id)
+        await join_default_room(owner_id, owner_id)
+    except Exception:  # noqa: BLE001
+        logger.exception("provision: default room join failed for owner %s", owner_id)
         put_metric("messaging.default_room.error")
 
 

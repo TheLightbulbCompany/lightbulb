@@ -65,7 +65,7 @@ def admin_env(app):
     test uses admin_env without async_client).
     """
     app.dependency_overrides[get_current_user] = lambda: AuthContext(
-        user_id="user_platform_admin", email="admin@thelightbulb.company"
+        user_id="user_platform_admin", email="admin@thelightbulb.company", human_session=True
     )
     try:
         yield
@@ -76,17 +76,13 @@ def admin_env(app):
 @pytest.fixture
 def non_admin_env(app):
     """Caller is not on PLATFORM_ADMIN_USER_IDS — every admin endpoint 403s."""
-    app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id="user_test_123", email="user@example.com")
+    app.dependency_overrides[get_current_user] = lambda: AuthContext(
+        user_id="user_test_123", email="user@example.com", human_session=True
+    )
     try:
         yield
     finally:
         app.dependency_overrides.pop(get_current_user, None)
-
-
-@pytest.fixture(autouse=True)
-def clerk_no_orgs(monkeypatch):
-    """Clerk answers that the target user is in no organization (the admin doors resolve the owner strictly)."""
-    monkeypatch.setattr("core.services.admin_service.clerk_admin.list_user_organizations", AsyncMock(return_value=[]))
 
 
 @pytest.fixture(autouse=True)

@@ -106,19 +106,6 @@ async def test_user_tenant_through_every_op(tables, clerk, monkeypatch):  # noqa
     assert clerk == []
 
 
-async def test_member_principal_is_trusted_on_an_org_tenant(clerk, monkeypatch):
-    """The product's member is the tenant's member: answering and acting on a workspace task read no Clerk
-    membership."""
-    member = "user_m"
-    update = _task_world(monkeypatch, _task("org_1", {"kind": "workspace"}), member)
-    who = Principal(kind="member", id=member)
-    monkeypatch.setattr(api, "_mark_action", AsyncMock())
-    await api.answer(AnswerIn(tenant_id="org_1", task_id=TASK, qid="q-1", principal=who, option_id="a",
-                              client_answer_id="c1"))  # fmt: skip
-    await api.act(ActIn(tenant_id="org_1", task_id=TASK, action="stop", principal=who))
-    assert update.await_count == 2 and clerk == []
-
-
 _MAIL = {"triggerId": "mail:m1", "source": "mail", "ref": {"text": "hi"}}
 
 
@@ -147,13 +134,13 @@ async def test_person_actor_on_user_tenant_shows_to_person(world, ws):  # noqa: 
     assert _audience(task) == ("person", [me], None)
 
 
-@pytest.mark.parametrize("ws,viewer", [("org_1", "user_sam"), ("user_solo", "user_solo")])
-async def test_a_tenant_owned_automation_fire_is_visible(world, ws, viewer):  # noqa: F811
+async def test_a_tenant_owned_automation_fire_is_visible(world):  # noqa: F811
     """A fire of an automation the tenant owns (proposed from mail): its person-visible task goes to the workspace,
-    which the tenant's people can see (not `userIds=[org_…]`, which nobody can)."""
+    which the tenant's person can see."""
+    ws = viewer = "user_solo"
     from core.services import tasks_access
 
     fire = {"triggerId": "sched:s1:1", "source": "schedule", "ref": {}, "actorUserId": ws, "actorKind": "system"}
     task = await acts._ensure_task(ws, ts.new_task_id(), fire, "shared", "queued", title="x", visibility="person")
     assert _audience(task) == ("workspace", [], None)
-    assert await tasks_access.can_view(task, viewer, member=True)
+    assert await tasks_access.can_view(task, viewer)

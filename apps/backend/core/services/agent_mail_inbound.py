@@ -1,19 +1,12 @@
-"""Inbound mail helpers: sender parsing, sender authentication, loop guard, the stranger counter key.
+"""Inbound mail helpers: sender parsing, sender authentication, loop guard.
 
-Shared by `routers/ses_inbound.py` (the SES ingest endpoint), `meeting_invites` (is this invite from who it
-says it is) and `routers/photon_inbound.py` (`stranger_key`).
+Shared by `routers/ses_inbound.py` (the SES ingest endpoint), `meeting_invites` (is this invite from who it says it is).
 """
 
-import hashlib
 import logging
 from email.utils import parseaddr
 
 logger = logging.getLogger(__name__)
-
-
-def stranger_key(sender: str) -> str:
-    """Stable, address-free key for one sender's counter (it becomes a DynamoDB map key)."""
-    return hashlib.sha256((sender or "").strip().lower().encode()).hexdigest()[:16]
 
 
 # Header-based loop guard: values that mark a message as machine-generated

@@ -1,7 +1,7 @@
 """Every internal door names its tenant: it acts only as the tenant's own person (the tenant IS a person, the Clerk
 user id) and refuses anyone else it is handed, writing nothing under either account.
 
-Real DynamoDB (moto) and the product's own writers; the only stubs are the outside world (Photon's lookups and
+Real DynamoDB (moto) and the product's own writers; the only stubs are the outside world (the lookups and
 signature, the wake of an agent). A refusal is judged on stored state: every row naming A or B is the same after."""
 
 import time
@@ -17,11 +17,9 @@ from core.engine.api import EngineError
 from core.engine.contract import ActIn, AnswerIn, EventIn, LineIn, OpenIn, Principal, StartIn
 from core import dynamodb, tasks_schema as ts
 from core.repositories import messaging_repo, tasks_repo
-from core.repositories.workspace_repo import WorkspaceRepo
-from core.services import local_session_grants, messaging, onboarding_brief, task_conversation, workspace_provisioning
+from core.services import local_session_grants, messaging, task_conversation, workspace_provisioning
 from routers import messaging as messaging_router
 from tests.unit.auth.conftest import ddb, snapshot  # noqa: F401
-from tests.unit.routers.test_photon_inbound import CUSTOMER, LINE_ROW, _post, client, seams  # noqa: F401
 
 A, B = "user_door_a", "user_door_b"
 URL = "https://acme.example"
@@ -29,7 +27,7 @@ URL = "https://acme.example"
 
 @pytest.fixture
 def env(ddb, monkeypatch):  # noqa: F811
-    """A and B each a provisioned account; the stubs the photon door needs."""
+    """A and B each a provisioned account."""
     return ddb
 
 
@@ -152,52 +150,6 @@ async def refuse_agent_dm(front, stubs, web, held):
 
 async def write_agent_dm(front, stubs, web):
     room = await messaging._agent_dm_room_id(A, A, front)
-    assert (await messaging_repo.get_room(room))["ownerId"] == A
-
-
-async def _brief(submitted_by: str) -> None:
-    await WorkspaceRepo().put_pending_brief(
-        A, path="grow", user_input=URL, detail=None, brief_text=URL, submitted_by=submitted_by
-    )
-
-
-async def refuse_front_desk(front, stubs, web, held):
-    await _brief(B)
-    before = held()
-    assert await onboarding_brief.start_front_desk_build_for_line(A) is False
-    assert held() == before
-
-
-async def write_front_desk(front, stubs, web):
-    await _brief(A)
-    assert await onboarding_brief.start_front_desk_build_for_line(A) is True
-    room = await messaging._agent_dm_room_id(A, A, front)
-    assert (await messaging_repo.get_room(room))["ownerId"] == A
-    authors = {m["author"]["id"] for m in await messaging_repo.list_messages_before(room, 10**19, 100)}
-    assert A in authors and B not in authors
-
-
-def _text_from(member: str, stubs) -> None:
-    stubs["get_by_address"].return_value = {**LINE_ROW, "owner_id": A, "member_phones": {CUSTOMER: member}}
-    stubs["put_message"].return_value = {"received_key": "2026#m1"}
-
-
-async def refuse_photon_text(front, stubs, web, held):
-    _text_from(B, stubs)
-    before = held()
-    assert _post(web).json() == {"status": "dropped_foreign_member"}
-    assert held() == before
-    stubs["put_message"].assert_not_called()
-    stubs["deliver_to_agent"].assert_not_called()
-
-
-async def write_photon_text(front, stubs, web):
-    await messaging.ensure_default_room(A, A)
-    _text_from(A, stubs)
-    assert _post(web).json() == {"status": "member_routed"}
-    room = messaging.default_room_id(A)
-    stored = await messaging_repo.list_messages_before(room, 10**19, 100)
-    assert [(m["author"]["id"], m["via"]) for m in stored if m.get("via") == "text"] == [(A, "text")]
     assert (await messaging_repo.get_room(room))["ownerId"] == A
 
 
@@ -423,23 +375,21 @@ DOORS = {
     "engine append_line (member)": (refuse_engine_append_line, write_engine_append_line),
     "agent_reader (messaging router)": (refuse_agent_reader, write_agent_reader),
     "messaging._agent_dm_room_id": (refuse_agent_dm, write_agent_dm),
-    "onboarding_brief front desk": (refuse_front_desk, write_front_desk),
-    "photon inbound member text": (refuse_photon_text, write_photon_text),
 }
 
 
 @pytest.mark.parametrize("door", DOORS)
-async def test_internal_door_refuses_foreign_person(env, door, seams, client):  # noqa: F811
+async def test_internal_door_refuses_foreign_person(env, door):  # noqa: F811
     """A's row, B's id as the speaker, member, requester or creator: refused, and no row naming A or B changes."""
     front = await _accounts()
-    await DOORS[door][0](front, seams, client, lambda: _held(env))
+    await DOORS[door][0](front, None, None, lambda: _held(env))
 
 
 @pytest.mark.parametrize("door", DOORS)
-async def test_internal_door_writes_owner_tenant(env, door, seams, client):  # noqa: F811
+async def test_internal_door_writes_owner_tenant(env, door):  # noqa: F811
     """Handed A, the door writes under A's tenant, authored by A."""
     front = await _accounts()
-    await DOORS[door][1](front, seams, client)
+    await DOORS[door][1](front, None, None)
 
 
 async def test_voice_doors_answer_an_engine_refusal_as_their_own_403(monkeypatch):

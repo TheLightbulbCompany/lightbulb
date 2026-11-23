@@ -325,26 +325,6 @@ async def seed_agent_mail(a, b, mp, calls) -> dict:
     return {"key": agent_mail_inbox_repo.reply_key(address, mail["received_key"]), "meeting": room}
 
 
-async def seed_agent_text(a, b, mp, calls) -> dict:
-    await workspaces(a, b)
-    mp.setattr("core.services.photon.enabled", lambda: True)  # else a reply is "disabled" before the key is read
-    team = await _mail(a, "acme-a")
-    for t, number in ((a, "+15551230000"), (b, "+15551239999")):
-        assert await agent_email_repo.put_pending_line(owner_id=t.tenant, agent_id=ceo(t), operation_id="op")
-        await agent_email_repo.record_text_line(
-            number=number, owner_id=t.tenant, agent_id=ceo(t), photon_resource_id="r", photon_user_id="u",
-            operation_id="op",
-        )  # fmt: skip
-    text = await agent_mail_inbox_repo.put_message(
-        address=team, owner_id=a.tenant, agent_id=ceo(a), message_id="t-a", from_addr="+15559870000",
-        subject="", text=f"{MARKER} text", headers={}, attachments=[], channel="text",
-    )  # fmt: skip
-    return {
-        "key": agent_mail_inbox_repo.reply_key(team, text["received_key"]),
-        "_needles": ["+15551230000", "+15559870000"],
-    }
-
-
 async def seed_company_slug(a, b, mp, calls) -> dict:
     await _mail(a, "acme-a")  # A's claimed slug, as a claim leaves it
     await ok(a, "POST", "/api/v1/company/slug/hold", {"slug": "held-a"})
@@ -451,7 +431,6 @@ SEEDS = {
     "workspace_files": seed_workspace_files,
     "memory": seed_memory,
     "agent_mail": seed_agent_mail,
-    "agent_text": seed_agent_text,
     "company_slug": seed_company_slug,
     "connections": seed_connections,
     "container": seed_container,
@@ -623,20 +602,6 @@ CASES = [
     ),
     # memory: tenant = caller
     Case("memory", "POST", "/api/v1/memory/recall", {"question": "what"}),
-    # agent_text: tenant = caller
-    Case("agent_text", "GET", "/api/v1/agent-text/line"),
-    Case("agent_text", "POST", "/api/v1/agent-text/me/phone/code"),
-    Case("agent_text", "DELETE", "/api/v1/agent-text/me/phone"),
-    Case(
-        "agent_text",
-        "POST",
-        "/api/v1/agent-text/reply",
-        {"key": "{key}", "text": "hi"},
-        a_id=True,
-        ok=(200,),
-        says="bad_reply_key",
-    ),
-    Case("agent_text", "POST", "/api/v1/agent-text/thread", {"key": "{key}", "mode": "human"}, a_id=True),
     # agent_mail: tenant = caller; mail keys and transcripts are read at the caller's own team address
     Case("agent_mail", "GET", "/api/v1/agent-mail/address"),  # an org's read creates its mailbox; a person's reads
     Case("agent_mail", "PATCH", "/api/v1/agent-mail/address", {"send_to_anyone": False}),

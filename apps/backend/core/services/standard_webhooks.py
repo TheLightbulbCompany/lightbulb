@@ -1,4 +1,4 @@
-"""Standard Webhooks (Svix-style) signature check, shared by every sender that uses it (Photon, Recall)."""
+"""Standard Webhooks (Svix-style) signature check, shared by every sender that uses it (Recall)."""
 
 import base64
 import binascii

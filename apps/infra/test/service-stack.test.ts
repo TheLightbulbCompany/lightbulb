@@ -65,9 +65,6 @@ function buildServiceStack(environment: "dev" | "prod", inspectAssets?: (images:
       livekitApiSecret: `lightbulb/${environment}/livekit_api_secret`,
       recallApiKey: `lightbulb/${environment}/recall_api_key`,
       recallWebhookSecret: `lightbulb/${environment}/recall_webhook_secret`,
-      photonApiKey: `lightbulb/${environment}/photon_api_key`,
-      photonProjectId: `lightbulb/${environment}/photon_project_id`,
-      photonWebhookSecret: `lightbulb/${environment}/photon_webhook_secret`,
       huddleWorkerSecret: `lightbulb/${environment}/huddle_worker_secret`,
       metronomeWebhookSecret: `lightbulb/${environment}/metronome_webhook_secret`,
       wsInternalSecret: `lightbulb/${environment}/ws_internal_secret`,
@@ -195,9 +192,9 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
     expect(names).toEqual(expect.arrayContaining(["RECALL_API_KEY", "RECALL_WEBHOOK_SECRET"]));
   });
 
-  test("backend task carries the Photon secrets", () => {
+  test("backend task carries no texting secrets", () => {
     const secrets = JSON.stringify(template.findResources("AWS::ECS::TaskDefinition"));
-    for (const name of ["PHOTON_API_KEY", "PHOTON_PROJECT_ID", "PHOTON_WEBHOOK_SECRET"]) expect(secrets).toContain(name);
+    expect(secrets).not.toContain("PHOTON_");
     expect(secrets).not.toContain("SENDBLUE_");
   });
 

@@ -70,6 +70,7 @@ From plan Part 1 (F-numbers). Each constrains code; do not reopen them.
 - **F17 A Meet session may sleep after five idle minutes and wake on its name.**
 - **F20 Booking conflicts are the model's and the booking tool's;** the tool still reserves a slot atomically.
 - **F22 Missed-caller and waitlist texts stay off** until a consent review.
+- **Texting is removed** (founder, 23 Nov 2026): no Photon webhook, agent-text routes, text lines or member phones. Do not rebuild it.
 - **F37 The business owns its opening** (greeting, AI notice, recording notice): an editable default, nothing
   enforced in code, except that the assistant never claims to be a person when a caller sincerely asks.
 - **F32 One pool of credits covers voice and text.** Design pending (plan Part 2, Q2): build no second meter.

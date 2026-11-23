@@ -6,6 +6,7 @@ import { LAUNCH_HOSTS, ROOT_DOMAIN, SITE_URL } from "./src/lib/domain";
 
 const ENGINE_INSTALLER = "https://github.com/TheLightbulbCompany/cli/releases/latest/download/install.sh";
 const SPARK_RELEASE = "https://github.com/TheLightbulbCompany/lightbulb/releases/download/spark";
+const SPARK_WINDOWS_RELEASE = "https://github.com/TheLightbulbCompany/lightbulb/releases/download/spark-windows";
 
 const TURBOPACK_ROOT = path.resolve(__dirname, "../../");
 // Our API origin, derived per-environment rather than enumerated. The static
@@ -188,6 +189,9 @@ const nextConfig: NextConfig = {
       // sources never change; the destinations may be repointed.
       { source: "/download/spark", destination: `${SPARK_RELEASE}/Spark.dmg`, permanent: false },
       { source: "/spark/appcast.xml", destination: `${SPARK_RELEASE}/appcast.xml`, permanent: false },
+      // Spark for Windows: unlisted for now (no button links here yet). Its own release keeps the Mac's untouched.
+      { source: "/download/spark-windows", destination: `${SPARK_WINDOWS_RELEASE}/Spark-Setup-x64.exe`, permanent: false },
+      { source: "/download/spark-windows-arm64", destination: `${SPARK_WINDOWS_RELEASE}/Spark-Setup-arm64.exe`, permanent: false },
     ];
   },
 

@@ -5,8 +5,11 @@ vi.mock("@/components/landing/Navbar", () => ({ Navbar: () => null }));
 vi.mock("@/components/landing/Footer", () => ({ Footer: () => null }));
 vi.mock("@/components/landing/PricingThreeCard", () => ({ PricingThreeCard: () => null }));
 vi.mock("@/lib/pricing", () => ({ getPricing: async () => null }));
-// The Spark page (/os) loads its own fonts; jsdom has no next/font.
-vi.mock("next/font/google", () => ({ Bricolage_Grotesque: () => ({ variable: "" }), Silkscreen: () => ({ variable: "" }) }));
+// The Spark (/os) and Meetings pages load their own fonts; jsdom has no next/font.
+vi.mock("next/font/google", () => {
+  const font = () => ({ variable: "" });
+  return { Bricolage_Grotesque: font, Silkscreen: font, Schibsted_Grotesk: font, Atkinson_Hyperlegible: font };
+});
 const captureSignupCta = vi.fn();
 vi.mock("@/lib/signupFlow", () => ({ captureSignupCta: (o: unknown) => captureSignupCta(o) }));
 
@@ -15,15 +18,17 @@ import PhonePage, { metadata as phoneMeta } from "@/app/phone/page";
 import MeetingsPage, { metadata as meetingsMeta } from "@/app/meetings/page";
 import OsPage, { metadata as osMeta } from "@/app/os/page";
 import { BANNED } from "@/content/__tests__/bannedCopy";
+import { ADDRESS } from "@/components/landing/MeetingsLanding";
 
 const pages = [
-  { path: "/meetings", Page: MeetingsPage, meta: meetingsMeta, h1: "Leave every meeting with the notes already written." },
+  { path: "/meetings", Page: MeetingsPage, meta: meetingsMeta, h1: "Ask your meeting anything. Out loud." },
 ];
 
 describe.each(pages)("$path", ({ path, Page, meta, h1 }) => {
   it("renders its headline and a waitlist form", () => {
     const { container } = render(<Page />);
     expect(screen.getByRole("heading", { level: 1 }).textContent).toBe(h1);
+    expect(container.querySelectorAll("h1")).toHaveLength(1);
     const button = screen.getByRole("button", { name: "Join the waitlist" });
     expect(button.closest("form")).not.toBeNull();
     expect(container.querySelector('main a[href="/sign-up"]')).toBeNull();
@@ -42,10 +47,22 @@ describe.each(pages)("$path", ({ path, Page, meta, h1 }) => {
 
   it("carries no banned word, price or dash", () => {
     const { container } = render(<Page />);
-    const text = container.textContent ?? "";
+    // The invite address is the product's real one (agents@…), not copy.
+    const text = (container.textContent ?? "").replaceAll(ADDRESS, "");
     expect(text).not.toMatch(BANNED);
     expect(text).not.toMatch(/\$\d/);
     expect(text).not.toMatch(/[—–]/);
+  });
+});
+
+describe("/meetings, the call", () => {
+  it("keeps the form under the menu's #waitlist anchor and says Nova is an example, on Google Meet only", () => {
+    const { container } = render(<MeetingsPage />);
+    expect(container.querySelector("#waitlist form")).not.toBeNull();
+    const text = container.textContent ?? "";
+    expect(text).toContain("Here it's called Nova. You pick the name.");
+    expect(text).toContain("Google Meet only. Not Zoom, Microsoft Teams or Webex.");
+    expect([...container.querySelectorAll('main a[href="#waitlist"]')]).toHaveLength(2);
   });
 });
 

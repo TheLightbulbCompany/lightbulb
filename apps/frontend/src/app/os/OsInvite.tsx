@@ -7,10 +7,7 @@ import { useEffect, useRef, useState } from "react";
 import { capture } from "@/lib/analytics";
 import { useApi } from "@/lib/api";
 
-import { SparkDownload } from "./SparkDownload";
-
-// A Spark referral code: the referrer's Clerk user id without its `user_` prefix.
-export const CODE = /^[A-Za-z0-9]{1,64}$/;
+import { CODE, SparkGet, useOnPhone } from "./SparkDownload";
 
 export const SOON = "Download coming soon.";
 
@@ -20,18 +17,24 @@ export const SOON = "Download coming soon.";
 // account read starts the trial), so this page never calls the account route.
 export function OsInvite({ ready, source }: { ready: boolean; source?: string }) {
   const code = useSearchParams()?.get("ref") ?? "";
-  const download = (
-    <div className="mt-12">
-      {ready ? <SparkDownload source={source} /> : <p className="text-lg text-[var(--lb-ink)]">{SOON}</p>}
-    </div>
-  );
+  const download = <DownloadBlock ready={ready} source={source} />;
   if (!CODE.test(code)) return download;
   return <Invite code={code} ready={ready} download={download} />;
+}
+
+// The plain hero: also the Suspense fallback, so the button is in the server HTML before the invite check.
+export function DownloadBlock({ ready, source }: { ready: boolean; source?: string }) {
+  return (
+    <div className="mt-12">
+      {ready ? <SparkGet source={source} /> : <p className="text-lg text-[var(--lb-ink)]">{SOON}</p>}
+    </div>
+  );
 }
 
 function Invite({ code, ready, download }: { code: string; ready: boolean; download: React.ReactNode }) {
   const { isLoaded, isSignedIn } = useAuth();
   const api = useApi();
+  const onPhone = useOnPhone();
   const [recorded, setRecorded] = useState(false);
   const sent = useRef(false);
   const started = useRef(false);
@@ -63,7 +66,7 @@ function Invite({ code, ready, download }: { code: string; ready: boolean; downl
           You&apos;ve been invited to Spark. Create your account, then download.
         </p>
         <SignUp routing="hash" forceRedirectUrl={here} signInForceRedirectUrl={here} signInUrl={`${here}#/sign-in`} />
-        {ready ? (
+        {onPhone ? null : ready ? (
           <a
             href="/download/spark"
             className="mt-6 inline-block text-sm text-[var(--lb-ink-soft)] underline underline-offset-[3px]"

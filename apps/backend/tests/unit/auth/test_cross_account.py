@@ -21,6 +21,7 @@ from unittest.mock import AsyncMock
 
 import httpx
 import pytest
+from fastapi import HTTPException
 import stripe
 from fastapi.routing import _IncludedRouter
 from fastapi.security import HTTPAuthorizationCredentials
@@ -853,24 +854,20 @@ async def test_live_config_cross_account(tenants, calls, ddb, monkeypatch):
     assert not mentions(" ".join(snapshot(ddb, f"WORKSPACE#{mine['workspaceId']}")), [b.user_id])
 
 
-@pytest.mark.parametrize(
-    "ctx",
-    [
-        AuthContext(user_id="user_x"),
-        AuthContext("user_x", verified_issuer="i"),
-        AuthContext(user_id="user_x", human_session=True),
-    ],
-)
-def test_resolve_owner_id_is_sub(ctx):
-    """The tenant is the token's person, for every context a door can build."""
-    assert resolve_owner_id(ctx) == "user_x"
+def test_resolve_owner_id_is_sub():
+    """The tenant is a session token's person; a context that is not a first-party session has no tenant."""
+    assert resolve_owner_id(AuthContext(user_id="user_x", human_session=True)) == "user_x"
+    assert resolve_owner_id(AuthContext("user_x", verified_issuer="i", human_session=True)) == "user_x"
+    with pytest.raises(HTTPException) as refused:
+        resolve_owner_id(AuthContext(user_id="user_x"))
+    assert refused.value.status_code == 403 and refused.value.detail == {"code": "session_required"}
 
 
-@pytest.mark.parametrize("token", ["session", "oauth", "template"])
-async def test_org_claim_is_ignored(token, ddb, jwks, calls):
-    """A token whose `o.id` names a live tenant is still its own person's: B with `o.id = A's tenant` resolves
-    to B and reads only B's rows, with or without a role in the claim (Review Focus 3)."""
-    a, b = Tenant("user_a", None), Tenant("user_b", "user_a", token=token)
+@pytest.mark.parametrize("role", ["admin", None])
+async def test_org_claim_is_ignored(role, ddb, jwks, calls):
+    """A session token whose `o.id` names another person's tenant (with a role in the claim, or without) acts on its
+    own `sub` and cannot see A's rows (Review Focus 3)."""
+    a, b = Tenant("user_a", None), Tenant("user_b", "user_a", role=role)
     await workspaces(a, b)
     await ok(
         a,
@@ -887,6 +884,22 @@ async def test_org_claim_is_ignored(token, ddb, jwks, calls):
     assert theirs["workspaceId"] != mine["workspaceId"]
     rooms = await ok(b, "GET", "/api/v1/messaging/rooms")
     assert MARKER not in json.dumps(rooms)
+
+
+@pytest.mark.parametrize("token", ["oauth", "template"])
+async def test_non_session_token_is_refused_at_a_tenant_door(token, ddb, jwks, calls):
+    """An OAuth access token or a JWT-template token, even carrying an org claim, has no tenant: 403, nothing written."""
+    a, b = Tenant("user_a", None), Tenant("user_b", "user_a", token=token)
+    await workspaces(a, b)
+    before = snapshot(ddb, a.user_id, b.user_id)
+    r = await call(
+        b,
+        "POST",
+        "/api/v1/messaging/rooms",
+        {"clientRoomId": str(uuid.uuid4()), "name": "x", "kind": "channel", "members": []},
+    )
+    assert r.status_code == 403 and r.json()["detail"] == {"code": "session_required"}
+    assert snapshot(ddb, a.user_id, b.user_id) == before
 
 
 # The doors that still refuse a person on their own tenant, and what they answer: the ChatGPT sign-in needs the

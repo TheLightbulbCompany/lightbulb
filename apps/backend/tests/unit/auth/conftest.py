@@ -36,11 +36,12 @@ _JWK = {**jwt.algorithms.RSAAlgorithm.to_jwk(_KEY.public_key(), as_dict=True), "
 class Tenant:
     user_id: str
     claim: str | None  # an `o.id` the token carries (ignored by the backend)
+    role: str | None = "admin"  # the `o.rol` beside it, or none
     token: str = "session"  # or "oauth" (an `at+jwt` access token), "template" (a JWT-template token: no `sid`)
 
     @property
     def tenant(self) -> str:
-        return resolve_owner_id(AuthContext(user_id=self.user_id))
+        return resolve_owner_id(AuthContext(user_id=self.user_id, human_session=True))
 
     @property
     def headers(self) -> dict:
@@ -52,7 +53,7 @@ class Tenant:
         if self.token == "oauth":
             claims["client_id"] = "oauth_app"
         if self.claim:
-            claims["o"] = {"id": self.claim, "rol": "admin", "slg": self.claim}
+            claims["o"] = {"id": self.claim, "slg": self.claim, **({"rol": self.role} if self.role else {})}
         typ = {"typ": "at+jwt"} if self.token == "oauth" else {}
         token = jwt.encode(claims, _KEY, algorithm="RS256", headers={"kid": "test", **typ})
         return {"Authorization": f"Bearer {token}"}

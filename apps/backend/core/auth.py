@@ -75,7 +75,10 @@ class AuthContext:
 
 
 def resolve_owner_id(auth: AuthContext) -> str:
-    """The tenant is the person: the token's `sub`."""
+    """The tenant is the person: the token's `sub`, for a first-party Clerk session only. An OAuth access token or a
+    JWT-template token is a weaker credential and has no tenant (403)."""
+    if not auth.human_session:
+        raise HTTPException(status_code=403, detail={"code": "session_required"})
     return auth.user_id
 
 

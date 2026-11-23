@@ -188,6 +188,9 @@ const nextConfig: NextConfig = {
       // sources never change; the destinations may be repointed.
       { source: "/download/spark", destination: `${SPARK_RELEASE}/Spark.dmg`, permanent: false },
       { source: "/spark/appcast.xml", destination: `${SPARK_RELEASE}/appcast.xml`, permanent: false },
+      // The natural address for Spark's page, which stays at /os (invite links point there). Next keeps
+      // the query string, so /spark?ref=CODE lands on /os?ref=CODE. Not permanent: /spark may become the page.
+      { source: "/spark", destination: "/os", permanent: false },
     ];
   },
 

@@ -5,20 +5,27 @@ import { Footer } from "@/components/landing/Footer";
 import { Navbar } from "@/components/landing/Navbar";
 import { pageMetadata } from "@/lib/seo";
 
-import { OsInvite } from "./OsInvite";
+import { DownloadBlock, OsInvite } from "./OsInvite";
 import { OsLanding, type SparkPrice } from "./OsLanding";
 
 // ponytail: the landing page is live everywhere; SPARK_SHORT_PAGE=1 brings the short page back. Delete the
 // switch and the short page once the founder has settled the design.
 const landing = () => process.env.SPARK_SHORT_PAGE !== "1";
 
-export const metadata = pageMetadata({
+// Spark's own share picture: the launch film's end card, cropped to 1200 x 630.
+const SHARE = { url: "/og-spark.jpg", width: 1200, height: 630, alt: "Meet Spark. One-click voice interface for your Mac." };
+const base = pageMetadata({
   title: "Spark, a Voice App for the Mac | Lightbulb",
   description: landing()
     ? "Meet Spark, a one-click voice interface for your Mac. Hold fn, say what you want done, and Spark does it on your Mac."
     : "Meet Spark, a one-click voice interface for your Mac. Download it for Mac with Apple silicon.",
   path: "/os",
 });
+export const metadata = {
+  ...base,
+  openGraph: { ...base.openGraph, images: [SHARE] },
+  twitter: { ...base.twitter, images: [SHARE.url] },
+};
 
 // The page stays at /os: invite links (/os?ref=CODE) already point here.
 // Every line is a VERIFIED row in .agents/product-marketing.md ("Spark").
@@ -37,7 +44,7 @@ function ShortPage({ ready, price }: { ready: boolean; price: SparkPrice }) {
         <p className="mt-6 text-lg leading-8 text-[var(--lb-ink-soft)]">
           One-click voice interface for your Mac.
         </p>
-        <Suspense>
+        <Suspense fallback={<DownloadBlock ready={ready} />}>
           <OsInvite ready={ready} />
         </Suspense>
         {price && (

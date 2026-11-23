@@ -19,8 +19,7 @@ NOW = datetime(2026, 11, 5, 12, 0, tzinfo=timezone.utc)
 def world(env, monkeypatch):  # noqa: F811
     accounts = [{"email": ME}, {"email": "shared-inbox@acme.com"}]
     monkeypatch.setattr(google_accounts_repo, "list_accounts", AsyncMock(return_value=accounts))
-    members = [{"user_id": "user_sam", "email": "Sam@Acme.com"}, {"user_id": "user_priya", "email": "p@acme.com"}]
-    monkeypatch.setattr(clerk_admin, "list_organization_members", AsyncMock(return_value=members))
+    monkeypatch.setattr(clerk_admin, "get_primary_email", AsyncMock(return_value="Sam@Acme.com"))
     gog = MagicMock(return_value=_channel())
     with patch("core.services.google_watch._run_gog", gog):
         yield MagicMock(env=env, gog=gog)
@@ -37,7 +36,7 @@ async def test_ensure_invite_prep_idempotent(world):
     assert first == second == [rules.invite_prep_id(ME)]
     (row,) = await _rows()  # the unmatched shared inbox gets none
     assert (row["status"], row["mode"], row["builtin"], row["ownerUserId"]) == (
-        "active", "observe", "invite_prep", "user_sam"
+        "active", "observe", "invite_prep", "org_1"
     )  # fmt: skip
     assert (row["budgetPerRunUsd"], row["timeLimitS"], row["dailyCapUsd"]) == (0.25, 180, 10.0)
     (pid,) = row["hookPublicIds"]  # one calendar watch, not one per call

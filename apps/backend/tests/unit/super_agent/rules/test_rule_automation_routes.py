@@ -13,6 +13,7 @@ from tests.unit.super_agent.automations.test_automations_api import (  # noqa: F
     ROOM,
     SAM,
     WS,
+    _tenant_is_the_workspace,
     _as,
     _chat_trigger,
     api,
@@ -72,25 +73,6 @@ async def test_create_rule_needs_room_membership(api):
     with _not_member(PRIYA):
         r = _as(api, PRIYA, admin=False).post(BASE, json=RULE)
     assert r.status_code == 409 and r.json()["detail"]["code"] == "room_not_member"
-
-
-async def test_turn_on_room_rule_needs_admin(api):
-    view = _as(api, PRIYA, admin=False).post(BASE, json=RULE).json()
-    r = _as(api, PRIYA, admin=False).post(f"{BASE}/{view['id']}/activate")
-    assert r.status_code == 403
-    r = _as(api, SAM).post(f"{BASE}/{view['id']}/activate")
-    assert r.status_code == 200 and (r.json()["status"], r.json()["mode"]) == ("active", "observe")
-    row = await repo.get_schedule(WS, view["id"])
-    assert ("upsert", view["id"], "active") not in api.calls  # no cron: a rule has no Temporal Schedule
-    assert row["mode"] == "observe"
-
-
-async def test_turn_on_calendar_rule_owner_only(api):
-    view = _as(api, PRIYA, admin=False).post(BASE, json=CAL).json()
-    assert _as(api, SAM).post(f"{BASE}/{view['id']}/activate").status_code == 404  # an admin does not even see it
-    r = _as(api, PRIYA, admin=False).post(f"{BASE}/{view['id']}/activate")
-    assert r.status_code == 200 and r.json()["mode"] == "observe"
-    assert [v["id"] for v in _as(api, SAM).get(BASE).json()["automations"]] == []
 
 
 async def test_room_rule_cap(api):

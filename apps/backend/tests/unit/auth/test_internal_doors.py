@@ -12,8 +12,9 @@ import pytest
 from core.auth import resolve_owner_id
 from core.engine import api as engine
 from core.engine.api import EngineError
-from core.engine.contract import AnswerIn, EventIn, LineIn, OpenIn, Principal, StartIn
-from core.repositories import messaging_repo
+from core.engine.contract import ActIn, AnswerIn, EventIn, LineIn, OpenIn, Principal, StartIn
+from core import dynamodb, tasks_schema as ts
+from core.repositories import messaging_repo, tasks_repo
 from core.repositories.workspace_repo import WorkspaceRepo
 from core.services import local_session_grants, messaging, onboarding_brief, task_conversation, workspace_provisioning
 from routers import messaging as messaging_router
@@ -35,6 +36,10 @@ async def _accounts() -> str:
     for person in (A, B):
         await workspace_provisioning.provision_org(person, provisioner=person)
     return await task_conversation.front_agent_id(A)
+
+
+def _held_now() -> list[str]:
+    return snapshot(dynamodb._dynamodb_resource, A, B)
 
 
 def _held(resource) -> list[str]:
@@ -245,6 +250,8 @@ async def refuse_engine_submit_event(front, stubs, web, held):
 async def write_engine_submit_event(front, stubs, web):
     sent = await engine.submit_event(_event(A))
     assert sent.created is True and sent.trigger_id == f"door-event-{A}"
+    stored = await tasks_repo.get_trigger(A, sent.trigger_id)
+    assert stored["actorUserId"] == A and stored["pk"] == ts.ws_pk(A)
 
 
 async def refuse_engine_start_task(front, stubs, web, held):
@@ -296,6 +303,7 @@ async def refuse_engine_answer(front, stubs, web, held):
 
 
 async def write_engine_answer(front, stubs, web):
+    before = _held_now()
     request = AnswerIn(
         tenant_id=A,
         task_id="t1",
@@ -307,6 +315,27 @@ async def write_engine_answer(front, stubs, web):
     with pytest.raises(EngineError) as unknown:  # A is the tenant's person: it reaches the task lookup
         await engine.answer(request)
     assert unknown.value.status == 404
+    assert _held_now() == before  # nothing was written under either account
+
+
+def _act(speaker: str) -> ActIn:
+    return ActIn(tenant_id=A, task_id="t1", action="stop", principal=Principal(kind="member", id=speaker))
+
+
+async def refuse_engine_act(front, stubs, web, held):
+    before = held()
+    with pytest.raises(EngineError) as refused:
+        await engine.act(_act(B))
+    assert refused.value.status == 403
+    assert held() == before
+
+
+async def write_engine_act(front, stubs, web):
+    before = _held_now()
+    with pytest.raises(EngineError) as unknown:  # A reaches the task lookup
+        await engine.act(_act(A))
+    assert unknown.value.status == 404
+    assert _held_now() == before
 
 
 DOORS = {
@@ -315,6 +344,7 @@ DOORS = {
     "engine submit_event": (refuse_engine_submit_event, write_engine_submit_event),
     "engine start_task": (refuse_engine_start_task, write_engine_start_task),
     "engine answer": (refuse_engine_answer, write_engine_answer),
+    "engine act": (refuse_engine_act, write_engine_act),
     "engine open_conversation (dm)": (refuse_engine_open_dm, write_engine_open_dm),
     "engine append_line (member)": (refuse_engine_append_line, write_engine_append_line),
     "agent_reader (messaging router)": (refuse_agent_reader, write_agent_reader),

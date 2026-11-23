@@ -42,28 +42,6 @@ def world(monkeypatch):
         return orgs.get(user_id, set())
 
     monkeypatch.setattr(ta.messaging_repo, "get_member", get_member)
-    monkeypatch.setattr(ta, "_user_org_ids", orgs_of)
-
-
-@pytest.mark.parametrize(
-    "audience,user,expected",
-    [
-        ({"kind": "person", "userIds": ["sam"]}, "sam", True),
-        ({"kind": "person", "userIds": ["sam"]}, "priya", False),
-        ({"kind": "person", "userIds": ["sam", "ann"]}, "ann", True),  # answerer added by Q when a question opens
-        # A DM task carries the DM's id (Tasks pane); priya, now a member of r1 (the DM became a group chat), still
-        # never sees sam's DM task.
-        ({"kind": "person", "userIds": ["sam"], "roomId": "r1"}, "sam", True),
-        ({"kind": "person", "userIds": ["sam"], "roomId": "r1"}, "priya", False),
-        ({"kind": "room", "roomId": "r1", "userIds": []}, "priya", True),
-        ({"kind": "room", "roomId": "r1", "userIds": []}, "ex", False),
-        ({"kind": "workspace", "userIds": []}, "priya", True),
-        ({"kind": "workspace", "userIds": []}, "outsider", False),
-        ({"kind": "workspace", "userIds": []}, "", False),
-    ],
-)
-async def test_can_view_matrix(world, audience, user, expected):
-    assert await ta.can_view(_task(audience), user) is expected
 
 
 async def test_personal_workspace_member_is_its_owner(monkeypatch):

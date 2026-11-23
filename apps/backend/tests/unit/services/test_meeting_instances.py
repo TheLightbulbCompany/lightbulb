@@ -139,6 +139,14 @@ async def test_invalid_instance_date_is_mail_not_a_retry_loop(store, now):
     assert await mi.handle_team_mail("user_p", _mail(bad), TEAM) is None
 
 
+async def test_authenticated_different_organizer_cannot_detach_instance(store, now):
+    await mi.handle_team_mail("user_p", _mail(SERIES), TEAM)
+    before = deepcopy(store)
+    forged = override().replace("mailto:Prasiddha@acme.com", "mailto:dana@acme.com")
+    assert await mi.handle_team_mail("user_p", _mail(forged, sender="Prasiddha@acme.com"), TEAM) == "meeting_ignored"
+    assert store == before
+
+
 async def test_cancelled_master_cannot_spawn_late_child(store, now):
     await mi.handle_team_mail("user_p", _mail(SERIES), TEAM)
     await mi.handle_team_mail(

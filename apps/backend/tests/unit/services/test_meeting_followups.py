@@ -45,3 +45,103 @@ async def test_meeting_followups_owner_is_inviter(world, principal, admitted):  
     world["request"]["principalUserId"] = principal
     world["trigger"]["actorUserId"] = principal
     assert await mod.enqueue("user_a", "notes-request", world["request"]) is admitted
+
+
+@pytest.mark.parametrize("change", ["optout", "left_room", "replaced_member", "missing_original", "completed"])
+async def test_revoked_optout_or_completed_occurrences_never_admit_new_work(world, change):  # noqa: F811
+    if change == "optout":
+        world["config"]["meetings"]["followUps"] = False
+    elif change == "left_room":
+        world["member"] = None
+    elif change == "replaced_member":
+        world["member"]["id"] = "new-inviter"
+    elif change == "missing_original":
+        world["request"].pop("principalUserId")
+    else:
+        world["request"]["mailAttemptedAt"] = 1
+    assert not await mod.enqueue("original-user", "notes-request", world["request"])
+    world["enqueue"].assert_not_awaited()
+
+
+async def test_real_task_provenance_links_only_original_history_not_a_matching_commitment(world, monkeypatch):  # noqa: F811
+    from core.voice.meetings import meeting_invites
+
+    original = world["meta"]["meeting"]["history"][0]
+    original["followUps"] = [{"id": "human-commitment", "text": "Research", "status": "recorded"}]
+
+    async def patch(owner_id, room_id, fields):
+        assert room_id == "meeting-room"
+        meeting = world["meta"]["meeting"]
+        meeting.update(fields(meeting))
+        return meeting
+
+    monkeypatch.setattr(meeting_invites, "_patch_meeting", patch)
+    task = {
+        "pk": "WS#original-user",
+        "taskId": "actual-task",
+        "title": "Research",
+        "status": "working",
+        "ownerUserId": "original-user",
+        "origin": "meeting",
+        "triggerId": world["trigger"]["triggerId"],
+    }
+    assert await mod.record_task("original-user", task)
+    assert await mod.record_task("original-user", {**task, "status": "resolved"})
+    history = world["meta"]["meeting"]["history"][0]["followUps"]
+    assert history[0] == {"id": "human-commitment", "text": "Research", "status": "recorded"}
+    assert len(history) == 2 and history[1]["taskId"] == "actual-task" and history[1]["status"] == "done"
+    assert not world["meta"]["meeting"].get("followUps")
+
+
+async def test_clarification_keeps_original_source_bounded_and_inviter_policy(world):  # noqa: F811
+    from core.services import questions
+
+    original = world["meta"]["meeting"]["history"][0]
+    original["notes"] = "Original notes " * 1000
+    world["meta"]["meeting"]["notes"] = "Next occurrence private notes"
+    brief, ask = await mod.clarification(
+        "original-user", world["trigger"], "task-1", "Which report?", ["Weekly", "Monthly"]
+    )
+    assert "Original notes" in brief and "Notes truncated" in brief and len(brief) <= 8192
+    assert "Next occurrence" not in brief and "original-transcript" in brief
+    assert ask["kind"] == "question" and ask["attempt"] is None and ask["run_id"] is None and ask["blocking"]
+    task = {"ownerUserId": "original-user", "origin": "meeting", "confirmAll": True}
+    answerers, rule, base = await questions.answerers("original-user", task, ask["kind"], ask["subkind"])
+    assert answerers == ["original-user"]
+    question = {"answerers": answerers, "answererRule": rule, "baseAnswerers": base, "subkind": "question"}
+    assert await questions.can_answer_now("original-user", question, "original-user")
+    assert not await questions.can_answer_now("original-user", question, "new-inviter")
+    world["members"] = []
+    assert not await questions.can_answer_now("original-user", question, "original-user")
+
+
+@pytest.mark.parametrize("to,expected", [("working", "working"), ("waiting", "needs_you"), ("idle", "done")])
+async def test_personal_completion_task_status_updates_original_meeting_history(world, monkeypatch, to, expected):  # noqa: F811
+    from core.voice.meetings import meeting_invites
+    from core.voice.meetings import records
+
+    async def patch(owner_id, room_id, fields):
+        assert room_id == "meeting-room"
+        meeting = world["meta"]["meeting"]
+        meeting.update(fields(meeting))
+        return meeting
+
+    monkeypatch.setattr(meeting_invites, "_patch_meeting", patch)
+    provider = AsyncMock()
+    monkeypatch.setattr(records.meeting_bots, "say", provider)
+    task = {
+        "pk": "WS#original-user",
+        "taskId": "personal-followup",
+        "title": "Research",
+        "status": "queued",
+        "ownerUserId": "original-user",
+        "origin": "meeting",
+        "triggerId": world["trigger"]["triggerId"],
+        "audience": {"kind": "person", "userIds": ["original-user"], "roomId": "meeting-room"},
+    }
+    await mod.record_task("original-user", task)
+    await records.task_moved(task, to)
+    linked = world["meta"]["meeting"]["history"][0]["followUps"]
+    assert linked[0]["taskId"] == task["taskId"] and linked[0]["status"] == expected
+    assert not world["meta"]["meeting"].get("followUps")
+    provider.assert_not_awaited()

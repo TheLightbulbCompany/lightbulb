@@ -33,7 +33,8 @@ export default function MeetingsPage() {
           Lightbulb Meetings joins your Google Meet when you invite it. It stays quiet until someone says its name,
           answers what it&apos;s asked, and leaves notes, decisions and follow-ups for you afterwards.
         </p>
-        <div className="mt-12">
+        {/* The menu's "Join the waitlist" button lands here. */}
+        <div className="mt-12 scroll-mt-24" id="waitlist">
           <RequestSetupForm waitlist="meetings" />
         </div>
       </section>

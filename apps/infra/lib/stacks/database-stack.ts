@@ -345,6 +345,15 @@ export class DatabaseStack extends cdk.Stack {
       sortKey: { name: "provider", type: dynamodb.AttributeType.STRING },
     });
 
+    // Spark voice transcripts (os_voice): one row per turn, keyed by person, `<startedAt>#<sessionId>#<seq>`.
+    // Text only, expired after 90 days by TTL; written only where SPARK_TRANSCRIPTS_ENABLED is on.
+    // Covered by the backend wildcard table grant; deleted with the person's Spark account.
+    createTable("SparkTranscriptsTable", "spark-transcripts", {
+      partitionKey: { name: "user_id", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "sk", type: dynamodb.AttributeType.STRING },
+      timeToLiveAttribute: "ttl",
+    });
+
     new cdk.CfnOutput(this, "DynamoTablePrefix", {
       value: tablePrefix(env),
       exportName: `${this.stackName}-table-prefix`,

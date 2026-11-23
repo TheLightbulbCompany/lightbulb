@@ -158,6 +158,7 @@ def wipe_mocks():
 
     delete_workspace_runtime_fn = AsyncMock(return_value=None)
     voice_wipe = AsyncMock()
+    spark_forget = AsyncMock()  # Spark sessions + transcripts: covered by test_spark_transcripts
 
     bedrock_aips_delete = AsyncMock(
         return_value=["arn:aws:bedrock:us-east-1:877352799272:inference-profile/sonnet-aip"]
@@ -213,6 +214,7 @@ def wipe_mocks():
         ("core.services.account_wipe.billing_repo.delete", billing_delete),
         ("core.services.account_wipe.delete_workspace_runtime", delete_workspace_runtime_fn),
         ("core.services.account_wipe.wipe_owner_voice", voice_wipe),
+        ("core.voice.os_voice.forget", spark_forget),
         # Patched on the bedrock_aip module, not on account_wipe: the wipe no
         # longer calls these itself. They stay stubbed as a safety net — the
         # reaper runs inside delete_workspace_runtime, which is stubbed here, so a

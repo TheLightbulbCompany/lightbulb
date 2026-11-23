@@ -330,6 +330,9 @@ class Settings(BaseSettings):
     STRIPE_VOICE_PLAN_PRICE_ID: str = ""
     #: Spark's $20/month subscription (one licensed price); empty: no checkout link.
     STRIPE_SPARK_PRICE_ID: str = ""
+    #: Save Spark voice transcripts (text only, 90 days) to the spark-transcripts table. Dev only until the
+    #: owner approves prod and the privacy text changes; off: nothing is saved.
+    SPARK_TRANSCRIPTS_ENABLED: bool = False
     STRIPE_BASE_PRICE_ID: str = ""
     # Stripe price for the Ultra runtime tier. Empty default so the app boots
     # without it; CDK-wired in dev/prod. This is the billing source of truth

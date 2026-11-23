@@ -354,15 +354,20 @@ async def extend_trial(user_id: str) -> None:
 
 async def cancel_for_deleted_user(user_id: str) -> None:
     """Cancel a person's Spark subscription now, so it stops charging, before their users row (which holds
-    the subscription id) is deleted, and expire an open Checkout Session of theirs. Raises on failure, so the
-    caller keeps the row and can retry."""
+    the subscription id) is deleted, and expire an open Checkout Session of theirs; then close their open voice
+    sessions and delete their saved transcripts. Every account-deletion path calls this. Raises on failure, so
+    the caller keeps the row and can retry."""
+    from core.voice import os_voice
+
     row = await user_repo.get(user_id) or {}
     # An issued Checkout Session could still become a subscription for the deleted account: expire it first.
     if await _retire_pending(row.get("os_checkout_session_id")) == page("expired"):
         raise RuntimeError(f"spark checkout session {row['os_checkout_session_id']} still open")
-    if row.get("os_subscription_status") not in BILLED or not row.get("os_subscription_id"):
-        return
-    try:
-        await run_in_thread(stripe.Subscription.cancel, row["os_subscription_id"], api_key=settings.STRIPE_SECRET_KEY)
-    except stripe.InvalidRequestError:  # already canceled (a redelivery after the cancel went through)
-        logger.info("spark subscription %s already gone for %s", row["os_subscription_id"], user_id)
+    if row.get("os_subscription_status") in BILLED and row.get("os_subscription_id"):
+        try:
+            await run_in_thread(
+                stripe.Subscription.cancel, row["os_subscription_id"], api_key=settings.STRIPE_SECRET_KEY
+            )
+        except stripe.InvalidRequestError:  # already canceled (a redelivery after the cancel went through)
+            logger.info("spark subscription %s already gone for %s", row["os_subscription_id"], user_id)
+    await os_voice.forget(user_id, row.get(os_voice.ACTIVE))

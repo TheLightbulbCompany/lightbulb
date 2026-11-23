@@ -102,7 +102,7 @@ from core.repositories import (
 )
 from core.repositories.workspace_repo import Identity, WorkspaceRepo
 from core.engine import api as engine_api
-from core.services import clerk_admin, company_stripe, connection_service, text_lines
+from core.services import clerk_admin, company_stripe, connection_service
 from core.voice.meetings import records as meeting_records
 from core.voice.phone import voice_onboarding
 from core.services.billing_service import delete_stripe_customer
@@ -114,29 +114,6 @@ from core.services.owner_secret_sweep import (
 )
 
 logger = logging.getLogger(__name__)
-
-
-async def release_text_lines(rows: list[dict]) -> tuple[int, list[str]]:
-    """Release the texting line of every owner holding a ``text`` or ``text_pending`` row, through the one
-    release path (``text_lines.release_line``: cancel a pending operation, release a finished one or the line).
-
-    Best effort. Returns (owners released, what failed to release: an operation or a line)."""
-    by_owner: dict[str, list[dict]] = {}
-    for r in rows:
-        if r.get("kind") in ("text", "text_pending"):
-            by_owner.setdefault(r.get("owner_id", ""), []).append(r)
-    released, failed = 0, []
-    for owner_id, owned in by_owner.items():
-        try:
-            await text_lines.release_line(owner_id)
-            released += 1
-        except Exception as exc:
-            logger.warning("wipe: could not release the text line of %s: %s", owner_id, exc)
-            failed += [
-                f"operation {r['operation_id']}" if r.get("kind") == "text_pending" else r.get("address") or "?"
-                for r in owned
-            ]
-    return released, failed
 
 
 async def wipe_engine_state(owner_id: str) -> str:
@@ -214,13 +191,6 @@ async def retire_openrouter_key(owner_id: str) -> str:
         return f"OpenRouter key {row.get('state')} -> retiring; the settlement worker disables and cleans it up"
     await _delete_openrouter_key(owner_id)
     return "disabled OpenRouter key row + secrets deleted"
-
-
-def text_release_note(released: int, failed: list[str]) -> str:
-    note = f", released {released} text line(s)"
-    if failed:
-        note += f", FAILED to release: {', '.join(failed)} (rows kept; run the wipe again)"
-    return note
 
 
 ENGINE_PREVIEW = (
@@ -985,12 +955,8 @@ async def wipe_account(owner_id: str, *, actor_admin_id: str, clerk_user_deleted
     await _step(steps, system="oauth_tokens", action="revoke_user_oauth", fn=_s9h)
 
     async def _s9i() -> str:
-        released, failed = await release_text_lines(await agent_email_repo.query_by_owner(owner_id))
         addresses = await agent_email_repo.delete_all_for_owner(owner_id)
-        return (
-            f"deleted {len(addresses)} agent email address(es): {', '.join(addresses) or 'none'}"
-            + text_release_note(released, failed)
-        )
+        return f"deleted {len(addresses)} agent email address(es): {', '.join(addresses) or 'none'}"
 
     await _step(steps, system="agent_email_addresses", action="delete_all_for_owner", fn=_s9i)
 

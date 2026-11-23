@@ -69,9 +69,6 @@ export interface SecretNames {
   livekitApiSecret: string;
   recallApiKey: string;
   recallWebhookSecret: string;
-  photonApiKey: string;
-  photonProjectId: string;
-  photonWebhookSecret: string;
   huddleWorkerSecret: string;
   /**
    * Symmetric secret used by the FastAPI Paperclip proxy router to sign
@@ -1932,15 +1929,6 @@ export class ServiceStack extends cdk.Stack {
       ),
       RECALL_WEBHOOK_SECRET: ecs.Secret.fromSecretsManager(
         secretsmanager.Secret.fromSecretNameV2(this, "ImportRecallWebhookSecret", props.secretNames.recallWebhookSecret),
-      ),
-      PHOTON_API_KEY: ecs.Secret.fromSecretsManager(
-        secretsmanager.Secret.fromSecretNameV2(this, "ImportPhotonApiKey", props.secretNames.photonApiKey),
-      ),
-      PHOTON_PROJECT_ID: ecs.Secret.fromSecretsManager(
-        secretsmanager.Secret.fromSecretNameV2(this, "ImportPhotonProjectId", props.secretNames.photonProjectId),
-      ),
-      PHOTON_WEBHOOK_SECRET: ecs.Secret.fromSecretsManager(
-        secretsmanager.Secret.fromSecretNameV2(this, "ImportPhotonWebhookSecret", props.secretNames.photonWebhookSecret),
       ),
       HUDDLE_WORKER_SECRET: ecs.Secret.fromSecretsManager(
         secretsmanager.Secret.fromSecretNameV2(this, "ImportHuddleWorkerSecret", props.secretNames.huddleWorkerSecret),

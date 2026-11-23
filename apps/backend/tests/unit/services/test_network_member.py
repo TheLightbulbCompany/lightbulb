@@ -180,7 +180,6 @@ def _profile_write_stubs(monkeypatch):
         env_vars={},
         byo_provider=None,
         byo_api_key=None,
-        front_desk_number_for=lambda agent_id: None,
     )
     monkeypatch.setattr(hp, "resolve_profile_inputs", AsyncMock(return_value=inputs))
     monkeypatch.setattr(hp, "_stage_owner_facts", AsyncMock())

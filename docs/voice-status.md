@@ -209,21 +209,9 @@ The **1st** column marks rows a first paying receptionist customer needs. It is 
 | 7.3 | Practice BAA template; vendor BAAs signed | n/a | n/a | n/a | Founder | Follows 2.18 |
 | 7.4 | One practice live under BAA | n/a | n/a | n/a | Founder | Phase 7 gate |
 
-## Added channel: iMessage agents
+## Removed channel: iMessage agents
 
-Named in the spec as an optional add-on (section 9). Founder direction 9 Nov: plain iMessage agents, not Apple business messaging.
-
-| # | Promise | Built | Prod | Machine | Owner | Note |
-|---|---|---|---|---|---|---|
-| I.1 | A customer texts the business's iMessage line and the agent replies | yes | part | no | Product | Built in October on Photon. The route is mounted and the three Photon secrets exist in prod and dev. Not known whether Photon points at it or whether a real message has ever arrived |
-| I.2 | The texter is treated like a caller: same contact identity, same limits, same Router path | no | no | no | Product | Today a text has no contact room and no caller scope. The phone path's contact model is the thing to reuse |
-| I.3 | One memory per contact across calls and texts, with Forget | no | no | no | Product | Caller memory is written only at the end of a call |
-| I.4 | Agent page switch for texts; Pause applies | no | no | no | Product | |
-| I.5 | The texting line belongs to the business's receptionist, not the old Customer Operations agent | no | no | no | Product | |
-| I.6 | STOP and HELP handled; group chats detected; photos and files read | no | no | no | Product | None of the three exists |
-| I.7 | Text the caller after a call (confirmation, answer) | no | no | no | Product | Photon only allows a first message to someone who texted first. May need SMS as the fallback, which needs 10DLC |
-| I.8 | iMessage is an add-on | part | ? | no | Product | Founder ruling 9 Nov: an add-on, built out later. The add-on checkout and its price are deleted (#5380), so a new line cannot be bought. A Photon line costs $250 a month |
-| I.9 | The leftover Sendblue rail deleted | no | no | n/a | Product | Mounted and inert |
+Founder decision 23 Nov 2026: texting is removed entirely (the "Remove texting" PR). Prod evidence before the decision: 0 Photon webhooks and 0 text replies in 30 days, 0 front-desk subscriptions ever, and no website or app screen offered it. Deleted: the Photon inbound webhook, the agent-text routes, text lines and their Photon release, text relay, member-phone binding, the Photon settings and secrets wiring, and the front-desk billing claim. Rows I.1 to I.9 are retired with it. Texting from the assistant's own number (3.25) is a separate Phone item and is unchanged. The agent image still points at texting and needs a later image change (not edited here): `apps/infra/hermes/skills-src/lightbulb/MAINTENANCE.md:411`, `references/text.md`, `references/front-desk.md`, `SKILL.md:38` and `:70`, `scripts/lightbulb-text.sh`, the `front_desk_agent` case in `scripts/lightbulb-mail.sh:84`, the plugin prompt near line 614 of `plugins/lightbulb/__init__.py`, and `bridge/effects.py:194`.
 
 ## Phase gates
 

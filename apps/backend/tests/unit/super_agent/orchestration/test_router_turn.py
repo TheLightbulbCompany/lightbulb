@@ -776,23 +776,6 @@ async def test_second_automation_run_task_row_carries_previous_run(world):
 
 
 @pytest.mark.asyncio
-async def test_reply_to_mail_trigger_uses_deliver_reply(world, monkeypatch):
-    sent = []
-
-    async def deliver_reply(ws, trigger, text, *, idempotency_key):
-        sent.append((trigger["triggerId"], text, idempotency_key))
-
-    # The module activities imported, not sys.modules: once anything imported the real one, `from core.services
-    # import source_replies` reads the package attribute and a sys.modules stand-in is never seen (suite order).
-    monkeypatch.setattr(acts.source_replies, "deliver_reply", deliver_reply)
-    t1 = await _trig("mail:abc", source="mail", ref={"text": "Can you send the invoice?", "from": "bob@acme.test"})
-    world["decisions"] = [{"kind": "reply", "triggerIds": [t1], "text": "Sent it just now."}]
-    await _run([t1])
-    assert sent == [(t1, "Sent it just now.", f"router:{BATCH}:0")] and world["posts"] == []
-    assert "bob@acme.test: Can you send the invoice?" in world["runs"][0][1].input
-
-
-@pytest.mark.asyncio
 async def test_router_run_polls_until_done(world):
     t1 = await _trig("chat:m1")
     world["first_status"] = "running"
@@ -1677,21 +1660,6 @@ async def test_a_candidate_the_router_names_in_no_decision_still_gets_a_check(
     world["decisions"] = [{"kind": "ignore", "triggerIds": [t2]}]
     await _run([t1, t2])
     assert world["posts"] == [] and reactions == [(ROOM, "✅")]
-    assert noted_rows == []
-
-
-@pytest.mark.asyncio
-async def test_a_note_on_mail_is_an_ignore(world, no_memory_writes, reactions, noted_rows, monkeypatch):
-    sent = []
-
-    async def deliver_reply(ws, trigger, text, *, idempotency_key):
-        sent.append(text)
-
-    monkeypatch.setattr(acts.source_replies, "deliver_reply", deliver_reply)
-    t1 = await _trig("mail:abc", source="mail", admission="candidate", ref={"text": "FYI", "from": "bob@acme.test"})
-    world["decisions"] = [_note(t1)]
-    await _run([t1])
-    assert sent == [] and world["posts"] == [] and reactions == []
     assert noted_rows == []
 
 

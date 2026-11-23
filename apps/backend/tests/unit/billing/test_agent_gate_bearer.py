@@ -86,7 +86,6 @@ async def test_write_profile_for_agent_mints_and_writes_that_agents_bearer(monke
         env_vars={},
         byo_provider=None,
         byo_api_key=None,
-        front_desk_number_for=lambda a: None,
     )
     monkeypatch.setattr(hp, "resolve_profile_inputs", AsyncMock(return_value=inputs))
     monkeypatch.setattr(hp, "_stage_owner_facts", AsyncMock())

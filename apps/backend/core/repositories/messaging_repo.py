@@ -1156,7 +1156,6 @@ async def create_message(
     silent: bool = False,
     expected_room_revision: int | None = None,
     via: str | None = None,
-    text_reply_key: str | None = None,
     session_mentions: list[str] | None = None,
     session_target_labels: dict[str, str] | None = None,
     addressing: dict | None = None,
@@ -1236,9 +1235,6 @@ async def create_message(
             }
             if via:
                 message["via"] = via
-            if text_reply_key:
-                # A member's text posted to the room: where an agent's reply is texted back (text_relay).
-                message["textReplyKey"] = text_reply_key
             if session_mentions:
                 # A reference, like a document link: it never wakes the session (owner ruling 2026-10-02).
                 message["sessionMentions"] = session_mentions

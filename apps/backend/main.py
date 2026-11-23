@@ -30,7 +30,6 @@ from core.services.update_service import run_scheduled_worker
 from core.voice import engine_hooks
 from routers import (
     agent_mail,
-    agent_text,
     apple_iap,
     automations,
     voice_meet,
@@ -54,7 +53,6 @@ from routers import (
     ops,
     os as os_router,
     os_billing as os_billing_router,
-    photon_inbound,
     platform_info,
     runtime_rpc,
     ses_inbound,
@@ -475,7 +473,6 @@ app.include_router(webhooks.router, prefix="/api/v1/webhooks", tags=["webhooks"]
 
 # SES-inbound agent-email ingest (provisioned agent email, inbound leg).
 # A Lambda parses raw SES mail and POSTs the clean JSON payload here.
-app.include_router(photon_inbound.router, prefix="/api/v1/webhooks", tags=["webhooks"])
 app.include_router(ses_inbound.router, prefix="/api/v1/webhooks", tags=["webhooks"])
 
 # Browser/mobile canonical messaging and the guarded HTTP runtime bridge.
@@ -566,7 +563,6 @@ app.include_router(platform_info.router, prefix="/api/v1/platform-info", tags=["
 # Agent mail (container routes under /u/{owner_id}/… use hook-token auth;
 # /addresses routes use Clerk). Policy lives in core/services/agent_mail_send.
 app.include_router(agent_mail.router, prefix="/api/v1/agent-mail", tags=["agent-mail"])
-app.include_router(agent_text.router, prefix="/api/v1/agent-text", tags=["agent-text"])
 
 # Admin dashboard — every endpoint gated by Depends(require_platform_admin).
 from routers import admin as admin_router  # noqa: E402

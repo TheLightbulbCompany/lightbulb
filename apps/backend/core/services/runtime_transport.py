@@ -37,8 +37,8 @@ logger = logging.getLogger(__name__)
 #: call to a cold workspace and only succeeds on a retry. Hoisted here (not left on
 #: ``openclaw_work``, its original home) so ``container_rpc`` can reuse it without importing
 #: ``openclaw_work`` -- that module itself imports ``runtime_rpc``, which imports
-#: ``container_rpc``, so the reverse import would cycle. ``openclaw_work``/``agent_mail_delivery``
-#: keep their own (private) references pointed at this one value.
+#: ``container_rpc``, so the reverse import would cycle. ``openclaw_work`` keeps its own (private)
+#: reference pointed at this one value.
 AGENTCORE_INGRESS_TIMEOUT_S = 90.0
 
 #: AgentCore requires a session id of at least 33 characters.

@@ -3,7 +3,11 @@ import react from '@vitejs/plugin-react';
 import path from 'path';
 
 export default defineConfig({
-  plugins: [react()],
+  // The React Compiler, as next.config.ts runs it in every build: without it a test runs different code from prod (it
+  // hoisted a closure's `key![1]` into render and crashed /voice on a cold load, 2026-11-23).
+  // ponytail: only the voice data hooks for now; 53 tests in 10 files mutate one shared mock object between renders,
+  // which compiled memoization never re-reads. Widen `sources` as those tests return fresh values.
+  plugins: [react({ babel: { plugins: [['babel-plugin-react-compiler', { sources: (file: string) => file.endsWith('src/components/voice/data.ts') }]] } })],
   test: {
     globals: true,
     environment: 'jsdom',

@@ -230,19 +230,12 @@ async def get_optional_human_session(
 # admin is ``PLATFORM_ADMIN_USER_IDS`` (see ``require_platform_admin``).
 _PLATFORM_ADMIN_EMAIL_DOMAINS: tuple[str, ...] = ("@thelightbulb.company",)
 
-# Team members on personal mailboxes, for the same analytics tagging.
-_PLATFORM_ADMIN_EXTRA_EMAILS: frozenset[str] = frozenset(
-    {
-        "prasiddha@gmail.com",
-    }
-)
-
 
 def is_internal_email(email: str | None) -> bool:
     """True when *email* looks like a team member's, for run-analytics tagging.
     Grants nothing: never use it to authorize a request."""
     normalized = (email or "").lower()
-    return normalized.endswith(_PLATFORM_ADMIN_EMAIL_DOMAINS) or normalized in _PLATFORM_ADMIN_EXTRA_EMAILS
+    return normalized.endswith(_PLATFORM_ADMIN_EMAIL_DOMAINS)
 
 
 def require_platform_admin(auth: AuthContext = Depends(get_current_user)) -> AuthContext:

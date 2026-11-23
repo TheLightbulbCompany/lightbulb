@@ -41,8 +41,6 @@ from routers import (
     connections,
     container,
     debug,
-    desktop_auth,
-    devices,
     engine_callbacks,
     hooks,
     huddles,
@@ -469,7 +467,6 @@ app.openapi = custom_openapi
 
 # Routes
 app.include_router(users.router, prefix="/api/v1/users", tags=["users"])
-app.include_router(devices.router, prefix="/api/v1/devices", tags=["devices"])
 app.include_router(os_router.router, prefix="/api/v1/os", tags=["os"])
 app.include_router(os_billing_router.router, prefix="/api/v1/os", tags=["os"])
 
@@ -544,8 +541,6 @@ app.include_router(workspace_files.router, prefix="/api/v1/container", tags=["co
 
 # Debug routes (dev-only container provisioning)
 app.include_router(debug.router, prefix="/api/v1/debug", tags=["debug"])
-
-app.include_router(desktop_auth.router, prefix="/api/v1/auth", tags=["desktop"])
 
 
 # ChatGPT OAuth (device-code flow for BYO ChatGPT-token billing)

@@ -47,9 +47,10 @@ async def ensure_workspace_trial_default(auth: AuthContext, workspace_id: str) -
 async def _ensure_trial_row(workspace_id: str, actor_user_id: str | None = None) -> None:
     """The trial-row body of ``ensure_workspace_trial_default``, after its auth check.
 
-    ``actor_user_id`` is the human behind this door (the person on the ``user.created``
-    path, the caller on a status poll): the trial events are captured on THEIR
-    PostHog person, with ``workspace_id`` as a property.
+    ``actor_user_id`` is the human behind this door (the caller on a status poll, a billing
+    request or a voice-plan checkout; ``user.created`` only writes the users row and never
+    reaches here, provisioning starts from ``POST /container/provision``): the trial events
+    are captured on THEIR PostHog person, with ``workspace_id`` as a property.
     """
     row = await billing_repo.get_by_owner_id(workspace_id)
     if row:

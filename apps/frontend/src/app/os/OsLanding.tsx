@@ -13,10 +13,10 @@ import { SparkStage } from "./SparkStage";
 
 const SYSTEM = "For Mac with Apple silicon (M1 or later). Requires macOS 14 or later.";
 const FRIEND = "Each friend who joins with your link adds a free day.";
-// The first conversation (Spark 2.1.9 and later). Plain constants: the owner approves this wording.
-const FIRST_TITLE = "Starts small";
-const FIRST_LINE = "Its first hello: it circles what it sees, then does one small thing you ask.";
-const HI_STEP = "Say hi. Spark shows what it sees and does one small thing.";
+// The owner's wording (restored 2026-11-23 at his word). Plain constants so it is easy to change.
+const FIRST_TITLE = "Tidy your Desktop";
+const FIRST_LINE = "Its first lesson: you tidy your Desktop together.";
+const HI_STEP = "Say hi. Spark tidies your Desktop with you.";
 
 const Key = ({ k }: { k: string }) => <span className="os-key">{k}</span>;
 

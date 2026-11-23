@@ -1209,12 +1209,6 @@ async def test_removal_notice_carries_its_own_owner(table):
     assert [(r["userId"], r["ownerId"]) for r in live] == [("user_v", VENDOR)]
 
 
-def test_vendor_room_id_is_deterministic_per_customer():
-    assert repo.vendor_room_id(OWNER) == repo.vendor_room_id(OWNER)
-    assert repo.vendor_room_id(OWNER) != repo.vendor_room_id(VENDOR)
-    assert repo.vendor_room_id(OWNER) == str(uuid.uuid5(uuid.NAMESPACE_URL, f"lightbulb-vendor-room|{OWNER}"))
-
-
 def test_member_item_carries_the_mode_marker_only_when_set():
     base = {"kind": "agent", "id": "a1", "role": "member", "listenMode": "mentions"}
     assert "modeSetBy" not in repo._member_item("r", "o", base, 1, 1, "t")

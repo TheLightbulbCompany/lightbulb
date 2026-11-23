@@ -118,12 +118,12 @@ async def test_grid_display_name_falls_back_to_clerk_then_none_on_failure():
 
 @pytest.mark.asyncio
 async def test_display_names_served_from_cache_without_refetch():
-    fleet._name_cache["org_cached"] = (time.monotonic(), "Cached Org")
+    fleet._name_cache["user_cached"] = (time.monotonic(), "Cached Name")
     with (
-        patch("core.services.ops.fleet.clerk_admin.get_organization", AsyncMock()) as get_org,
+        patch("core.services.ops.fleet.clerk_admin.get_user", AsyncMock()) as get_clerk_user,
         patch("core.services.ops.fleet.user_repo.get", AsyncMock()) as get_user_row,
     ):
-        names = await fleet._display_names(["org_cached"])
-    assert names == {"org_cached": "Cached Org"}
-    get_org.assert_not_called()
+        names = await fleet._display_names(["user_cached"])
+    assert names == {"user_cached": "Cached Name"}
+    get_clerk_user.assert_not_called()
     get_user_row.assert_not_called()

@@ -84,7 +84,7 @@ async def container_status(
     if container.get("status") in ("error", "stopped"):
         from core.services import provision_gate, trial_cap
 
-        trial_gate = provision_gate.gate_for_trial_reason(await trial_cap.trial_block_reason(owner_id), "admin")
+        trial_gate = provision_gate.gate_for_trial_reason(await trial_cap.trial_block_reason(owner_id))
         if trial_gate is not None:
             raise HTTPException(status_code=402, detail=trial_gate.to_payload())
 

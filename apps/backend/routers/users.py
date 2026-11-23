@@ -233,13 +233,13 @@ class DeleteAccountRequest(BaseModel):
     summary="Delete the caller's account",
     description=(
         "Self-serve, irreversible account deletion (App Store guideline "
-        "5.1.1(v)). The caller's workspace goes with them, subscription "
+        "5.1.1(v)). The caller's data goes with them, subscription "
         "included. The Clerk user is always deleted last."
     ),
     operation_id="delete_my_account",
     responses={
-        400: {"description": "Email confirmation mismatch or protected account"},
-        409: {"description": "Workspace changed mid-delete; retry"},
+        400: {"description": "Email confirmation mismatch or malformed user id"},
+        409: {"description": "Data changed mid-delete; retry"},
     },
 )
 async def delete_my_account(
@@ -250,7 +250,7 @@ async def delete_my_account(
     # Lazy import: the wipe orchestrators pull the whole teardown surface
     # (runtime/Stripe clients) — keep it off users.py import time.
     from core.services.account_wipe import (
-        OrgWipeUnsupportedError,
+        MalformedUserIdError,
         resolve_account_emails,
         wipe_account,
     )
@@ -267,8 +267,8 @@ async def delete_my_account(
     started = time.monotonic()
     try:
         report = await wipe_account(owner_id, actor_admin_id=owner_id)
-    except OrgWipeUnsupportedError:
-        raise HTTPException(status_code=403, detail="org_deletion_unsupported")
+    except MalformedUserIdError:
+        raise HTTPException(status_code=400, detail="invalid_user_id")
     elapsed_ms = int((time.monotonic() - started) * 1000)
 
     report_dict = report.to_dict()

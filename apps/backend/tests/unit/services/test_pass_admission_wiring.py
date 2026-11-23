@@ -10,7 +10,7 @@ async def test_worker_runs_no_pass_body_when_admission_refuses(monkeypatch):
     """The whole point: at N=2 the loser scans nothing."""
     ran = []
     monkeypatch.setattr(update_service.container_repo, "try_claim_pass", AsyncMock(return_value=False))
-    for fn in ("_paperclip_purge_pass", "_rollup_pass"):
+    for fn in ("_rollup_pass",):
         monkeypatch.setattr(update_service, fn, AsyncMock(side_effect=lambda _f=fn: ran.append(_f)))
     task = asyncio.create_task(update_service.run_scheduled_worker())
     await asyncio.sleep(0)
@@ -23,17 +23,17 @@ async def test_worker_runs_no_pass_body_when_admission_refuses(monkeypatch):
 async def test_worker_runs_each_pass_once_when_admitted(monkeypatch):
     ran = []
     monkeypatch.setattr(update_service.container_repo, "try_claim_pass", AsyncMock(return_value=True))
-    for fn in ("_paperclip_purge_pass", "_rollup_pass"):
+    for fn in ("_rollup_pass",):
         monkeypatch.setattr(update_service, fn, AsyncMock(side_effect=lambda _f=fn: ran.append(_f)))
     task = asyncio.create_task(update_service.run_scheduled_worker())
     await asyncio.sleep(0)
     update_service.request_worker_stop()
     await task
-    assert ran == ["_paperclip_purge_pass", "_rollup_pass"]
+    assert ran == ["_rollup_pass"]
 
 
 @pytest.mark.asyncio
-async def test_purge_and_rollup_ask_for_their_documented_windows(monkeypatch):
+async def test_rollup_asks_for_its_documented_window(monkeypatch):
     claims = []
     monkeypatch.setattr(
         update_service.container_repo,
@@ -44,7 +44,6 @@ async def test_purge_and_rollup_ask_for_their_documented_windows(monkeypatch):
     await asyncio.sleep(0)
     update_service.request_worker_stop()
     await task
-    assert ("paperclip_purge", update_service._PURGE_PASS_INTERVAL_SECONDS) in claims
     assert ("owner_day_rollup", update_service._ROLLUP_PASS_INTERVAL_SECONDS) in claims
     # Cadence belongs to the ROW now: no monotonic sentinel may survive in the worker.
     assert "monotonic" not in inspect.getsource(update_service.run_scheduled_worker)

@@ -140,7 +140,6 @@ async def test_provision_402_returns_structured_blocked_payload():
         action_label="Top up now",
         action_href="/settings/billing#credits",
         action_admin_only=False,
-        owner_role="admin",
     )
 
     with patch(
@@ -178,7 +177,6 @@ async def test_provision_402_subscription_required_payload():
         action_label="Subscribe",
         action_href="/onboarding",
         action_admin_only=True,
-        owner_role="admin",
     )
 
     with patch(

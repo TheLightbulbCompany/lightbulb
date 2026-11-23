@@ -94,8 +94,6 @@ function buildServiceStack(environment: "dev" | "prod", inspectAssets?: (images:
     appsyncEventsApiArn: `arn:aws:appsync:us-east-1:877352799272:apis/events-${environment}`,
     appsyncEventsRegion: "us-east-1",
     agentMailConfigurationSet: "isol8-test-agent-mail",
-    // lightbulb-stage.ts's VENDOR_ORG_ID_BY_ENV is empty (vendor org retired): unset here too.
-    vendorOrgId: undefined,
   });
 
   if (inspectAssets) {
@@ -734,19 +732,6 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
           }),
         ]),
       }),
-    });
-  });
-
-  test("leaves the vendor org id empty in the prod backend task (vendor org retired)", () => {
-    buildServiceStack("prod").hasResourceProperties("AWS::ECS::TaskDefinition", {
-      ContainerDefinitions: Match.arrayWith([
-        Match.objectLike({
-          Name: "backend",
-          Environment: Match.arrayWith([
-            Match.objectLike({ Name: "VENDOR_ORG_ID", Value: "" }),
-          ]),
-        }),
-      ]),
     });
   });
 });

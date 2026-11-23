@@ -314,28 +314,13 @@ def test_base_and_trial_are_labelled_as_what_they_are():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("org", [None, {}, RuntimeError("clerk down")])
-async def test_owner_timezone_falls_back_to_utc(monkeypatch, org):
-    from unittest.mock import AsyncMock
-
-    from core.services import clerk_admin
-
-    lookup = AsyncMock(side_effect=org) if isinstance(org, Exception) else AsyncMock(return_value=org)
-    monkeypatch.setattr(clerk_admin, "get_organization", lookup)
-    assert await owner_facts._lookup_owner_timezone("org_1") == "UTC"
-    assert await owner_facts._lookup_owner_timezone("user_1") == "UTC"  # never a personal owner
-
-
-@pytest.mark.asyncio
 async def test_owner_timezone_getter_failure_is_utc(monkeypatch):
     from unittest.mock import AsyncMock
 
     from core.repositories import user_repo
-    from core.services import clerk_admin
 
-    monkeypatch.setattr(clerk_admin, "get_organization", AsyncMock(return_value={"created_by": "user_owner"}))
     monkeypatch.setattr(user_repo, "get_timezone", AsyncMock(side_effect=RuntimeError("ddb")), raising=False)
-    assert await owner_facts._lookup_owner_timezone("org_1") == "UTC"
+    assert await owner_facts._lookup_owner_timezone("user_1") == "UTC"
 
 
 # ---- declared manifest: teammates + connected_integrations ----------------------------------

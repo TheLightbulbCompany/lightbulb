@@ -33,23 +33,13 @@ from core.services import (
     system_health,
 )
 from core.services.account_wipe import (
-    OrgWipeUnsupportedError,
+    MalformedUserIdError,
+    _refuse_malformed_id,
     preview_wipe,
     resolve_account_emails,
-    resolve_workspace_memberships,
     wipe_account,
 )
-from core.services.workspace_wipe import (
-    AmbiguousWorkspaceError,
-    StaleWorkspacePreviewError,
-    WorkspaceConfirmMismatchError,
-    WorkspaceWipeError,
-    preview_workspace_wipe,
-    resolve_workspace_org,
-    wipe_workspace,
-)
 from core.services.admin_audit import audit_admin_action, extract_client_ip
-from core.services.admin_service import resolve_admin_owner_id
 from core.services.runtime_rpc import config_patch_roster
 from core.services.webhook_dedup import idempotency
 from core.services.provision_dispatch import dispatch_provision, dispatch_reconcile
@@ -101,69 +91,6 @@ class WipeConfirmRequest(BaseModel):
     confirm_email: str = Field(
         ...,
         description="Type-to-confirm: must match the account's email on file, checked server-side.",
-    )
-    confirm_workspace: str | None = Field(
-        None,
-        description=(
-            "Required when the account belongs to a workspace: must match the (first) workspace's "
-            "name (its org id when Clerk has no name), checked server-side."
-        ),
-    )
-    confirm_teardown: list[str] = Field(
-        default_factory=list,
-        description=(
-            "Required for every workspace the preview marks `last_member`: that workspace's name "
-            "(org id when unnamed). Removing its last member tears it down -- the subscription is "
-            "cancelled and the runtime deleted -- so each one is confirmed on its own."
-        ),
-    )
-
-
-class WorkspaceWipePreviewRequest(BaseModel):
-    layers: list[str] | None = Field(
-        None,
-        description="Subset of wipe layers to enumerate (default: all but billing).",
-    )
-    include_billing: bool = Field(
-        False,
-        description="Also enumerate the billing layer (shown preserved/skipped unless set).",
-    )
-    delete_shared_members: bool = Field(
-        False,
-        description=(
-            "Also delete the accounts of members who belong to another org. Default: they keep "
-            "their account and only lose this workspace's membership."
-        ),
-    )
-
-
-class WorkspaceWipeConfirmRequest(BaseModel):
-    confirm_org: str = Field(
-        ...,
-        description="Type-to-confirm: must equal the workspace org id in the path, checked server-side.",
-    )
-    layers: list[str] | None = Field(
-        None,
-        description="Subset of wipe layers to execute (default: all but billing).",
-    )
-    include_billing: bool = Field(
-        False,
-        description="Arm the billing layer (requires confirm_billing). Default preserves billing/Stripe.",
-    )
-    confirm_billing: str | None = Field(
-        None,
-        description="Must equal 'DELETE-BILLING' when include_billing is set.",
-    )
-    preview_fingerprint: str = Field(
-        ...,
-        description="Fingerprint from the preview report being confirmed; execute aborts on drift.",
-    )
-    delete_shared_members: bool = Field(
-        False,
-        description=(
-            "Also delete the accounts of members who belong to another org. Default: they keep "
-            "their account and only lose this workspace's membership."
-        ),
     )
 
 
@@ -336,14 +263,10 @@ async def admin_container_reprovision(
     request: Request,
     auth: AuthContext = Depends(require_platform_admin),
 ):
-    # Resolve owner_id so org-member targets hit ``openclaw-{org_id}-{hash}``,
-    # not the non-existent ``openclaw-{user_id}-{hash}`` (admin-org-owner-id
-    # P1). Audit decorator still captures the URL path param (user_id).
-    owner_id, _ = await resolve_admin_owner_id(user_id, mutating=True)
     # Durable: an idle-session wait can outlast the request, so a Step Functions reconcile
     # execution does the work. dispatch_reconcile never raises.
-    await dispatch_reconcile(owner_id)
-    return {"status": "reconciling", "owner_id": owner_id}
+    await dispatch_reconcile(user_id)
+    return {"status": "reconciling", "owner_id": user_id}
 
 
 # ---------------------------------------------------------------------------
@@ -385,16 +308,15 @@ async def admin_provision_retry(
     request: Request,
     auth: AuthContext = Depends(require_platform_admin),
 ):
-    owner_id, _ = await resolve_admin_owner_id(user_id, mutating=True)
-    row = await container_repo.get_by_owner_id(owner_id)
+    row = await container_repo.get_by_owner_id(user_id)
     if not row:
         raise HTTPException(status_code=404, detail="No container row for this owner")
     status = row.get("status")
     if status == "running":
         raise HTTPException(status_code=409, detail="Container is running — nothing to retry")
-    if not await dispatch_provision(owner_id):
+    if not await dispatch_provision(user_id):
         raise HTTPException(status_code=502, detail="Provisioning could not be started — nothing was dispatched")
-    fresh = await container_repo.get_by_owner_id(owner_id)
+    fresh = await container_repo.get_by_owner_id(user_id)
     return {
         "ok": True,
         "status": (fresh or {}).get("status"),
@@ -441,11 +363,7 @@ async def admin_billing_cancel_subscription(
     request: Request,
     auth: AuthContext = Depends(require_platform_admin),
 ):
-    # Billing accounts are partitioned on owner_id (= org_id for org members).
-    # Without the resolver the mutation targets a personal-key account that
-    # doesn't exist for org members (admin-org-owner-id P1).
-    owner_id, _ = await resolve_admin_owner_id(user_id, mutating=True)
-    return _refuse_billing_noop(await billing_service.cancel_subscription_for_owner(owner_id))
+    return _refuse_billing_noop(await billing_service.cancel_subscription_for_owner(user_id))
 
 
 @router.post(
@@ -459,8 +377,7 @@ async def admin_billing_pause_subscription(
     request: Request,
     auth: AuthContext = Depends(require_platform_admin),
 ):
-    owner_id, _ = await resolve_admin_owner_id(user_id, mutating=True)
-    return _refuse_billing_noop(await billing_service.pause_subscription_for_owner(owner_id))
+    return _refuse_billing_noop(await billing_service.pause_subscription_for_owner(user_id))
 
 
 @router.post(
@@ -474,8 +391,7 @@ async def admin_billing_resume_subscription(
     request: Request,
     auth: AuthContext = Depends(require_platform_admin),
 ):
-    owner_id, _ = await resolve_admin_owner_id(user_id, mutating=True)
-    return _refuse_billing_noop(await billing_service.resume_subscription_for_owner(owner_id))
+    return _refuse_billing_noop(await billing_service.resume_subscription_for_owner(user_id))
 
 
 @router.post(
@@ -489,8 +405,7 @@ async def admin_billing_founding_team(
     request: Request,
     auth: AuthContext = Depends(require_platform_admin),
 ):
-    owner_id, _ = await resolve_admin_owner_id(user_id, mutating=True)
-    return _refuse_billing_noop(await billing_service.mark_founding_team(owner_id))
+    return _refuse_billing_noop(await billing_service.mark_founding_team(user_id))
 
 
 @router.post(
@@ -506,8 +421,7 @@ async def admin_billing_pause_30_days(
 ):
     from core.services.trial_lifecycle import pause_once
 
-    owner_id, _ = await resolve_admin_owner_id(user_id, mutating=True)
-    return _refuse_billing_noop(await pause_once(owner_id))
+    return _refuse_billing_noop(await pause_once(user_id))
 
 
 @router.post(
@@ -522,10 +436,9 @@ async def admin_billing_issue_credit(
     request: Request,
     auth: AuthContext = Depends(require_platform_admin),
 ):
-    owner_id, _ = await resolve_admin_owner_id(user_id, mutating=True)
     return _refuse_billing_noop(
         await billing_service.issue_credit_for_owner(
-            owner_id, amount_cents=body.amount_cents, reason=body.reason, request_id=body.request_id
+            user_id, amount_cents=body.amount_cents, reason=body.reason, request_id=body.request_id
         )
     )
 
@@ -542,8 +455,7 @@ async def admin_billing_mark_invoice_resolved(
     request: Request,
     auth: AuthContext = Depends(require_platform_admin),
 ):
-    owner_id, _ = await resolve_admin_owner_id(user_id, mutating=True)
-    return _refuse_billing_noop(await billing_service.mark_invoice_resolved(owner_id, body.invoice_id))
+    return _refuse_billing_noop(await billing_service.mark_invoice_resolved(user_id, body.invoice_id))
 
 
 # ---------------------------------------------------------------------------
@@ -619,11 +531,8 @@ async def admin_config_patch(
     request: Request,
     auth: AuthContext = Depends(require_platform_admin),
 ):
-    # For org members owner_id is the org_id — patching {user_id} would target a
-    # workspace that does not exist (admin-org-owner-id P1).
-    owner_id, _ = await resolve_admin_owner_id(user_id, mutating=True)
     # M6 row #13: same S3-profile fan-out as the other two config-patch doors.
-    await config_patch_roster(owner_id, body.patch, None)
+    await config_patch_roster(user_id, body.patch, None)
     return {"status": "patched"}
 
 
@@ -640,9 +549,8 @@ async def admin_agent_delete(
 ):
     from core.services.agent_lifecycle import AgentLifecycleConflict, delete_agent_everywhere
 
-    owner_id, _ = await resolve_admin_owner_id(user_id, mutating=True)
     try:
-        return await delete_agent_everywhere(owner_id=owner_id, agent_id=agent_id)
+        return await delete_agent_everywhere(owner_id=user_id, agent_id=agent_id)
     except AgentLifecycleConflict as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
@@ -664,10 +572,9 @@ async def admin_agent_delete(
     "/users/{owner_id}/wipe/preview",
     description=(
         "Read-only dry-run: enumerate every resource that exists for the owner "
-        "and would be torn down by a wipe (workspace membership, "
-        "ECS service + EFS, Bedrock AIP(s) + IAM role, Metronome, Stripe, "
-        "DDB rows, Clerk user). Calls no delete method. Personal owners only — "
-        "org owners get 400 org_wipe_unsupported."
+        "and would be torn down by a wipe (AgentCore runtime + S3 profiles, "
+        "Metronome, Stripe, DDB rows, Clerk user). Calls no delete method. "
+        "A malformed user id gets 400 invalid_user_id."
     ),
 )
 async def admin_wipe_preview(
@@ -676,8 +583,8 @@ async def admin_wipe_preview(
 ):
     try:
         report = await preview_wipe(owner_id)
-    except OrgWipeUnsupportedError:
-        raise HTTPException(status_code=400, detail="org_wipe_unsupported")
+    except MalformedUserIdError:
+        raise HTTPException(status_code=400, detail="invalid_user_id")
     return report.to_dict()
 
 
@@ -688,14 +595,11 @@ async def admin_wipe_preview(
         "to match one of the account's email addresses — looked up server-side "
         "from Clerk (the account's email addresses), matched case-insensitively, "
         "never trusted from the client — else 400 email_mismatch and nothing is "
-        "deleted. When the account belongs to a workspace, `confirm_workspace` "
-        "must also match the (first) workspace's name, else 400 "
-        "workspace_mismatch; the wipe keeps every company and archives only "
-        "this member's memberships. Partial-failure-tolerant: a "
+        "deleted. Partial-failure-tolerant: a "
         "step failing does not abort the others or fail this request; the "
         "returned report is the source of truth for what remains and what to "
         "re-run. Writes an admin-actions audit row with the full report. "
-        "Personal owners only — org owners get 400 org_wipe_unsupported."
+        "A malformed user id gets 400 invalid_user_id."
     ),
 )
 async def admin_wipe_execute(
@@ -704,14 +608,10 @@ async def admin_wipe_execute(
     request: Request,
     auth: AuthContext = Depends(require_platform_admin),
 ):
-    # Refuse org owners up front — before the email match — so a direct API
-    # caller gets the documented org_wipe_unsupported, not a misleading
-    # email_mismatch. (resolve_account_emails can't produce a matching email
-    # for an org id: clerk_admin.get_user 404s on org_... and there's no users
-    # row, so the match below would always fail first. preview_wipe already
-    # refuses orgs before anything else; mirror that here.)
-    if owner_id.startswith("org_"):  # a Clerk organization id; `/workspaces/{org_id}/wipe` is its door
-        raise HTTPException(status_code=400, detail="org_wipe_unsupported")
+    try:
+        _refuse_malformed_id(owner_id)  # before any read by this id
+    except MalformedUserIdError:
+        raise HTTPException(status_code=400, detail="invalid_user_id")
 
     # Authoritative email(s) from Clerk (the users-row email is written by an
     # unreliable webhook — see resolve_account_emails). The typed confirm must
@@ -721,25 +621,11 @@ async def admin_wipe_execute(
     if not typed or not any(typed == e.strip().lower() for e in account_emails):
         raise HTTPException(status_code=400, detail="email_mismatch")
 
-    # A member's company is the whole workspace's. The wipe keeps it regardless;
-    # this makes the admin name the workspace they are touching, the way they
-    # already name the account.
-    memberships = await resolve_workspace_memberships(owner_id)
-    if memberships:
-        first = memberships[0]
-        expected = (first["workspace_name"] or first["org_id"]).strip().lower()
-        if (body.confirm_workspace or "").strip().lower() != expected:
-            raise HTTPException(status_code=400, detail="workspace_mismatch")
-    typed_teardown = {name.strip().lower() for name in body.confirm_teardown}
-    for m in memberships:
-        if m.get("last_member") and (m["workspace_name"] or m["org_id"]).strip().lower() not in typed_teardown:
-            raise HTTPException(status_code=400, detail="teardown_unconfirmed")
-
     started = time.monotonic()
     try:
         report = await wipe_account(owner_id, actor_admin_id=auth.user_id)
-    except OrgWipeUnsupportedError:
-        raise HTTPException(status_code=400, detail="org_wipe_unsupported")
+    except MalformedUserIdError:
+        raise HTTPException(status_code=400, detail="invalid_user_id")
     elapsed_ms = int((time.monotonic() - started) * 1000)
 
     report_dict = report.to_dict()
@@ -773,132 +659,3 @@ async def admin_wipe_execute(
         )
 
     return report_dict
-
-
-# ---------------------------------------------------------------------------
-# Workspace wipe (org-keyed; core.services.workspace_wipe)
-# ---------------------------------------------------------------------------
-#
-# The user-keyed wipe above snapshots rows keyed by the USER id and misses an
-# org workspace's runtime (containers/billing/messaging all live under the ORG
-# id) — the 2026-09-21 half-wipe. These doors snapshot by ORG id instead.
-# Same audit posture as the user wipe: preview writes no audit row, execute
-# writes one with the full report (action="account_wipe_workspace").
-
-
-@router.post(
-    "/workspaces/{org_id}/wipe/preview",
-    description=(
-        "Read-only dry-run: enumerate every resource under the workspace org id "
-        "that a workspace wipe would tear down (AgentCore runtime + S3 profiles "
-        "under the ORG id, the workspace and member rows, rooms, "
-        "secrets/tokens, member Clerk users, Clerk org). Calls no delete method. "
-        "Billing is shown preserved/skipped unless include_billing is set."
-    ),
-)
-async def admin_workspace_wipe_preview(
-    org_id: str,
-    body: WorkspaceWipePreviewRequest | None = None,
-    auth: AuthContext = Depends(require_platform_admin),
-):
-    body = body or WorkspaceWipePreviewRequest()
-    try:
-        report = await preview_workspace_wipe(
-            org_id,
-            layers=body.layers,
-            include_billing=body.include_billing,
-            delete_shared_members=body.delete_shared_members,
-        )
-    except WorkspaceWipeError as e:
-        raise HTTPException(status_code=400, detail=f"workspace_wipe_refused: {e}")
-    return report.to_dict()
-
-
-@router.post(
-    "/workspaces/{org_id}/wipe",
-    description=(
-        "Execute the audited workspace teardown for the selected layers. Requires "
-        "`confirm_org` to equal the workspace org id, and `preview_fingerprint` "
-        "from the preview being confirmed (execute re-snapshots and aborts on "
-        "drift). Billing/Stripe is preserved by default; arming it needs "
-        "`include_billing` + `confirm_billing='DELETE-BILLING'`. Partial-failure-"
-        "tolerant like the user wipe; writes an admin-actions audit row with the "
-        "full report."
-    ),
-)
-async def admin_workspace_wipe_execute(
-    org_id: str,
-    body: WorkspaceWipeConfirmRequest,
-    request: Request,
-    auth: AuthContext = Depends(require_platform_admin),
-):
-    # Error details are "<code>: <message>"; the admin UI keys on the code
-    # before the separator.
-    if not body.preview_fingerprint.strip():
-        raise HTTPException(status_code=400, detail="workspace_wipe_refused: preview_fingerprint required")
-    started = time.monotonic()
-    try:
-        report = await wipe_workspace(
-            org_id,
-            actor_admin_id=auth.user_id,
-            confirm_org=body.confirm_org,
-            layers=body.layers,
-            include_billing=body.include_billing,
-            confirm_billing=body.confirm_billing,
-            expected_fingerprint=body.preview_fingerprint,
-            delete_shared_members=body.delete_shared_members,
-        )
-    except StaleWorkspacePreviewError as e:
-        raise HTTPException(status_code=409, detail=f"stale_preview: {e}")
-    except WorkspaceConfirmMismatchError as e:
-        raise HTTPException(status_code=400, detail=f"workspace_mismatch: {e}")
-    except WorkspaceWipeError as e:
-        raise HTTPException(status_code=400, detail=f"workspace_wipe_refused: {e}")
-    elapsed_ms = int((time.monotonic() - started) * 1000)
-
-    report_dict = report.to_dict()
-    has_failures = any(step["status"] == "failed" for step in report_dict["steps"])
-
-    try:
-        await admin_actions_repo.create(
-            admin_user_id=auth.user_id,
-            target_user_id=org_id,
-            action="account_wipe_workspace",
-            payload=report_dict,
-            result="partial_failure" if has_failures else "success",
-            audit_status="written",
-            http_status=200,
-            elapsed_ms=elapsed_ms,
-            error_message=None,
-            user_agent=request.headers.get("user-agent", "unknown"),
-            ip=extract_client_ip(request),
-        )
-    except Exception:  # noqa: BLE001 — same fail-open-response posture as the user wipe
-        logger.critical(
-            "ADMIN_AUDIT_PANIC action=account_wipe_workspace admin=%s target=%s",
-            auth.user_id,
-            org_id,
-            exc_info=True,
-        )
-
-    return report_dict
-
-
-@router.post(
-    "/users/{user_id}/wipe/workspace-resolve",
-    description=(
-        "Resolve which workspace a user-keyed wipe would mean: returns the org "
-        "id when the user belongs to exactly one workspace, else 400 "
-        "ambiguous_workspace (pass confirm_org to the workspace wipe). "
-        "Read-only; writes no audit row."
-    ),
-)
-async def admin_workspace_resolve(
-    user_id: str,
-    auth: AuthContext = Depends(require_platform_admin),
-):
-    try:
-        org_id = await resolve_workspace_org(user_id)
-    except (AmbiguousWorkspaceError, WorkspaceConfirmMismatchError) as e:
-        raise HTTPException(status_code=400, detail=f"ambiguous_workspace: {e}")
-    return {"user_id": user_id, "org_id": org_id}

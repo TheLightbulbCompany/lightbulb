@@ -17,7 +17,6 @@ import { Input } from "@/components/ui/input";
 import {
   executeAccountWipe,
   previewAccountWipe,
-  type WorkspaceMembership,
   type WipeStep,
 } from "@/app/admin/_actions/wipe";
 
@@ -53,25 +52,11 @@ export function WipeAccountDialog({ userId, email }: WipeAccountDialogProps) {
   const [previewSteps, setPreviewSteps] = React.useState<WipeStep[] | null>(null);
   const [previewError, setPreviewError] = React.useState<string | null>(null);
   const [typedEmail, setTypedEmail] = React.useState("");
-  // Every workspace the account belongs to: their companies are kept, and the
-  // backend demands the first workspace's name.
-  const [workspaces, setWorkspaces] = React.useState<WorkspaceMembership[]>([]);
-  const [typedWorkspace, setTypedWorkspace] = React.useState("");
-  const [typedTeardown, setTypedTeardown] = React.useState<Record<string, string>>({});
   const [executing, setExecuting] = React.useState(false);
   const [resultSteps, setResultSteps] = React.useState<WipeStep[] | null>(null);
   const [executeError, setExecuteError] = React.useState<string | null>(null);
 
-  const workspacePhrase = workspaces.length ? workspaces[0].workspace_name || workspaces[0].org_id : null;
-  // Removing a workspace's LAST member tears that workspace down (#3115): each one is
-  // named a second time, on its own, before the wipe can run.
-  const teardowns = workspaces.filter((w) => w.last_member);
-  const teardownPhrase = (w: WorkspaceMembership) => w.workspace_name || w.org_id;
-  const matches =
-    email != null &&
-    typedEmail === email &&
-    (workspacePhrase === null || typedWorkspace === workspacePhrase) &&
-    teardowns.every((w) => typedTeardown[w.org_id] === teardownPhrase(w));
+  const matches = email != null && typedEmail === email;
   const wipeDisabled = !matches || executing || previewSteps === null || resultSteps !== null;
 
   async function loadPreview() {
@@ -84,10 +69,7 @@ export function WipeAccountDialog({ userId, email }: WipeAccountDialogProps) {
         setPreviewError(result.error ?? "preview_failed");
         return;
       }
-      const report = result.data as
-        | { steps?: WipeStep[]; workspaces?: WorkspaceMembership[] }
-        | undefined;
-      setWorkspaces(report?.workspaces ?? []);
+      const report = result.data as { steps?: WipeStep[] } | undefined;
       setPreviewSteps(report?.steps ?? []);
     } finally {
       setPreviewLoading(false);
@@ -102,9 +84,6 @@ export function WipeAccountDialog({ userId, email }: WipeAccountDialogProps) {
       setPreviewError(null);
       setPreviewSteps(null);
       setTypedEmail("");
-      setWorkspaces([]);
-      setTypedWorkspace("");
-      setTypedTeardown({});
       setResultSteps(null);
       setExecuteError(null);
       void loadPreview();
@@ -117,12 +96,7 @@ export function WipeAccountDialog({ userId, email }: WipeAccountDialogProps) {
     setExecuting(true);
     setExecuteError(null);
     try {
-      const result = await executeAccountWipe(
-        userId,
-        typedEmail,
-        workspacePhrase === null ? undefined : typedWorkspace,
-        teardowns.map((w) => typedTeardown[w.org_id] ?? ""),
-      );
+      const result = await executeAccountWipe(userId, typedEmail);
       if (!result.ok) {
         setExecuteError(result.error ?? "wipe_failed");
         return;
@@ -152,8 +126,7 @@ export function WipeAccountDialog({ userId, email }: WipeAccountDialogProps) {
           <AlertDialogTitle>Wipe account</AlertDialogTitle>
           <AlertDialogDescription>
             Permanently tears down every resource for this owner — runtime
-            and S3 profiles, Paperclip company, Bedrock credits/role,
-            billing, and the Clerk user itself. This cannot be undone.
+            and S3 profiles, billing, and the Clerk user itself. This cannot be undone.
           </AlertDialogDescription>
         </AlertDialogHeader>
 
@@ -170,9 +143,6 @@ export function WipeAccountDialog({ userId, email }: WipeAccountDialogProps) {
           </div>
         ) : previewSteps ? (
           <div className="space-y-4">
-            {workspaces.length ? (
-              <ErrorBanner variant="info" error={workspacesNotice(workspaces)} />
-            ) : null}
             <div className="space-y-2">
               <h3 className="text-xs font-medium uppercase tracking-caps text-muted-foreground">
                 Will delete
@@ -187,35 +157,6 @@ export function WipeAccountDialog({ userId, email }: WipeAccountDialogProps) {
               onChange={setTypedEmail}
               disabled={executing}
             />
-            {workspacePhrase ? (
-              <ConfirmInput
-                id="wipe-confirm-workspace"
-                phrase={workspacePhrase}
-                action="to confirm the workspace"
-                value={typedWorkspace}
-                onChange={setTypedWorkspace}
-                disabled={executing}
-              />
-            ) : null}
-            {teardowns.map((w) => (
-              <div key={w.org_id} className="space-y-2">
-                <ErrorBanner
-                  variant="error"
-                  error={
-                    `This account is the last member of ${w.workspace_name ? `"${w.workspace_name}"` : w.org_id}. ` +
-                    `Removing it tears that workspace down: it ${(w.teardown ?? []).join("; ")}.`
-                  }
-                />
-                <ConfirmInput
-                  id={`wipe-confirm-teardown-${w.org_id}`}
-                  phrase={teardownPhrase(w)}
-                  action="to tear that workspace down"
-                  value={typedTeardown[w.org_id] ?? ""}
-                  onChange={(value) => setTypedTeardown((prev) => ({ ...prev, [w.org_id]: value }))}
-                  disabled={executing}
-                />
-              </div>
-            ))}
           </div>
         ) : null}
 
@@ -242,22 +183,8 @@ export function WipeAccountDialog({ userId, email }: WipeAccountDialogProps) {
   );
 }
 
-function workspacesNotice(workspaces: WorkspaceMembership[]): string {
-  const described = workspaces.map((w) => {
-    const workspace = w.workspace_name ? `workspace "${w.workspace_name}"` : "a workspace";
-    const owner = w.owner_user_id ?? "unknown";
-    const ownerEmail = w.owner_email ? ` <${w.owner_email}>` : "";
-    const members = `${w.member_count} active member${w.member_count === 1 ? "" : "s"}`;
-    return `${workspace} (${w.org_id}, owner ${owner}${ownerEmail}, ${members})`;
-  });
-  return (
-    `This account is a member of ${described.join("; ")}. ` +
-    "Every workspace's Paperclip company will be kept; only this member's membership is archived."
-  );
-}
-
 /** "Type <phrase> to …" confirmation field shared by the wipe dialogs. */
-export function ConfirmInput({
+function ConfirmInput({
   id,
   phrase,
   action,
@@ -291,7 +218,7 @@ export function ConfirmInput({
   );
 }
 
-export function StepList({ steps }: { steps: WipeStep[] }) {
+function StepList({ steps }: { steps: WipeStep[] }) {
   if (steps.length === 0) {
     return <p className="text-sm text-muted-foreground">No resources found for this owner.</p>;
   }

@@ -17,7 +17,7 @@ import pytest
 os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 
 from core.config import settings  # noqa: E402
-from core.services import account_wipe, entitlement_teardown, owner_secret_sweep, workspace_wipe  # noqa: E402
+from core.services import account_wipe, entitlement_teardown, owner_secret_sweep  # noqa: E402
 from core.services.account_wipe import wipe_account  # noqa: E402
 from core.repositories import integrations_repo  # noqa: E402
 from core.services.company_stripe import deauthorize as real_company_stripe_deauthorize  # noqa: E402
@@ -38,7 +38,6 @@ _PROJECTS_REMOVE_TOKENS = re.compile(r"""["']projects["']\s*,\s*["']remove["']""
 # `connections`: revoke-all runs its Disconnect teardown for every connected app.
 _TEARDOWN_MODULES = (
     account_wipe,
-    workspace_wipe,
     entitlement_teardown,
     owner_secret_sweep,
     connections,

@@ -113,8 +113,6 @@ export interface RoomsLiveSource {
 export interface RoomsPlatform {
   /** Signed-in user id, or null while identity is loading / signed out. */
   userId: string | null;
-  /** Active organisation, or null for a personal workspace. */
-  orgId: string | null;
   /**
    * The live-events context value. MUST be referentially stable across
    * renders, and so must everything on it: `messaging`, `onEvent`,
@@ -150,7 +148,7 @@ export interface UseRoomsOptions {
   persistence?: RoomsPersistence;
 }
 
-/** What `RoomsPersistence` keeps for one `userId:orgId` scope. */
+/** What `RoomsPersistence` keeps for one user's scope. */
 export interface RoomsSnapshot {
   rooms: RoomListResponse;
   history: { roomId: string; messages: CanonicalRoomMessage[]; complete: boolean }[];
@@ -205,7 +203,7 @@ const isRunReply = (message: CanonicalRoomMessage, run: LiveRoomRun): boolean =>
  * mounted, so per-instance state meant a refetch of the room's history on
  * every open and three room-list reads per event. Keyed off SWR's own cache so
  * the store lives exactly as long as (and as isolated as) the SWR data beside
- * it. A different scope — another user, another workspace, or signed out —
+ * it. A different scope — another user, or signed out —
  * replaces the store outright: a lookup can never return another scope's
  * messages, however briefly.
  */
@@ -272,11 +270,11 @@ const contiguousSequence = (messages: readonly CanonicalRoomMessage[]) => {
 };
 
 /** The room list's SWR key. Exported so the web provider can start the read before the workspace mounts. */
-export const roomsListKey = (userId: string, orgId: string | null | undefined) => ["messaging-rooms", `${userId}:${orgId ?? userId}`] as const;
+export const roomsListKey = (userId: string) => ["messaging-rooms", userId] as const;
 
 export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {}) {
   const { initialAgentId = null, subscribeToRoom = true, autoSelect = true, boundedHistory = false, persistence } = options;
-  const { userId, orgId, live, isVisible, onVisibilityChange, uuid } = platform;
+  const { userId, live, isVisible, onVisibilityChange, uuid } = platform;
   const {
     messaging,
     claimActiveRoomSubscription,
@@ -285,7 +283,7 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
     liveConnected,
     httpReady,
   } = live;
-  const roomsKey = userId ? roomsListKey(userId, orgId) : null;
+  const roomsKey = userId ? roomsListKey(userId) : null;
   const scope = roomsKey?.[1] ?? null;
   const { cache, mutate: mutateCache } = useSWRConfig();
   const store = useMemo(() => storeFor(cache, scope, persistence), [cache, scope, persistence]);

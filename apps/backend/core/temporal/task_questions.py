@@ -347,7 +347,7 @@ async def open_questions(ws: str, task_id: str) -> list[QuestionRef]:
         kind, options = questions.kind_and_options(effect["kind"], effect.get("operands"))
         subkind = questions.subkind_for(effect["kind"])
         try:
-            ids, rule, base = await questions.answerers(ws, task, kind, subkind)
+            ids, rule, base = await questions.answerers(ws, task, subkind)
         except questions.NoAnswerer as err:
             await _say_no_answerer(ws, task, questions.title_for(effect))
             raise _fail(err) from err  # before any row is written: no half-opened set
@@ -396,7 +396,7 @@ async def open_asked_question(ws: str, task_id: str, ref: AskRef) -> QuestionRef
     existing = await questions_repo.get_question(ws, task_id, qid)
     if existing is None:
         try:
-            ids, rule, base = await questions.answerers(ws, task, ref.kind, ref.subkind)
+            ids, rule, base = await questions.answerers(ws, task, ref.subkind)
         except questions.NoAnswerer as err:
             raise _fail(err) from err
         existing, _ = await questions_repo.open_question(

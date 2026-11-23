@@ -21,7 +21,7 @@ async def test_no_billing_row_is_no_gate_the_workspace_is_just_not_provisioned_y
     that beat the organization.created webhook used to see "Set up workspace billing")."""
     with patch("core.services.provision_gate.billing_repo") as repo:
         repo.get_by_owner_id = AsyncMock(return_value=None)
-        assert await evaluate_provision_gate(owner_id="org_xyz", is_admin=False) is None
+        assert await evaluate_provision_gate(owner_id="org_xyz") is None
 
 
 @pytest.mark.asyncio
@@ -68,7 +68,7 @@ async def test_org_abandoned_team_checkout_returns_team_billing_required():
                 # team checkout was abandoned before Stripe issued a sub.
             },
         )
-        gate = await evaluate_provision_gate(owner_id="org_abandoned", is_admin=True)
+        gate = await evaluate_provision_gate(owner_id="org_abandoned")
     assert gate is not None
     assert gate.code == "team_billing_required"
     assert gate.action_href == "/settings/billing"
@@ -465,7 +465,7 @@ async def test_org_gate_passes_when_connector_row_bound_to_org():
                 "oauth_connector_user_id": "user_a",
             },
         )
-        gate = await evaluate_provision_gate(owner_id="org_1", is_admin=True)
+        gate = await evaluate_provision_gate(owner_id="org_1")
     assert gate is None  # connector row bound to the org → gate passes
 
 
@@ -505,7 +505,6 @@ async def test_org_gate_checks_connector_tokens_not_poller():
         )
         gate = await evaluate_provision_gate(
             owner_id="org_1",
-            is_admin=True,
         )
     assert gate is None  # connector connected → gate passes for the poller
 
@@ -540,7 +539,6 @@ async def test_org_gate_oauth_required_is_admin_only():
         )
         gate = await evaluate_provision_gate(
             owner_id="org_1",
-            is_admin=False,
         )
     assert gate is not None
     assert gate.code == "oauth_required"
@@ -576,7 +574,6 @@ async def test_byo_key_without_byo_provider_returns_byo_provider_required():
         )
         gate = await evaluate_provision_gate(
             owner_id="org_x",
-            is_admin=True,
         )
     assert gate is not None
     assert gate.code == "byo_provider_required"
@@ -606,7 +603,6 @@ async def test_byo_key_with_byo_provider_set_passes():
         )
         gate = await evaluate_provision_gate(
             owner_id="org_x",
-            is_admin=True,
         )
     assert gate is None  # all gates pass
 
@@ -619,13 +615,11 @@ def test_gate_to_payload_shape():
         action_label="Top up now",
         action_href="/settings/billing#credits",
         action_admin_only=False,
-        owner_role="admin",
     )
     payload = gate.to_payload()
     assert payload["blocked"]["code"] == "credits_required"
     assert payload["blocked"]["action"]["href"] == "/settings/billing#credits"
     assert payload["blocked"]["action"]["admin_only"] is False
-    assert payload["blocked"]["owner_role"] == "admin"
     assert payload["detail"]  # legacy string preserved
 
 
@@ -837,10 +831,9 @@ async def test_probe_provision_gate_skips_metric_emission(monkeypatch):
         action_label="a",
         action_href="/settings/billing",
         action_admin_only=False,
-        owner_role="admin",
     )
 
-    async def fake_inner(*, owner_id, is_admin):
+    async def fake_inner(*, owner_id):
         return sentinel
 
     emitted = []
@@ -915,5 +908,5 @@ def test_included_daily_cap_is_its_own_card_not_the_trial_copy():
     trial "Daily free limit reached ... Upgrade" card."""
     from core.services import provision_gate, trial_cap
 
-    gate = provision_gate.gate_for_trial_reason(trial_cap.INCLUDED_CAP, "member")
+    gate = provision_gate.gate_for_trial_reason(trial_cap.INCLUDED_CAP)
     assert "free" not in (gate.title + gate.message).lower()

@@ -11,7 +11,6 @@ async collaborators, MagicMock for sync ones / return-value stand-ins.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from types import SimpleNamespace
 from contextlib import ExitStack
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -24,26 +23,22 @@ from moto import mock_aws
 
 from core.billing.bedrock_gate_tokens import delete_gate_token_rows as real_delete_gate_token_rows
 from core.repositories import workspace_repo
-from core.repositories.workspace_repo import Identity, WorkspaceRepo, Workspace
+from core.repositories.workspace_repo import Identity, WorkspaceRepo
 from core.services.account_wipe import (
-    OrgWipeUnsupportedError,
+    MalformedUserIdError,
     WipeReport,
     WipeStep,
     preview_wipe,
     resolve_account_emails,
-    resolve_workspace_memberships,
     wipe_account,
 )
 
 OWNER_ID = "user_123"
-ORG_ID = "org_founder"
 
 # The canonical order wipe_account must run its steps in (design spec
 # "complete teardown map" §steps 1-12; see account_wipe.py's module
 # docstring for the spec-row -> system-name mapping).
 EXPECTED_ORDER = [
-    # A human's wipe never deletes a workspace: they are only removed from each.
-    "paperclip_membership",
     # The gate-token rows go BEFORE the runtime step, which destroys the
     # containers row that holds the only pointers to them.
     "bedrock_gate_tokens",
@@ -85,9 +80,6 @@ EXPECTED_ORDER = [
     "clerk_user",
 ]
 
-# A human in no workspace: there is no membership step.
-NO_WORKSPACE_ORDER = EXPECTED_ORDER[1:]
-
 
 def _container_row(**overrides) -> dict:
     defaults = {
@@ -111,21 +103,6 @@ def _identity(**overrides) -> Identity:
     )
     defaults.update(overrides)
     return Identity(**defaults)
-
-
-def _workspace(**overrides) -> Workspace:
-    now = datetime.now(timezone.utc)
-    defaults = dict(
-        org_id=ORG_ID,
-        company_id="company_abc",
-        status="active",
-        created_at=now,
-        updated_at=now,
-        provisioner_user_id="user_owner",
-        member_user_ids={OWNER_ID, "user_owner", "user_b", "user_c"},
-    )
-    defaults.update(overrides)
-    return Workspace(**defaults)
 
 
 def _billing_row(**overrides) -> dict:
@@ -164,32 +141,18 @@ def wipe_mocks():
 
     container_get = AsyncMock(return_value=_container_row())
 
-    # Identity rows by Clerk user id; workspace rows by org id. Tests mutate
-    # these dicts (e.g. pop the owner's identity) instead of re-stubbing.
-    identities = {
-        OWNER_ID: _identity(),
-        "user_owner": _identity(user_id="user_owner", paperclip_email="founder@example.com"),
-    }
-    workspaces = {ORG_ID: _workspace()}
+    # Identity rows by Clerk user id. Tests mutate this dict (e.g. pop the owner's identity) instead of re-stubbing.
+    identities = {OWNER_ID: _identity()}
     paperclip_get_identity = AsyncMock(side_effect=lambda uid, **_: identities.get(uid))
-    paperclip_get_workspace = AsyncMock(side_effect=lambda oid, **_: workspaces.get(oid))
     paperclip_row_delete = AsyncMock(return_value=None)
     pending_brief_get = AsyncMock(return_value=None)
     pending_brief_delete = AsyncMock(return_value=None)
     paperclip_repo_instance = MagicMock(spec=WorkspaceRepo)
     paperclip_repo_instance.get_identity = paperclip_get_identity
-    paperclip_repo_instance.get_workspace = paperclip_get_workspace
     paperclip_repo_instance.delete = paperclip_row_delete
     paperclip_repo_instance.get_pending_brief = pending_brief_get
     paperclip_repo_instance.delete_pending_brief = pending_brief_delete
     paperclip_repo_cls = MagicMock(return_value=paperclip_repo_instance)
-    # The human's Clerk workspaces (read strict). Default: one workspace.
-    clerk_list_user_orgs = AsyncMock(return_value=[{"id": ORG_ID, "name": "Isol8"}])
-    clerk_get_organization = AsyncMock(return_value={"id": "org_founder", "name": "Isol8"})
-    # The workspace's Clerk roster (read strict). Default: a teammate stays behind.
-    clerk_list_members = AsyncMock(return_value=[{"user_id": OWNER_ID}, {"user_id": "user_teammate"}])
-    paperclip_archive_member = AsyncMock(return_value=None)
-
     billing_get = AsyncMock(return_value=_billing_row())
     billing_delete = AsyncMock(return_value=None)
 
@@ -234,7 +197,6 @@ def wipe_mocks():
     openrouter_retire = AsyncMock(return_value=True)
     held_number = AsyncMock(return_value="")
     fast_gate_delete = AsyncMock(return_value="metronome fast-gate row deleted")
-    oauth_bound = AsyncMock(return_value=None)
 
     # ExitStack, not a parenthesised `with (patch(...), ...)` chain: that
     # form is one statically nested block PER patch and CPython caps those
@@ -249,11 +211,6 @@ def wipe_mocks():
         ("core.services.account_wipe.WorkspaceRepo", paperclip_repo_cls),
         ("core.services.account_wipe.billing_repo.get_by_owner_id", billing_get),
         ("core.services.account_wipe.billing_repo.delete", billing_delete),
-        ("core.services.account_wipe._archive_paperclip_member_call", paperclip_archive_member),
-        ("core.services.account_wipe.clerk_admin.get_organization", clerk_get_organization),
-        ("core.services.account_wipe.clerk_admin.list_organization_members", clerk_list_members),
-        ("core.services.account_wipe.settings.CLERK_SECRET_KEY", "sk_test"),
-        ("core.services.account_wipe.clerk_admin.list_user_organizations", clerk_list_user_orgs),
         ("core.services.account_wipe.delete_workspace_runtime", delete_workspace_runtime_fn),
         ("core.services.account_wipe.wipe_owner_voice", voice_wipe),
         # Patched on the bedrock_aip module, not on account_wipe: the wipe no
@@ -292,7 +249,6 @@ def wipe_mocks():
         ("core.services.account_wipe.openrouter_key_repo.mark_retiring", openrouter_retire),
         ("core.services.account_wipe.voice_onboarding.held_number", held_number),
         ("core.services.account_wipe._delete_fast_gate_row", fast_gate_delete),
-        ("core.services.account_wipe.bound_owner_of", oauth_bound),
     ]
     with ExitStack() as _stack:
         for _target, _new in _patches:
@@ -303,18 +259,12 @@ def wipe_mocks():
             clerk_get_user=clerk_get_user,
             container_get=container_get,
             identities=identities,
-            workspaces=workspaces,
             paperclip_get_identity=paperclip_get_identity,
-            paperclip_get_workspace=paperclip_get_workspace,
-            clerk_list_user_orgs=clerk_list_user_orgs,
             paperclip_row_delete=paperclip_row_delete,
             pending_brief_get=pending_brief_get,
             pending_brief_delete=pending_brief_delete,
             paperclip_repo_instance=paperclip_repo_instance,
             paperclip_repo_cls=paperclip_repo_cls,
-            clerk_get_organization=clerk_get_organization,
-            clerk_list_members=clerk_list_members,
-            paperclip_archive_member=paperclip_archive_member,
             billing_get=billing_get,
             billing_delete=billing_delete,
             delete_workspace_runtime=delete_workspace_runtime_fn,
@@ -347,7 +297,6 @@ def wipe_mocks():
             openrouter_retire=openrouter_retire,
             held_number=held_number,
             fast_gate_delete=fast_gate_delete,
-            oauth_bound=oauth_bound,
         )
 
 
@@ -380,7 +329,6 @@ async def test_wipe_account_runs_steps_in_spec_order(wipe_mocks):
     assert all(s.status == "ok" for s in report.steps), report.steps
     assert report.steps[-1].system == "clerk_user"
 
-    wipe_mocks.paperclip_archive_member.assert_awaited_once_with(OWNER_ID, ORG_ID)
     wipe_mocks.delete_workspace_runtime.assert_awaited_once_with(OWNER_ID, delete_profiles=True, report={})
     wipe_mocks.voice_wipe.assert_awaited_once_with(OWNER_ID)
     # The Bedrock footprint is NOT the wipe's job any more — delete_user_service
@@ -582,9 +530,8 @@ async def test_skips_billing_dependent_steps_when_no_billing_row(wipe_mocks):
 
 @pytest.mark.asyncio
 async def test_skips_paperclip_user_steps_when_no_identity_row(wipe_mocks):
-    """No identity row -> paperclip_row still deletes by key (the person's own workspace row has the same
-    key and is idempotent to delete); the membership archive (keyed by Clerk workspaces, not the row) and
-    the rest of the wipe still run.
+    """No identity row -> paperclip_row still deletes by key (idempotent to delete) and the rest of the wipe
+    still runs.
 
     paperclip_row itself does NOT skip: its pending-brief delete is attempted
     unconditionally (the snapshot predates every step), so the step
@@ -594,7 +541,6 @@ async def test_skips_paperclip_user_steps_when_no_identity_row(wipe_mocks):
     report = await wipe_account(OWNER_ID, actor_admin_id="admin_1")
 
     by_system = {s.system: s for s in report.steps}
-    assert by_system["paperclip_membership"].status == "ok"
     assert by_system["paperclip_row"].status == "ok"
     assert by_system["paperclip_row"].detail == "no paperclip-companies or pending_brief row"
     wipe_mocks.paperclip_row_delete.assert_awaited_once_with(OWNER_ID)
@@ -614,7 +560,6 @@ async def test_skips_container_dependent_steps_when_no_containers_row(wipe_mocks
     by_system = {s.system: s for s in report.steps}
     assert by_system["runtime"].status == "ok"
     assert by_system["runtime"].detail.startswith("no containers row; owner-keyed cleanup done")
-    assert ORG_ID in by_system["runtime"].detail  # the member is pointed at the workspace wipe
     assert "bedrock_aips" not in by_system
     assert "bedrock_role" not in by_system
     # The gate-token step always runs (it re-reads the row itself) but finds
@@ -627,25 +572,9 @@ async def test_skips_container_dependent_steps_when_no_containers_row(wipe_mocks
 
 
 @pytest.mark.asyncio
-async def test_org_owner_raises_and_deletes_nothing(wipe_mocks):
-    """(d) org owner -> raises OrgWipeUnsupportedError, and no read or
-    delete collaborator is ever touched."""
-    with pytest.raises(OrgWipeUnsupportedError):
-        await wipe_account("org_456", actor_admin_id="admin_1")
-
-    wipe_mocks.user_get.assert_not_awaited()
-    wipe_mocks.container_get.assert_not_awaited()
-    wipe_mocks.billing_get.assert_not_awaited()
-    wipe_mocks.clerk_list_user_orgs.assert_not_awaited()
-    wipe_mocks.paperclip_archive_member.assert_not_awaited()
-    wipe_mocks.clerk_delete.assert_not_awaited()
-
-
-@pytest.mark.asyncio
 async def test_clerk_delete_still_runs_when_every_other_step_fails(wipe_mocks):
     """Extreme partial-failure case: every collaborator before Clerk raises.
     Clerk delete must still run and the report must still be returned."""
-    wipe_mocks.paperclip_archive_member.side_effect = RuntimeError("paperclip down")
     wipe_mocks.delete_workspace_runtime.side_effect = RuntimeError("ecs down")
     wipe_mocks.bedrock_aips_delete.side_effect = RuntimeError("bedrock aip down")
     wipe_mocks.bedrock_role_delete.side_effect = RuntimeError("bedrock role down")
@@ -679,185 +608,13 @@ async def test_clerk_delete_still_runs_when_every_other_step_fails(wipe_mocks):
     wipe_mocks.clerk_delete.assert_awaited_once_with(OWNER_ID)
 
 
-# ---------------------------------------------------------------------------
-# Companies — 2026-09-15: an admin wipe of a joined workspace MEMBER resolved
-# the company from the member's per-user row and hard-deleted the whole
-# workspace's company. One workspace = one company, owned by the workspace row;
-# a human's wipe NEVER deletes one, it only removes them from each.
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_member_of_workspace_wipe_never_deletes_the_company_and_archives_membership(wipe_mocks):
-    report = await wipe_account(OWNER_ID, actor_admin_id="admin_1")
-
-    wipe_mocks.paperclip_archive_member.assert_awaited_once_with(OWNER_ID, ORG_ID)
-    # Only the human's identity row is deleted — never the workspace row.
-    wipe_mocks.paperclip_row_delete.assert_awaited_once_with(OWNER_ID)
-    # Workspaces come from Clerk, read strict.
-    wipe_mocks.clerk_list_user_orgs.assert_awaited_once_with(OWNER_ID, strict=True)
-    wipe_mocks.clerk_get_organization.assert_awaited_once_with(ORG_ID)
-
-    assert [s.system for s in report.steps] == EXPECTED_ORDER
-    by_system = {s.system: s for s in report.steps}
-    assert by_system["paperclip_membership"].status == "ok"
-    assert by_system["clerk_user"].status == "ok"
-    assert report.workspaces == [
-        {
-            "company_id": "company_abc",
-            "org_id": ORG_ID,
-            "workspace_name": "Isol8",
-            "owner_user_id": "user_owner",
-            "owner_email": "founder@example.com",
-            "member_count": 4,
-            "last_member": False,
-            "teardown": [],
-        }
-    ]
-
-
-@pytest.mark.asyncio
-async def test_membership_is_archived_in_every_workspace_the_human_belongs_to(wipe_mocks):
-    """Clerk memberships decide the fan-out: one archive per workspace (deduped,
-    non-org ids ignored), and every company is kept."""
-    wipe_mocks.clerk_list_user_orgs.return_value = [
-        {"id": "org_b"},
-        {"id": ORG_ID},
-        {"id": "org_b"},
-        {"id": "user_not_an_org"},
-        {"name": "no id"},
-    ]
-
-    report = await wipe_account(OWNER_ID, actor_admin_id="admin_1")
-
-    assert [c.args for c in wipe_mocks.paperclip_archive_member.await_args_list] == [
-        (OWNER_ID, "org_b"),
-        (OWNER_ID, ORG_ID),
-    ]
-    by_system = {s.system: s for s in report.steps}
-    assert by_system["paperclip_membership"].status == "ok"
-    assert "org_b" in by_system["paperclip_membership"].detail
-    assert ORG_ID in by_system["paperclip_membership"].detail
-    # Every workspace is reported, not just the first.
-    assert [w["org_id"] for w in report.workspaces] == ["org_b", ORG_ID]
-
-
-@pytest.mark.asyncio
-async def test_human_in_no_workspace_archives_nothing(wipe_mocks):
-    wipe_mocks.clerk_list_user_orgs.return_value = []
-
-    report = await wipe_account(OWNER_ID, actor_admin_id="admin_1")
-
-    assert [s.system for s in report.steps] == NO_WORKSPACE_ORDER
-    assert report.workspaces == []
-    wipe_mocks.paperclip_archive_member.assert_not_awaited()
-    wipe_mocks.clerk_get_organization.assert_not_awaited()
-    wipe_mocks.paperclip_get_workspace.assert_not_awaited()
-    # The rest of the wipe still runs: their identity row goes.
-    wipe_mocks.paperclip_row_delete.assert_awaited_once_with(OWNER_ID)
-
-
-@pytest.mark.asyncio
-async def test_clerk_membership_read_failure_stops_the_wipe_before_any_step(wipe_mocks):
-    """Unsure is not "no workspace": a failed strict Clerk read must stop the
-    wipe with nothing deleted rather than guess an empty membership list."""
-    wipe_mocks.clerk_list_user_orgs.side_effect = RuntimeError("clerk down")
-
-    with pytest.raises(RuntimeError, match="clerk down"):
-        await wipe_account(OWNER_ID, actor_admin_id="admin_1")
-
-    wipe_mocks.paperclip_archive_member.assert_not_awaited()
-    wipe_mocks.gate_tokens_delete.assert_not_awaited()
-    wipe_mocks.delete_workspace_runtime.assert_not_awaited()
-    wipe_mocks.paperclip_row_delete.assert_not_awaited()
-    wipe_mocks.clerk_delete.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_workspace_row_read_failure_stops_the_wipe_before_any_step(wipe_mocks):
-    wipe_mocks.paperclip_get_workspace.side_effect = RuntimeError("ddb down")
-
-    with pytest.raises(RuntimeError, match="ddb down"):
-        await wipe_account(OWNER_ID, actor_admin_id="admin_1")
-
-    wipe_mocks.paperclip_archive_member.assert_not_awaited()
-    wipe_mocks.clerk_delete.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_preview_exposes_the_workspace(wipe_mocks):
-    report = await preview_wipe(OWNER_ID)
-
-    assert [s.system for s in report.steps] == EXPECTED_ORDER
-    by_system = {s.system: s for s in report.steps}
-    assert by_system["paperclip_membership"].status == "would_delete"
-    assert "only this member is removed" in by_system["paperclip_membership"].detail
-    assert report.to_dict()["workspaces"][0]["workspace_name"] == "Isol8"
-    wipe_mocks.clerk_list_user_orgs.assert_awaited_once_with(OWNER_ID, strict=True)
-    wipe_mocks.paperclip_archive_member.assert_not_awaited()
-
-
 @pytest.mark.asyncio
 async def test_preview_and_execute_agree(wipe_mocks):
-    """Same systems, same order, same workspace facts."""
+    """Same systems, same order."""
     preview = await preview_wipe(OWNER_ID)
     executed = await wipe_account(OWNER_ID, actor_admin_id="admin_1")
 
     assert [(s.system, s.action) for s in preview.steps] == [(s.system, s.action) for s in executed.steps]
-    assert preview.workspaces == executed.workspaces
-
-
-@pytest.mark.asyncio
-async def test_resolve_workspace_memberships_feeds_the_admin_workspace_name_confirm(wipe_mocks):
-    """The admin router's workspace-name confirm reads these facts: the org,
-    its name, the provisioner (+ its identity email) and the member count."""
-    shared = await resolve_workspace_memberships(OWNER_ID)
-
-    wipe_mocks.clerk_list_user_orgs.assert_awaited_once_with(OWNER_ID, strict=True)
-    wipe_mocks.paperclip_get_workspace.assert_awaited_once_with(ORG_ID)
-    wipe_mocks.paperclip_get_identity.assert_awaited_once_with("user_owner")
-    assert shared == [
-        {
-            "company_id": "company_abc",
-            "org_id": ORG_ID,
-            "workspace_name": "Isol8",
-            "owner_user_id": "user_owner",
-            "owner_email": "founder@example.com",
-            "member_count": 4,
-            "last_member": False,
-            "teardown": [],
-        }
-    ]
-
-
-@pytest.mark.asyncio
-async def test_resolve_workspace_memberships_tolerates_clerk_name_and_row_gaps(wipe_mocks):
-    """Clerk name unavailable and no workspace row yet: the org is still named,
-    everything else degrades to empty rather than raising."""
-    wipe_mocks.clerk_get_organization.return_value = None
-    wipe_mocks.workspaces.clear()
-
-    shared = await resolve_workspace_memberships(OWNER_ID)
-
-    assert shared == [
-        {
-            "company_id": "",
-            "org_id": ORG_ID,
-            "workspace_name": None,
-            "owner_user_id": None,
-            "owner_email": None,
-            "member_count": 0,
-            "last_member": False,
-            "teardown": [],
-        }
-    ]
-
-
-@pytest.mark.asyncio
-async def test_resolve_workspace_memberships_is_empty_without_a_workspace(wipe_mocks):
-    wipe_mocks.clerk_list_user_orgs.return_value = []
-
-    assert await resolve_workspace_memberships(OWNER_ID) == []
 
 
 # ---------------------------------------------------------------------------
@@ -876,7 +633,6 @@ async def test_preview_wipe_calls_no_delete_method(wipe_mocks):
     assert {s.status for s in report.steps} <= {"would_delete", "skipped"}
     assert [s.system for s in report.steps] == EXPECTED_ORDER
 
-    wipe_mocks.paperclip_archive_member.assert_not_awaited()
     wipe_mocks.delete_workspace_runtime.assert_not_awaited()
     wipe_mocks.bedrock_aips_delete.assert_not_awaited()
     wipe_mocks.bedrock_role_delete.assert_not_awaited()
@@ -907,14 +663,13 @@ async def test_preview_wipe_would_delete_everything_present(wipe_mocks):
 @pytest.mark.asyncio
 async def test_preview_wipe_skips_absent_resources(wipe_mocks):
     wipe_mocks.identities.pop(OWNER_ID)
-    wipe_mocks.clerk_list_user_orgs.return_value = []
     wipe_mocks.container_get.return_value = None
     wipe_mocks.billing_get.return_value = None
     wipe_mocks.user_get.return_value = None
 
     report = await preview_wipe(OWNER_ID)
 
-    assert [s.system for s in report.steps] == NO_WORKSPACE_ORDER
+    assert [s.system for s in report.steps] == EXPECTED_ORDER
     by_system = {s.system: s for s in report.steps}
     assert by_system["runtime"].status == "skipped"
 
@@ -936,9 +691,9 @@ async def test_preview_wipe_skips_absent_resources(wipe_mocks):
 
 
 @pytest.mark.asyncio
-async def test_preview_wipe_org_owner_raises(wipe_mocks):
-    with pytest.raises(OrgWipeUnsupportedError):
-        await preview_wipe("org_456")
+async def test_preview_wipe_malformed_id_raises(wipe_mocks):
+    with pytest.raises(MalformedUserIdError):
+        await preview_wipe("not_a_user")
     wipe_mocks.user_get.assert_not_awaited()
 
 
@@ -999,7 +754,7 @@ def test_wipe_report_to_dict_shape():
         owner_id=OWNER_ID,
         dry_run=True,
         steps=[
-            WipeStep(system="paperclip_membership", action="archive_member", status="would_delete", detail="x"),
+            WipeStep(system="runtime", action="delete_workspace_runtime", status="would_delete", detail="x"),
             WipeStep(system="clerk_user", action="delete_user", status="failed", error="boom"),
         ],
     )
@@ -1007,11 +762,10 @@ def test_wipe_report_to_dict_shape():
     assert d == {
         "owner_id": OWNER_ID,
         "dry_run": True,
-        "workspaces": [],
         "steps": [
             {
-                "system": "paperclip_membership",
-                "action": "archive_member",
+                "system": "runtime",
+                "action": "delete_workspace_runtime",
                 "status": "would_delete",
                 "detail": "x",
                 "error": None,
@@ -1280,29 +1034,6 @@ async def test_preview_leaves_gate_token_and_pending_brief_rows_in_place(wipe_mo
     assert _paperclip_keys(real_ddb) == {f"__pending_brief__:{OWNER_ID}"}
 
 
-@pytest.mark.asyncio
-async def test_the_last_member_is_told_the_workspace_will_be_torn_down(wipe_mocks):
-    """Removing a workspace's last member fires #3115's teardown (subscription cancelled,
-    runtime deleted, nightly run stopped); the preview must say so, not stay silent."""
-    wipe_mocks.clerk_list_members.return_value = [{"user_id": OWNER_ID}]
-
-    (membership,) = await resolve_workspace_memberships(OWNER_ID)
-
-    assert membership["last_member"] is True
-    joined = " ".join(membership["teardown"])
-    for fragment in ("Stripe subscription", "agent runtime", "nightly CEO run"):
-        assert fragment in joined
-    wipe_mocks.clerk_list_members.assert_awaited_with(ORG_ID, strict=True)
-
-
-@pytest.mark.asyncio
-async def test_a_roster_read_failure_stops_the_preview_rather_than_hiding_a_teardown(wipe_mocks):
-    wipe_mocks.clerk_list_members.side_effect = RuntimeError("clerk down")
-
-    with pytest.raises(RuntimeError):
-        await resolve_workspace_memberships(OWNER_ID)
-
-
 TEXT_ROW = {"owner_id": OWNER_ID, "address": "+15550001111", "kind": "text", "photon_resource_id": "res_1"}
 
 
@@ -1435,7 +1166,6 @@ async def test_account_wipe_no_paperclip_steps(wipe_mocks):
     for r in (preview, report):
         assert not {s.system for s in r.steps} & {"paperclip_company", "paperclip_aurora_user"}
     assert [s for s in report.steps if s.status == "failed"] == []
-    wipe_mocks.paperclip_archive_member.assert_awaited_once_with(OWNER_ID, ORG_ID)
     wipe_mocks.paperclip_row_delete.assert_awaited_once_with(OWNER_ID)
     wipe_mocks.user_delete.assert_awaited_once_with(OWNER_ID)
     wipe_mocks.clerk_delete.assert_awaited_once_with(OWNER_ID)
@@ -1470,10 +1200,10 @@ async def test_wipe_account_keeps_the_users_row_when_the_spark_cancel_fails(wipe
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("owner_id", ["", "user_", "user_a/b", "../x", "user_a b", ORG_ID])
-async def test_a_malformed_or_org_id_is_refused_before_any_read_or_delete(wipe_mocks, owner_id):
+@pytest.mark.parametrize("owner_id", ["", "user_", "user_a/b", "../x", "user_a b", "org_456"])
+async def test_a_malformed_id_is_refused_before_any_read_or_delete(wipe_mocks, owner_id):
     """Every step deletes by this id or a prefix built from it: anything but a Clerk user id is refused first."""
-    with pytest.raises(OrgWipeUnsupportedError):
+    with pytest.raises(MalformedUserIdError):
         await wipe_account(owner_id, actor_admin_id="clerk:user.deleted", clerk_user_deleted=True)
     wipe_mocks.user_get.assert_not_awaited()
     wipe_mocks.container_get.assert_not_awaited()

@@ -9,7 +9,7 @@ from moto import mock_aws
 
 from core import dynamodb
 from core.repositories.workspace_repo import WorkspaceRepo
-from core.services import agent_registry, workspace_provisioning
+from core.services import agent_registry
 from core.services.workspace_provisioning import STARTER_ROLE_KEYS, provision_org
 from tests.unit.repositories.test_workspace_repo import create_companies_table
 from tests.unit.super_agent.registry.conftest import _create_tasks_table
@@ -80,13 +80,6 @@ async def test_seed_failure_marks_failed(monkeypatch):
     assert ws.status == "failed" and "down" in ws.last_error
 
 
-async def test_disable_workspace_sets_purge_timer():
-    await provision_org(ORG, provisioner="user_1")
-    await workspace_provisioning.disable_workspace(ORG)
-    ws = await _repo().get_workspace(ORG)
-    assert ws.status == "disabled" and ws.scheduled_purge_at is not None
-
-
 @pytest.fixture
 def rooms(monkeypatch):
     from core.services import messaging
@@ -115,7 +108,7 @@ async def test_a_full_provision_run_seeds_the_voice_workspace_with_no_outbound_h
     import httpx
 
     from core.repositories import billing_repo, container_repo
-    from core.services import clerk_admin, hermes_provisioning, messaging, onboarding_brief
+    from core.services import hermes_provisioning, messaging, onboarding_brief
     from scripts import provision_runner
 
     async def no_http(*_a, **_k):
@@ -125,8 +118,6 @@ async def test_a_full_provision_run_seeds_the_voice_workspace_with_no_outbound_h
     monkeypatch.setattr(container_repo, "get_by_owner_id", AsyncMock(return_value={}))
     for name in ("prepare_hermes_workspace", "provision_hermes_runtime", "reconcile_runtime"):
         monkeypatch.setattr(hermes_provisioning, name, AsyncMock())
-    monkeypatch.setattr(clerk_admin, "get_organization", AsyncMock(return_value={"created_by": "user_1"}))
-    monkeypatch.setattr(clerk_admin, "list_organization_members", AsyncMock(return_value=[{"user_id": "user_1"}]))
     for name in ("ensure_default_room", "join_default_room"):
         monkeypatch.setattr(messaging, name, AsyncMock(return_value="room_1"))
     monkeypatch.setattr(onboarding_brief, "reconcile_pending_brief", AsyncMock())

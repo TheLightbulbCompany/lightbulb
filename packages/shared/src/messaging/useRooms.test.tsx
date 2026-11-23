@@ -66,7 +66,6 @@ const onVisibilityChange = (listener: () => void) => {
 const uuid = () => "11111111-1111-4111-8111-111111111111";
 const platform = (over: Partial<RoomsPlatform> = {}): RoomsPlatform => ({
   userId: "user-a",
-  orgId: "org-a",
   live,
   isVisible,
   onVisibilityChange,
@@ -362,7 +361,7 @@ describe("useRooms platform seams", () => {
   // The SWR key is null while identity is unresolved, so SWR's own isLoading
   // is false in that window -- indistinguishable from "fetched, zero rooms"
   // without this. Both apps gate the room surface behind an auth redirect, so
-  // userId/orgId being null here only ever means "Clerk hasn't resolved yet",
+  // userId being null here only ever means "Clerk hasn't resolved yet",
   // never "signed out with no rooms".
   it("reports loading while identity is unresolved, then flips false once rooms resolve", async () => {
     const { result, rerender } = renderHook(
@@ -467,7 +466,6 @@ describe("useRooms platform seams", () => {
 
     it.each([
       ["another user", { userId: "user-b" }],
-      ["another workspace", { orgId: "org-b" }],
     ])("never shows %s the cached history, and drops it on the switch", async (_label, other) => {
       const shared = oneCache();
       const first = renderHook(() => useRooms(platform()), { wrapper: shared });

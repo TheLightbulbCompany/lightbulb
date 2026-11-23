@@ -97,15 +97,15 @@ describe("WipeAccountDialog", () => {
     expect(mockExecute).not.toHaveBeenCalled();
   });
 
-  it("surfaces an org_wipe_unsupported preview error without a confirm input", async () => {
+  it("surfaces an invalid_user_id preview error without a confirm input", async () => {
     mockPreview.mockResolvedValue({
       ok: false,
       status: 400,
-      error: "org_wipe_unsupported",
+      error: "invalid_user_id",
     });
     const { dialog } = await openDialog();
 
-    expect(within(dialog).getByText(/org_wipe_unsupported/i)).toBeInTheDocument();
+    expect(within(dialog).getByText(/invalid_user_id/i)).toBeInTheDocument();
     expect(within(dialog).queryByRole("textbox")).toBeNull();
   });
 
@@ -140,7 +140,7 @@ describe("WipeAccountDialog", () => {
     await user.click(wipeButton);
 
     expect(await within(dialog).findByText("timeout contacting ECS")).toBeInTheDocument();
-    expect(mockExecute).toHaveBeenCalledWith(USER_ID, EMAIL, undefined, []);
+    expect(mockExecute).toHaveBeenCalledWith(USER_ID, EMAIL);
     expect(within(dialog).queryByRole("button", { name: /permanently wipe/i })).toBeNull();
   });
 
@@ -159,100 +159,6 @@ describe("WipeAccountDialog", () => {
 
     expect(await within(dialog).findByText(/email_mismatch/i)).toBeInTheDocument();
     expect(within(dialog).queryByText("timeout contacting ECS")).toBeNull();
-  });
-
-  it("keeps a workspace member's shared company and requires the workspace name", async () => {
-    mockPreview.mockResolvedValue({
-      ok: true,
-      status: 200,
-      data: {
-        owner_id: USER_ID,
-        dry_run: true,
-        workspaces: [
-          {
-            company_id: "company_abc",
-            org_id: "org_founder",
-            workspace_name: "Isol8",
-            owner_user_id: "user_owner",
-            owner_email: "founder@example.com",
-            member_count: 4,
-          },
-        ],
-        steps: [
-          {
-            system: "paperclip_company",
-            action: "delete_company",
-            status: "refused",
-            detail: 'refused: company company_abc belongs to workspace "Isol8" — kept',
-            error: null,
-          },
-          {
-            system: "paperclip_membership",
-            action: "archive_member",
-            status: "would_delete",
-            detail: "only this member's membership is archived",
-            error: null,
-          },
-        ],
-      },
-    });
-    const { user, dialog } = await openDialog();
-    await within(dialog).findByText("delete_company");
-
-    expect(within(dialog).getByText("refused")).toBeInTheDocument();
-    expect(
-      within(dialog).getByText(/Paperclip company will be kept; only this member's membership is archived/),
-    ).toBeInTheDocument();
-    expect(within(dialog).getByText(/user_owner <founder@example.com>, 4 active members/)).toBeInTheDocument();
-
-    const wipeButton = within(dialog).getByRole("button", { name: /permanently wipe/i });
-    await user.type(within(dialog).getByLabelText(new RegExp(`Type ${EMAIL}`, "i")), EMAIL);
-    expect(wipeButton).toBeDisabled();
-
-    await user.type(within(dialog).getByLabelText(/Type Isol8 to confirm the workspace/i), "Isol8");
-    expect(wipeButton).toBeEnabled();
-
-    await user.click(wipeButton);
-    expect(mockExecute).toHaveBeenCalledWith(USER_ID, EMAIL, "Isol8", []);
-  });
-
-  it("says a last member's removal tears the workspace down, and makes the admin name it again", async () => {
-    mockPreview.mockResolvedValue({
-      ok: true,
-      status: 200,
-      data: {
-        owner_id: USER_ID,
-        dry_run: true,
-        workspaces: [
-          {
-            company_id: "company_blue",
-            org_id: "org_blue",
-            workspace_name: "Blue Caller",
-            owner_user_id: USER_ID,
-            owner_email: EMAIL,
-            member_count: 1,
-            last_member: true,
-            teardown: ["cancels the workspace's Stripe subscription", "deletes the workspace's agent runtime"],
-          },
-        ],
-        steps: [{ system: "clerk_user", action: "delete_user", status: "would_delete", detail: "", error: null }],
-      },
-    });
-    const { user, dialog } = await openDialog();
-    await within(dialog).findByText("delete_user");
-
-    expect(
-      within(dialog).getByText(/last member of "Blue Caller".*cancels the workspace's Stripe subscription; deletes the workspace's agent runtime/),
-    ).toBeInTheDocument();
-    const wipeButton = within(dialog).getByRole("button", { name: /permanently wipe/i });
-    await user.type(within(dialog).getByLabelText(new RegExp(`Type ${EMAIL}`, "i")), EMAIL);
-    await user.type(within(dialog).getByLabelText(/Type Blue Caller to confirm the workspace/i), "Blue Caller");
-    expect(wipeButton).toBeDisabled();
-
-    await user.type(within(dialog).getByLabelText(/Type Blue Caller to tear that workspace down/i), "Blue Caller");
-    expect(wipeButton).toBeEnabled();
-    await user.click(wipeButton);
-    expect(mockExecute).toHaveBeenCalledWith(USER_ID, EMAIL, "Blue Caller", ["Blue Caller"]);
   });
 
   it("disables the trigger when the account has no email on file", () => {

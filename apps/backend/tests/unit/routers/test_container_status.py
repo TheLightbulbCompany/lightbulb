@@ -347,7 +347,6 @@ class TestContainerStatusGate:
             action_label="Top up now",
             action_href="/settings/billing#credits",
             action_admin_only=False,
-            owner_role="admin",
         )
 
         mock_auth = _workspace_auth()
@@ -445,7 +444,6 @@ class TestContainerStatusGate:
             action_label="Set up billing",
             action_href="/settings/billing",
             action_admin_only=True,
-            owner_role="admin",
         )
         _row = None
         with (
@@ -481,7 +479,6 @@ class TestContainerStatusGate:
             action_label="Manage subscription",
             action_href="/settings/billing",
             action_admin_only=True,
-            owner_role="admin",
         )
 
         mock_auth = _workspace_auth()

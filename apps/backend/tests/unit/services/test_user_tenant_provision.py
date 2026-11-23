@@ -5,7 +5,6 @@ Rule after: a `user_` owner gets the trial row, the dispatch, step 0 with itself
 Moto DynamoDB; Step Functions, Clerk and the network are faked."""
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import HTTPException
@@ -44,13 +43,6 @@ def _session(user_id: str) -> AuthContext:
 
 
 @pytest.fixture
-def no_clerk_orgs(monkeypatch):
-    """A person has no organization: Clerk answers no org (404) and lists no members."""
-    monkeypatch.setattr("core.services.clerk_admin.get_organization", AsyncMock(return_value=None))
-    monkeypatch.setattr("core.services.clerk_admin.list_organization_members", AsyncMock(return_value=[]))
-
-
-@pytest.fixture
 def sfn(monkeypatch):
     started = []
     client = SimpleNamespace(
@@ -61,7 +53,7 @@ def sfn(monkeypatch):
     return started
 
 
-async def test_user_owner_full_provision(ddb, calls, sfn, no_clerk_orgs):  # noqa: F811
+async def test_user_owner_full_provision(ddb, calls, sfn):  # noqa: F811
     await user_provision.ensure_workspace_trial_default(_session(PERSON), PERSON)
     row = await billing_repo.get_by_owner_id(PERSON)
     assert row["subscription_status"] == "trial_local" and "owner_type" not in row
@@ -76,7 +68,7 @@ async def test_user_owner_full_provision(ddb, calls, sfn, no_clerk_orgs):  # noq
     assert ws.status == "active" and ws.member_user_ids == {PERSON}
     assert await messaging_repo.get_member(default_room_id(PERSON), "human", PERSON) is not None
 
-    assert await evaluate_provision_gate(owner_id=PERSON, is_admin=True) is None
+    assert await evaluate_provision_gate(owner_id=PERSON) is None
 
 
 async def test_user_owner_container_status_creates_trial(ddb, calls, jwks):  # noqa: F811
@@ -163,7 +155,7 @@ async def _claim(c, user_id: str, slug: str, name: str = "Alice Studio"):
     return await c.post("/api/v1/company/slug/claim", json={"slug": slug, "name": name}, headers=headers)
 
 
-async def test_slug_claim_sets_name(ddb, calls, jwks, no_clerk_orgs, monkeypatch):  # noqa: F811
+async def test_slug_claim_sets_name(ddb, calls, jwks, monkeypatch):  # noqa: F811
     """A person's own claim is the one door that gives their tenant a slug, a name and a team address; the
     provision keeps the name. One slug per tenant, and nobody claims another person's hold.
 
@@ -204,25 +196,3 @@ async def test_source_adopted_after_provision(ddb, calls, jwks):  # noqa: F811
         assert r.status_code == 200, r.text[:300]
     item = await webhook_dedup._read_event(f"ws-source:{PERSON}")
     assert item["record"]["self_reported_source"] == "friend" and "ttl" not in item
-
-
-async def test_user_deleted_keeps_an_org_bound_chatgpt_sign_in(ddb, wipe_mocks):  # noqa: F811
-    """A member who connected ChatGPT for an org is deleted: that org's credential row stays (the org's own
-    lifecycle owns it) and nothing of the org's is touched. A person's sign-in for their own tenant goes."""
-    from unittest.mock import patch
-
-    from core.services import account_wipe, oauth_service
-
-    oauth_service._table().put_item(Item={"user_id": "user_m", "bound_owner_id": "org_x", "state": "active"})
-    oauth_service._table().put_item(Item={"user_id": PERSON, "bound_owner_id": PERSON, "state": "active"})
-    wipe_mocks.messaging_list_rooms.return_value = []
-    with (
-        patch.object(account_wipe, "bound_owner_of", oauth_service.bound_owner_of),
-        patch.object(account_wipe, "revoke_user_oauth", oauth_service.revoke_user_oauth),
-    ):
-        for who in ("user_m", PERSON):
-            await account_wipe.wipe_account(who, actor_admin_id="clerk:user.deleted", clerk_user_deleted=True)
-    assert oauth_service._table().get_item(Key={"user_id": "user_m"})["Item"]["bound_owner_id"] == "org_x"
-    assert "Item" not in oauth_service._table().get_item(Key={"user_id": PERSON})
-    touched = {c.args[0] for m in (wipe_mocks.billing_delete, wipe_mocks.stripe_delete) for c in m.await_args_list}
-    assert touched <= {"user_m", PERSON}  # no org's billing row or Stripe customer

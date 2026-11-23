@@ -36,7 +36,7 @@ from pydantic import BaseModel, Field
 
 from core.dynamodb import get_item, messaging_table, owner_pk, run_in_thread, utc_now_iso
 from core.engine import client as engine
-from core.engine.contract import EngineError, LineIn, OpenIn, Principal
+from core.engine.contract import LineIn, OpenIn, Principal
 from core.engine.contract import QuestionRef as AnswerRef, StartIn as TaskIn
 from core.billing import voice_billing, voice_plan
 from core.observability.metrics import put_metric
@@ -285,23 +285,25 @@ async def start_call(body: StartIn) -> dict:
         "unknown": [],
         **({"limited": limited} if limited else {}),
     }
-    room = await engine.open_conversation(
-        OpenIn(
-            tenant_id=owner_id,
-            conversation_id=call_id,
-            client_key=f"call:{body.livekitRoom}",
-            kind="call",
-            name=f"Call · {call['callerName'] or caller or 'unknown'}"[:60],
-            creator=Principal(kind="member", id=line["ownerUserId"], display_name=business),
-            hidden=True,
-            # Lightbulb (the Router's voice) is seated, so its replies and the Front desk's answers land here
-            seat_front_agent=not forward_to,
-            annotations={
-                "call": call,
-                "ownerUserId": line["ownerUserId"],
-                "callToken": token,  # beside the record, never in it: the Home reads META.call
-                **({"liveSlot": slot} if slot else {}),
-            },
+    room = await engine.http(
+        engine.open_conversation(
+            OpenIn(
+                tenant_id=owner_id,
+                conversation_id=call_id,
+                client_key=f"call:{body.livekitRoom}",
+                kind="call",
+                name=f"Call · {call['callerName'] or caller or 'unknown'}"[:60],
+                creator=Principal(kind="member", id=line["ownerUserId"], display_name=business),
+                hidden=True,
+                # Lightbulb (the Router's voice) is seated, so its replies and the Front desk's answers land here
+                seat_front_agent=not forward_to,
+                annotations={
+                    "call": call,
+                    "ownerUserId": line["ownerUserId"],
+                    "callToken": token,  # beside the record, never in it: the Home reads META.call
+                    **({"liveSlot": slot} if slot else {}),
+                },
+            )
         )
     )
     front = room.front_agent_id
@@ -366,12 +368,14 @@ async def _cursor(ws: str, room_id: str) -> int:
 
 async def owner_dm(ws: str, member: str) -> str:
     """The member's DM with the assistant, where the orb talks (found or created, as /voice/lightbulb opens it)."""
-    room = await engine.open_conversation(
-        OpenIn(
-            tenant_id=ws,
-            client_key=f"lightbulb-owner-dm|{ws}|{member}",
-            kind="dm",
-            creator=Principal(kind="member", id=member),
+    room = await engine.http(
+        engine.open_conversation(
+            OpenIn(
+                tenant_id=ws,
+                client_key=f"lightbulb-owner-dm|{ws}|{member}",
+                kind="dm",
+                creator=Principal(kind="member", id=member),
+            )
         )
     )
     return room.conversation_id
@@ -392,7 +396,7 @@ async def owner_pin(call_id: str, body: PinIn, ws: _Owner) -> dict:
     if member:
         try:
             dm = await owner_dm(ws, member)
-        except EngineError:  # a removed member, or no assistant yet
+        except HTTPException:  # the engine refused: no assistant yet
             member = None
     if not member:
         await _patch_call(ws, call_id, lambda c: {"steps": _step(c, "A phone PIN was entered and refused")})

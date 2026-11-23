@@ -600,6 +600,17 @@ async def test_propose_dm_is_the_requesters_only(internal):
     assert await repo.list_schedules(WS) == []
 
 
+async def test_a_dm_delivery_is_the_owners_only_on_create_and_patch(api):
+    r = _as(api).post(BASE, json=_IN | {"deliverTo": "dm:user_x"})
+    assert r.status_code == 400 and r.json()["detail"]["code"] == "dm_owner_only"
+    assert await repo.list_schedules(WS) == []
+    view = await _draft(api)
+    r = _as(api).patch(f"{BASE}/{view['id']}", json={"deliverTo": "dm:user_x", "version": view["version"]})
+    assert r.status_code == 400 and r.json()["detail"]["code"] == "dm_owner_only"
+    own = _as(api).patch(f"{BASE}/{view['id']}", json={"deliverTo": f"dm:{SAM}", "version": view["version"]})
+    assert own.status_code == 200, own.text
+
+
 async def test_propose_needs_a_room(internal):
     body = {"name": "n", "instructions": "i", "cron": ["0 9 * * 1"], "triggerIds": ["chat:nope"]}
     r = internal.api.client.post(

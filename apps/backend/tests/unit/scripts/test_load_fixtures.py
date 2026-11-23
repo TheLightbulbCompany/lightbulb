@@ -56,13 +56,6 @@ def test_ready_needs_runtime_and_the_seeded_general(status, rooms, members, read
     assert fx.is_ready(status, rooms, members) is ready
 
 
-def test_jwt_org_reads_v2_and_v1_claims():
-    assert fx.jwt_org(_jwt({"o": {"id": "org_a"}})) == "org_a"
-    assert fx.jwt_org(_jwt({"org_id": "org_b"})) == "org_b"
-    assert fx.jwt_org(_jwt({"sub": "user_x"})) is None
-    assert fx.jwt_org("not-a-jwt") is None
-
-
 def test_teardown_removes_members_before_the_creator_wipes_the_workspace():
     org = {"id": "org_1", "name": "load-org-001", "createdBy": "u1"}
     members = [{"userId": f"u{n}", "email": fx.user_email(n)} for n in (1, 2, 3)]
@@ -114,7 +107,6 @@ def test_a_bapi_session_is_created_with_the_fixture_org_and_mints_long_tokens(mo
     monkeypatch.setattr(fx.time, "sleep", lambda s: None)
     clerk = FakeBapi()
     session = fx.BapiSession(clerk, "user_1", "org_1", 5400)
-    assert fx.jwt_org(session.token()) == "org_1"
     assert session.token() == session.token()  # minted once, never refreshed
     assert session.mint(fx.APPSYNC_TEMPLATE) == "appsync.sess_user_1"
     assert clerk.posts == [
@@ -277,13 +269,6 @@ def test_run_deletes_the_file_when_the_command_fails(tmp_path, monkeypatch):
         "users": ["user_0001", "user_0002"],
         "keys": ["apiJwt", "appsyncJwt", "email", "orgId", "userId"],
     }
-    assert not path.exists()
-
-
-def test_run_refuses_a_jwt_for_another_org(tmp_path, monkeypatch):
-    path = _offline_run(monkeypatch, tmp_path, "org_JEV")
-    with pytest.raises(SystemExit, match="org_JEV"):
-        fx.main(["run", "--", "true"])
     assert not path.exists()
 
 

@@ -120,14 +120,13 @@ async def test_dms_are_not_deletable(monkeypatch, kind):
 
 
 @pytest.mark.asyncio
-async def test_general_and_the_shared_vendor_channel_are_not_deletable(monkeypatch):
+async def test_general_is_not_deletable(monkeypatch):
     delete = AsyncMock()
     monkeypatch.setattr(messaging.messaging_repo, "delete_room", delete)
-    monkeypatch.setattr(messaging.settings, "VENDOR_ORG_ID", "org_vendor")
-    for room_id in (messaging.default_room_id(OWNER), messaging.messaging_repo.vendor_room_id(OWNER)):
-        meta = {"roomId": room_id, "ownerId": OWNER, "kind": "channel", "revision": 1}
-        monkeypatch.setattr(messaging, "require_room_member", AsyncMock(return_value=(meta, {"role": "owner"})))
-        assert await _problem(messaging.delete_room(_auth(USER_A), room_id)) == "ROOM_NOT_DELETABLE"
+    room_id = messaging.default_room_id(OWNER)
+    meta = {"roomId": room_id, "ownerId": OWNER, "kind": "channel", "revision": 1}
+    monkeypatch.setattr(messaging, "require_room_member", AsyncMock(return_value=(meta, {"role": "owner"})))
+    assert await _problem(messaging.delete_room(_auth(USER_A), room_id)) == "ROOM_NOT_DELETABLE"
     delete.assert_not_awaited()
 
 

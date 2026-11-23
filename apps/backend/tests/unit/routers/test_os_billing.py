@@ -783,46 +783,6 @@ async def test_an_expire_that_finds_it_already_expired_goes_on(ddb, clock, fake,
     assert r.headers["location"].endswith("/cs_2") and stored_session(ddb) == "cs_2"
 
 
-# --- account wipes cancel before the users row goes ----------------------------------------------------------
-
-
-async def test_the_workspace_wipe_cancels_a_spark_subscription_before_deleting_the_row(ddb, clock, fake):
-    from core.services.workspace_wipe import _user_rows_run
-
-    await account()
-    subscribe(ddb)
-    fake.subs["sub_1"] = "active"
-    snap = SimpleNamespace(members=[{"user_id": "user_a", "other_orgs": []}], delete_shared_members=False)
-    assert await _user_rows_run(snap) == "deleted 1 users row(s)"
-    assert fake.calls == [("cancel", {"id": "sub_1"})]
-    assert "Item" not in ddb.users.get_item(Key={"user_id": "user_a"})
-
-
-async def test_a_failed_cancel_keeps_the_row_and_fails_the_wipe_step(ddb, clock, fake, monkeypatch):
-    from core.services.workspace_wipe import _user_rows_run
-
-    await account()
-    subscribe(ddb)
-
-    def down(*a, **kw):
-        raise stripe.APIConnectionError("down")
-
-    monkeypatch.setattr(stripe.Subscription, "cancel", down)
-    snap = SimpleNamespace(members=[{"user_id": "user_a", "other_orgs": []}], delete_shared_members=False)
-    with pytest.raises(stripe.APIConnectionError):
-        await _user_rows_run(snap)
-    assert ddb.users.get_item(Key={"user_id": "user_a"})["Item"]["os_subscription_id"] == "sub_1"
-
-
-async def test_a_wipe_of_a_person_without_spark_calls_no_stripe(ddb, clock, fake):
-    from core.services.workspace_wipe import _user_rows_run
-
-    await account()
-    snap = SimpleNamespace(members=[{"user_id": "user_a", "other_orgs": []}], delete_shared_members=False)
-    await _user_rows_run(snap)
-    assert fake.calls == [] and "Item" not in ddb.users.get_item(Key={"user_id": "user_a"})
-
-
 # --- edges: a referral during checkout, a deleted account's checkout and subscription -----------------------
 
 
@@ -912,15 +872,11 @@ def gone(ddb, monkeypatch):
         AttributeDefinitions=[{"AttributeName": "owner_id", "AttributeType": "S"}],
         BillingMode="PAY_PER_REQUEST",
     )
-    out = SimpleNamespace(orgs=[], deleted=[], events=[])
-
-    async def orgs_of(user_id, **kw):
-        return out.orgs
+    out = SimpleNamespace(deleted=[], events=[])
 
     async def delete_user(user_id):
         out.deleted.append(user_id)
 
-    monkeypatch.setattr("core.services.clerk_admin.list_user_organizations", orgs_of)
     monkeypatch.setattr("core.services.clerk_admin.delete_user", delete_user)
     monkeypatch.setattr(
         spark_events.product_analytics, "capture_product_event", lambda **kw: out.events.append(kw["event"])
@@ -1031,7 +987,6 @@ async def test_a_close_that_never_ends_is_ended_by_the_delete(ddb, clock, fake, 
 
 
 async def test_a_deleted_person_is_never_a_referee_again(ddb, clock, fake, gone):
-    gone.orgs = [{"id": "org_1", "role": "org:admin"}]
     await account(A), await account(B)
     assert (await req("DELETE", "/os/account", B)).status_code == 204
     await account(B)
@@ -1041,7 +996,6 @@ async def test_a_deleted_person_is_never_a_referee_again(ddb, clock, fake, gone)
 
 
 async def test_a_deleted_account_read_again_has_no_new_trial(ddb, clock, fake, gone):
-    gone.orgs = [{"id": "org_1", "role": "org:admin"}]
     await account()
     assert (await req("DELETE", "/os/account", A)).status_code == 204
     again = await account()

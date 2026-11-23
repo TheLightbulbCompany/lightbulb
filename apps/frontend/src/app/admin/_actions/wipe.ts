@@ -18,29 +18,8 @@ import { adminPost, type ActionResult } from "./_shared";
  * (`core/services/account_wipe.py WipeReport.to_dict()`): preview steps carry
  * `status: "would_delete" | "skipped"`, execute steps carry
  * `status: "ok" | "skipped" | "failed"`, and either can carry `"refused"` —
- * a guard kept the resource (a human's wipe never deletes a Paperclip company).
- * When `workspaces` is non-empty, execute also needs `confirm_workspace` equal to
- * the first workspace's name (its org id when Clerk has no name). A 400 surfaces as
- * `result.error === "org_wipe_unsupported"` (org owners aren't supported by the
- * USER wipe — use the workspace wipe below), `"email_mismatch"`, or
- * `"workspace_mismatch"` (execute only).
- *
- * Workspace wipe (org-keyed, `core/services/workspace_wipe.py`):
- *   - `previewWorkspaceWipe` -> `POST /admin/workspaces/{orgId}/wipe/preview`
- *     (read-only; billing shown preserved/skipped unless `includeBilling`).
- *   - `executeWorkspaceWipe` -> `POST /admin/workspaces/{orgId}/wipe` with
- *     `{ confirm_org, layers?, include_billing?, confirm_billing?, delete_shared_members?,
- *     preview_fingerprint }`. `confirm_org` must equal the org id;
- *     `preview_fingerprint` is required and must match the preview confirmed with
- *     the SAME options (else 409 `stale_preview`); billing moves only with
- *     `include_billing` + `confirm_billing: "DELETE-BILLING"`.
- *   - The report's `members[]` says per person `delete_account` or
- *     `remove_membership` (they belong to `other_orgs` too). Shared members keep
- *     their account unless `deleteSharedMembers`.
- *   - Errors are `"<code>: <message>"`; `result.code` carries the code:
- *     `stale_preview`, `workspace_mismatch`, `workspace_wipe_refused` (vendor org,
- *     missing fingerprint, acting admin is a member, …), `bootstrap_account_protected`.
- *   - Audit action is `account_wipe_workspace` (not `account_wipe`).
+ * a guard kept the resource. A 400 surfaces as `result.error === "email_mismatch"`
+ * or `"invalid_user_id"`.
  */
 
 export type WipeStepStatus = "ok" | "skipped" | "failed" | "would_delete" | "refused";
@@ -53,23 +32,9 @@ export interface WipeStep {
   error: string | null;
 }
 
-export interface WorkspaceMembership {
-  company_id: string;
-  org_id: string;
-  workspace_name: string | null;
-  owner_user_id: string | null;
-  owner_email: string | null;
-  member_count: number;
-  /** The account is this workspace's last member: removing them tears it down (#3115). */
-  last_member?: boolean;
-  /** What that teardown does, in plain words (empty unless `last_member`). */
-  teardown?: string[];
-}
-
 export interface WipeReport {
   owner_id: string;
   dry_run: boolean;
-  workspaces: WorkspaceMembership[];
   steps: WipeStep[];
 }
 
@@ -77,63 +42,6 @@ export async function previewAccountWipe(userId: string): Promise<ActionResult> 
   return adminPost(`/admin/users/${encodeURIComponent(userId)}/wipe/preview`);
 }
 
-export async function executeAccountWipe(
-  userId: string,
-  confirmEmail: string,
-  confirmWorkspace?: string,
-  confirmTeardown: string[] = [],
-): Promise<ActionResult> {
-  return adminPost(`/admin/users/${encodeURIComponent(userId)}/wipe`, {
-    confirm_email: confirmEmail,
-    confirm_workspace: confirmWorkspace,
-    confirm_teardown: confirmTeardown,
-  });
-}
-
-export interface WorkspaceWipeMember {
-  user_id: string;
-  email: string;
-  action: "delete_account" | "remove_membership";
-  other_orgs: string[];
-}
-
-export interface WorkspaceWipePreview {
-  layers?: string[];
-  includeBilling?: boolean;
-  deleteSharedMembers?: boolean;
-}
-
-export interface WorkspaceWipeConfirm extends WorkspaceWipePreview {
-  confirmOrg: string;
-  confirmBilling?: string;
-  previewFingerprint: string;
-}
-
-export type WorkspaceWipeResult = ActionResult & { code?: string };
-
-function withCode(res: ActionResult): WorkspaceWipeResult {
-  return res.ok ? res : { ...res, code: res.error?.split(": ")[0] };
-}
-
-export async function previewWorkspaceWipe(orgId: string, opts?: WorkspaceWipePreview): Promise<WorkspaceWipeResult> {
-  return withCode(
-    await adminPost(`/admin/workspaces/${encodeURIComponent(orgId)}/wipe/preview`, {
-      layers: opts?.layers,
-      include_billing: opts?.includeBilling ?? false,
-      delete_shared_members: opts?.deleteSharedMembers ?? false,
-    }),
-  );
-}
-
-export async function executeWorkspaceWipe(orgId: string, confirm: WorkspaceWipeConfirm): Promise<WorkspaceWipeResult> {
-  return withCode(
-    await adminPost(`/admin/workspaces/${encodeURIComponent(orgId)}/wipe`, {
-      confirm_org: confirm.confirmOrg,
-      layers: confirm.layers,
-      include_billing: confirm.includeBilling ?? false,
-      confirm_billing: confirm.confirmBilling,
-      delete_shared_members: confirm.deleteSharedMembers ?? false,
-      preview_fingerprint: confirm.previewFingerprint,
-    }),
-  );
+export async function executeAccountWipe(userId: string, confirmEmail: string): Promise<ActionResult> {
+  return adminPost(`/admin/users/${encodeURIComponent(userId)}/wipe`, { confirm_email: confirmEmail });
 }

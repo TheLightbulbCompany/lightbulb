@@ -518,79 +518,29 @@ class TestDeleteMyAccount:
         assert response.json()["detail"] == "email_mismatch"
         mock_wipe.assert_not_awaited()
 
-    @pytest.fixture(autouse=True)
-    def clerk_orgs(self):
-        """The caller's other orgs (none by default) and their members."""
-        with (
-            patch("core.services.clerk_admin.list_user_organizations", new_callable=AsyncMock) as orgs,
-            patch("core.services.clerk_admin.list_organization_members", new_callable=AsyncMock) as members,
-        ):
-            orgs.return_value = []
-            members.return_value = []
-            yield orgs, members
+    @pytest.mark.asyncio
+    async def test_requires_authentication(self, unauthenticated_async_client):
+        response = await unauthenticated_async_client.post("/api/v1/users/me/delete", json={"confirm_email": "a@b.co"})
+        assert response.status_code in (401, 403)
 
     @pytest.mark.asyncio
     @patch("routers.users.admin_actions_repo")
-    @patch("core.services.workspace_wipe.wipe_own_workspace", new_callable=AsyncMock)
     @patch("core.services.account_wipe.wipe_account", new_callable=AsyncMock)
     @patch("core.services.account_wipe.resolve_account_emails", new_callable=AsyncMock)
-    async def test_admin_with_another_admin_or_plain_member_leaves(
-        self, mock_emails, mock_wipe, mock_ws_wipe, mock_audit, async_client_org_admin, clerk_orgs
-    ):
-        """Another admin remains in the active org, plain member elsewhere: the caller just leaves."""
-        from core.services.workspace_wipe import OtherMembersRemainError
-
-        mock_emails.return_value = ["person@example.com"]
-        clerk_orgs[0].return_value = [
-            {"id": "user_test_123", "name": "Test", "role": "org:admin"},
-            {"id": "org_b", "name": "B", "role": "org:member"},
-        ]
-        clerk_orgs[1].return_value = [
-            {"user_id": "user_test_123", "role": "org:admin"},
-            {"user_id": "user_other", "role": "org:admin"},
-        ]
-        mock_ws_wipe.side_effect = OtherMembersRemainError("others")
-        mock_wipe.return_value = self._report()
-        mock_audit.create = AsyncMock()
-
-        response = await async_client_org_admin.post(
-            "/api/v1/users/me/delete", json={"confirm_email": "person@example.com"}
-        )
-
-        assert response.status_code == 200
-        mock_wipe.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    @patch("routers.users.admin_actions_repo")
-    @patch("core.services.workspace_wipe.wipe_own_workspace", new_callable=AsyncMock)
-    @patch("core.services.account_wipe.wipe_account", new_callable=AsyncMock)
-    @patch("core.services.account_wipe.resolve_account_emails", new_callable=AsyncMock)
-    async def test_retry_after_partial_success_reports_deleted(
-        self, mock_emails, mock_wipe, mock_ws_wipe, mock_audit, async_client_org_admin
-    ):
+    async def test_retry_after_partial_success_reports_deleted(self, mock_emails, mock_wipe, mock_audit, async_client):
         """Second attempt after rows were already removed: skipped steps are not failures."""
         from unittest.mock import MagicMock
 
-        from core.services.workspace_wipe import OtherMembersRemainError
-
         mock_emails.return_value = ["person@example.com"]
-        mock_ws_wipe.side_effect = OtherMembersRemainError("others")
         report = MagicMock()
         report.to_dict.return_value = {"steps": [{"status": "skipped"}, {"status": "ok"}]}
         mock_wipe.return_value = report
         mock_audit.create = AsyncMock()
 
-        response = await async_client_org_admin.post(
-            "/api/v1/users/me/delete", json={"confirm_email": "person@example.com"}
-        )
+        response = await async_client.post("/api/v1/users/me/delete", json={"confirm_email": "person@example.com"})
 
         assert response.status_code == 200
         assert response.json() == {"status": "deleted"}
-
-    @pytest.mark.asyncio
-    async def test_requires_authentication(self, unauthenticated_async_client):
-        response = await unauthenticated_async_client.post("/api/v1/users/me/delete", json={"confirm_email": "a@b.co"})
-        assert response.status_code in (401, 403)
 
     @pytest.mark.asyncio
     @patch("routers.users.admin_actions_repo")

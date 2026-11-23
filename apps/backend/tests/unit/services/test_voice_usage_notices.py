@@ -212,22 +212,6 @@ async def test_missing_owner_email_remains_retryable_before_claim(repos):
     send.assert_awaited_once()
 
 
-async def test_removed_or_non_admin_plan_acceptor_fails_closed():
-    with (
-        patch.object(
-            notices.billing_repo, "get_by_owner_id", AsyncMock(return_value={"voice_plan_accepted_by": "user-payer"})
-        ),
-        patch.object(
-            notices.clerk_admin,
-            "list_organization_members",
-            AsyncMock(return_value=[{"user_id": "user-payer", "role": "org:member"}]),
-        ),
-        patch.object(notices.clerk_admin, "get_user_strict", AsyncMock()) as email,
-    ):
-        assert await notices._owner_email("org_test") is None
-    email.assert_not_awaited()
-
-
 async def test_user_owned_billing_recipient_must_be_the_owner():
     with (
         patch.object(
@@ -235,11 +219,9 @@ async def test_user_owned_billing_recipient_must_be_the_owner():
             "get_by_owner_id",
             AsyncMock(return_value={"voice_plan_accepted_by": "user-other"}),
         ),
-        patch.object(notices.clerk_admin, "list_organization_members", AsyncMock()) as members,
         patch.object(notices.clerk_admin, "get_user_strict", AsyncMock()) as email,
     ):
         assert await notices._owner_email("user-owner") is None
-    members.assert_not_awaited()
     email.assert_not_awaited()
 
 

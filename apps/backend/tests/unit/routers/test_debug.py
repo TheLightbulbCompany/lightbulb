@@ -312,8 +312,7 @@ class TestDeleteUserData:
         assert res.status_code == 200
         # Critical: teardown WAS attempted despite no container row.
         # Critical: teardown WAS attempted despite no container row, and with delete_profiles --
-        # this, ``account_wipe`` and ``workspace_wipe`` are the only three terminal callers
-        # that pass it (M6-R42).
+        # this and ``account_wipe`` are the only two terminal callers that pass it (M6-R42).
         runtime_teardown.assert_awaited_once_with("user_test_123", delete_profiles=True, report={})
         assert res.json()["deleted"]["runtime"] is True
 
@@ -424,26 +423,6 @@ class TestDdbRows:
         with patch("routers.debug.settings") as mock_settings:
             mock_settings.ENVIRONMENT = "staging"
             res = await async_client.get("/api/v1/debug/ddb-rows", params={"owner_id": "user_test_123"})
-        assert res.status_code == 403
-
-    @pytest.mark.asyncio
-    async def test_ddb_rows_rejects_other_user_id_in_org_context(self, app, mock_org_admin_user):
-        """Org admin cannot probe a different member's user-scoped rows."""
-        from httpx import AsyncClient, ASGITransport
-        from core.auth import get_current_user
-
-        app.dependency_overrides[get_current_user] = mock_org_admin_user
-        try:
-            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-                res = await client.get(
-                    "/api/v1/debug/ddb-rows",
-                    params={
-                        "owner_id": "user_test_123",
-                        "user_id": "user_someone_else",
-                    },
-                )
-        finally:
-            app.dependency_overrides.clear()
         assert res.status_code == 403
 
 

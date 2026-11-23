@@ -154,6 +154,35 @@ async def test_an_edit_or_delete_of_the_root_clears_the_thread_touch_marker(worl
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.asyncio
+async def test_an_agents_thread_reply_reaches_the_person_who_started_it_and_the_mentioned(world):
+    room_id = await _room(members=(USER_A,))
+    root = await say(room_id, ANN, "root by ann")
+    await say(room_id, AGENT, "friday replies", thread_root=root["messageId"])
+    [item] = (await feed())["items"]
+    assert item["kind"] == "thread_reply" and item["threadRootMessageId"] == root["messageId"]
+    assert item["summary"]["title"] == "Friday replied in a thread in #general"
+    await say(room_id, AGENT, "friday again @ann", mentions=[USER_A], thread_root=root["messageId"])
+    assert sorted(i["kind"] for i in (await feed())["items"]) == [
+        "mention",
+        "thread_reply",
+    ]  # one row per thread, kept current
+    assert [i["kind"] for i in (await feed(USER_B))["items"]] == []  # not in the room: nothing
+
+
+@pytest.mark.asyncio
+async def test_thread_replies_never_badge_but_mentions_do(world):
+    room_id = await _room(members=(USER_A,))
+    root = await say(room_id, ANN, "root by ann")
+    await say(room_id, AGENT, "friday replies", thread_root=root["messageId"])
+    page = await feed()
+    # Still unseen; only needs-you, mentions and DMs reach the badge.
+    assert page["unseenCount"] == 1 and page["attentionCount"] == 0
+    await say(room_id, AGENT, "friday again @ann", mentions=[USER_A], thread_root=root["messageId"])
+    page = await feed()
+    assert page["unseenCount"] == 2 and page["attentionCount"] == 1
+
+
 # ---------------------------------------------------------------------------
 # pagination, membership, deletes
 # ---------------------------------------------------------------------------
@@ -186,6 +215,21 @@ def test_a_cursor_we_did_not_mint_is_refused(cursor):
 # ---------------------------------------------------------------------------
 # seen
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_seen_cursor_leaves_thread_replies_unread_until_opened(world):
+    room_id = await _room(members=(USER_A,))
+    root = await say(room_id, ANN, "root")
+    reply = await say(room_id, AGENT, "reply", thread_root=root["messageId"])
+    page = await feed()
+    assert page["unseenCount"] == 1 and page["items"][0]["read"] is False
+    await activity.mark_seen(auth(), activity.ActivitySeenRequest(up_to=reply["createdAt"]))
+    page = await feed()
+    # Seen clears the badge count, not the dot: the reply is read once the room cursor passes it.
+    assert page["unseenCount"] == 0 and page["items"][0]["read"] is False
+    await repo.set_read_cursor(room_id, USER_A, int(reply["messageSeq"]))
+    assert (await feed())["items"][0]["read"] is True
 
 
 @pytest.mark.asyncio

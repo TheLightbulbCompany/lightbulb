@@ -74,33 +74,22 @@ export function automationStatusLine(a: Pick<AutomationView, "status" | "pausedR
   return null;
 }
 
-type DecideRow = Pick<AutomationView, "deliverTo" | "ownerUserId" | "match">;
+type DecideRow = Pick<AutomationView, "ownerUserId">;
 
-/** Whose call turning it on is (routers/automations.py): a rule by its match (calendar → its owner, else an org
- *  admin, `_may_turn_on_rule`); anything else by where it posts (room → an org admin, else its owner, `_may_activate`). */
-const needsAdmin = (a: Pick<AutomationView, "deliverTo" | "match">): boolean =>
-  a.match ? !(a.match.sources ?? []).includes("calendar") : a.deliverTo.startsWith("room:");
-
-/** The line others read while they can't turn it on. */
-export const waitingWords = (a: Pick<AutomationView, "deliverTo" | "match">): string =>
-  needsAdmin(a) ? "Waiting on a workspace admin" : "Waiting on its owner";
-
-/** Turn on / Resume: a room automation is an admin's call (the signed-in person is their own admin); anything else
- *  its owner's. */
-export const canDecide = (a: DecideRow, viewer: { userId: string | null; admin: boolean }): boolean =>
-  needsAdmin(a) ? viewer.admin : a.ownerUserId === viewer.userId;
+/** Turn on / Resume: its owner's call (the account is one person). */
+export const canDecide = (a: DecideRow, viewer: { userId: string | null }): boolean => a.ownerUserId === viewer.userId;
 
 /** Why Run now is off, or null when it may run (the server's `run_now`: `_may_edit`, then status must be active). */
 export function runNowReason(a: Pick<AutomationView, "status">, mayEdit: boolean): string | null {
-  if (!mayEdit) return "Only its owner or an admin can run it";
+  if (!mayEdit) return "Only its owner can run it";
   if (a.status === "draft") return "Turn it on first";
   if (a.status !== "active") return "Resume it first";
   return null;
 }
 
-/** Pause / Run now / Not now (the server's `_may_edit`): an org admin or the owner. */
-export const canEdit = (a: Pick<AutomationView, "ownerUserId">, viewer: { userId: string | null; admin: boolean }): boolean =>
-  viewer.admin || a.ownerUserId === viewer.userId;
+/** Pause / Run now / Not now: its owner. */
+export const canEdit = (a: Pick<AutomationView, "ownerUserId">, viewer: { userId: string | null }): boolean =>
+  a.ownerUserId === viewer.userId;
 
 export type RunNowOutcome = { kind: "started" } | { kind: "running"; taskId: string } | { kind: "note"; message: string };
 

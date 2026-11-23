@@ -177,7 +177,6 @@ async def delete_user_data(auth: AuthContext = Depends(get_current_user)):
     assert_debug_enabled("user-data")
 
     owner_id = resolve_owner_id(auth)
-    user_id = auth.user_id
     deleted: dict = {"runtime": False, "ddb": []}
     # Track failures so we can return 500 at the end. Test cleanup needs to
     # know if anything leaked — a green 200 with a leaked runtime was silently
@@ -248,8 +247,8 @@ async def delete_user_data(auth: AuthContext = Depends(get_current_user)):
     async def _delete_user_row():
         from core.services.os_billing import cancel_for_deleted_user
 
-        await cancel_for_deleted_user(user_id)  # a failure keeps the row: it holds the subscription id
-        await user_repo.delete(user_id)
+        await cancel_for_deleted_user(owner_id)  # a failure keeps the row: it holds the subscription id
+        await user_repo.delete(owner_id)
 
     ddb_steps = []
     if runtime_succeeded:
@@ -260,10 +259,10 @@ async def delete_user_data(auth: AuthContext = Depends(get_current_user)):
             ("byo-llm-keys", _wipe_byo_llm_keys),
             ("usage-counters", lambda: usage_repo.delete_all_for_owner(owner_id)),
             ("integrations", _wipe_integrations),
-            ("ws-connections", lambda: connection_service.delete_all_for_user(user_id)),
+            ("ws-connections", lambda: connection_service.delete_all_for_user(owner_id)),
             ("users", _delete_user_row),
             # The person's own memory data: sessions, drafts, episodes, computer keys.
-            ("person-memory", lambda: workspace_memory.delete_person_memory(user_id)),
+            ("person-memory", lambda: workspace_memory.delete_person_memory(owner_id)),
             # The WORKSPACE row (keyed by the owner id) carries the company,
             # its onboarding generation/funnel and the starter roster (INV-10).
             # Left behind, the next fresh provision would RECONCILE-ADOPT the
@@ -324,30 +323,21 @@ async def delete_user_data(auth: AuthContext = Depends(get_current_user)):
 )
 async def ddb_rows(
     owner_id: str,
-    user_id: str | None = None,
     auth: AuthContext = Depends(get_current_user),
 ):
     assert_debug_enabled("ddb-rows")
 
     # Restrict to caller-owned data. The endpoint is meant for the test
     # harness to verify ITS OWN teardown — anyone passing a different
-    # owner/user is fishing for cross-tenant info in dev/staging.
+    # owner is fishing for cross-tenant info in dev/staging.
     if owner_id != resolve_owner_id(auth):
         raise HTTPException(status_code=403, detail="Cannot query another owner's row counts")
-    if user_id is not None and user_id != auth.user_id:
-        raise HTTPException(status_code=403, detail="Cannot query another user's row counts")
 
-    # `users` and `ws-connections` are keyed by Clerk user_id even when other
-    # tables are scoped by org_id. Caller supplies user_id explicitly in org
-    # mode; defaults to owner_id for personal mode where they're the same
-    # value.
-    effective_user_id = user_id or owner_id
-
-    user = await user_repo.get_by_user_id(effective_user_id)
+    user = await user_repo.get_by_user_id(owner_id)
     container = await container_repo.get_by_owner_id(owner_id)
     billing = await billing_repo.get_by_owner_id(owner_id)
     usage = await usage_repo.count_for_owner(owner_id)
-    ws_conns = await connection_service.count_for_user(effective_user_id)
+    ws_conns = await connection_service.count_for_user(owner_id)
 
     return {
         "tables": {

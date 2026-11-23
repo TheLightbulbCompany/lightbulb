@@ -5,26 +5,8 @@ import pytest
 from core import tasks_schema as ts
 from core.services import questions
 
-ORG = "org_acme"
-TASK = {"taskId": "8f14e45f-ceea-467a-9575-8a1b2c3d4e5f", "ownerUserId": "user_sam"}
-MEMBERS = [
-    {"user_id": "user_sam", "role": "org:member"},
-    {"user_id": "user_ada", "role": "org:admin"},
-    {"user_id": "user_bo", "role": "org:admin"},
-    {"user_id": "user_priya", "role": "org:member"},
-]
-
-
-@pytest.fixture
-def clerk(monkeypatch):
-    calls = []
-    state = {"members": MEMBERS}
-
-    async def fake(org_id, *, strict=False):
-        calls.append((org_id, strict))
-        return state["members"]
-
-    return {"calls": calls, "state": state}
+WS = "user_sam"  # the tenant is one person
+TASK = {"taskId": "8f14e45f-ceea-467a-9575-8a1b2c3d4e5f", "ownerUserId": WS}
 
 
 @pytest.fixture
@@ -38,30 +20,24 @@ def policy(monkeypatch):
     return stored
 
 
-async def test_no_requester_raises(clerk, policy):
+async def test_no_requester_raises(policy):
     with pytest.raises(questions.NoAnswerer):
-        await questions.answerers(ORG, {**TASK, "ownerUserId": None}, "question", "question")
+        await questions.answerers(WS, {**TASK, "ownerUserId": None}, "question")
 
 
-async def test_can_answer_now_promoted_member_not_stored(clerk, policy):
-    """Authority gained after the ask doesn't add a person: stored list AND rule (spec 05 §3.3)."""
-    ids, rule, base = await questions.answerers(ORG, TASK, "approval", "purchase")
-    q = {"subkind": "purchase", "answerers": ids, "answererRule": rule, "baseAnswerers": base}
-    clerk["state"]["members"] = [*MEMBERS, {"user_id": "user_new", "role": "org:admin"}]
-    assert not await questions.can_answer_now(ORG, q, "user_new")
+@pytest.mark.parametrize("subkind", ["purchase", "question", "publish"])
+async def test_the_tenants_person_answers_every_rule(policy, subkind):
+    ids, rule, base = await questions.answerers(WS, TASK, subkind)
+    q = {"subkind": subkind, "answerers": ids, "answererRule": rule, "baseAnswerers": base}
+    assert ids == [WS]
+    assert await questions.can_answer_now(WS, q, WS)
+    assert not await questions.can_answer_now(WS, q, "user_new")  # not the tenant's person, not in the stored list
 
 
-async def test_removed_member_refused(clerk, policy):
-    ids, rule, base = await questions.answerers(ORG, TASK, "question", "question")
-    q = {"subkind": "question", "answerers": ids, "answererRule": rule, "baseAnswerers": base}
-    clerk["state"]["members"] = [m for m in MEMBERS if m["user_id"] != "user_sam"]
-    assert not await questions.can_answer_now(ORG, q, "user_sam")
-
-
-async def test_missing_rule_fails_closed(clerk, policy):
-    q = {"subkind": "question", "answerers": ["user_sam"], "answererRule": None, "baseAnswerers": ["user_sam"]}
-    assert await questions.can_answer_now(ORG, q, "user_sam") is False
-    assert await questions.can_answer_now(ORG, {"answerers": ["user_sam"]}, "user_sam") is False
+async def test_missing_rule_fails_closed(policy):
+    q = {"subkind": "question", "answerers": [WS], "answererRule": None, "baseAnswerers": [WS]}
+    assert await questions.can_answer_now(WS, q, WS) is False
+    assert await questions.can_answer_now(WS, {"answerers": [WS]}, WS) is False
 
 
 def test_review_kind_for_drafts():
@@ -260,3 +236,13 @@ def test_output_for_review_kinds_only(kind, operands, expected):
 )
 def test_a_purchase_title_names_the_currency(operands, title):
     assert questions.title_for({"kind": "purchase", "operands": operands}) == title
+
+
+async def test_another_id_in_the_stored_lists_is_still_refused(policy):
+    q = {
+        "subkind": "question",
+        "answerers": [WS, "user_new"],
+        "answererRule": "requester",
+        "baseAnswerers": ["user_new"],
+    }
+    assert not await questions.can_answer_now(WS, q, "user_new")

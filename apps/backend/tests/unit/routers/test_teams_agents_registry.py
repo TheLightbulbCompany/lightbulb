@@ -29,14 +29,6 @@ def client(monkeypatch):
     repo.get_identity = AsyncMock(return_value=SimpleNamespace(paperclip_user_id="pcu_sam"))
     monkeypatch.setattr(agents_mod, "_repo", lambda: repo)
     monkeypatch.setattr(agents_mod, "_load_agent_sidecars", AsyncMock(return_value={}))
-    monkeypatch.setattr(
-        "core.services.clerk_admin.list_organization_members",
-        AsyncMock(
-            return_value=[
-                {"user_id": "user_sam", "first_name": "Sam", "last_name": "", "email": "s@x.test", "image_url": None}
-            ]
-        ),
-    )
     app = FastAPI()
     app.include_router(agents_mod.router, prefix="/api/v1/teams")
     app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id=WS, human_session=True)

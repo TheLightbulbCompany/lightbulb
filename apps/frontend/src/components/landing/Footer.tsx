@@ -67,7 +67,6 @@ export function Footer({ cta = true }: { cta?: boolean }) {
             <div className="lb-foot-col">
               <h4>Help</h4>
               <Link href="/support">Support</Link>
-              <Link href="/security">Security and your data</Link>
               <Link href="/sign-in">Log in</Link>
               <Link href="/sign-up">Sign up</Link>
             </div>

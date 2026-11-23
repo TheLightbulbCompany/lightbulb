@@ -19,15 +19,15 @@ def client():
 
 
 def _personal_auth(user_id: str = "user_personal") -> AuthContext:
-    return AuthContext(user_id=user_id)
+    return AuthContext(user_id=user_id, human_session=True)
 
 
 def _org_admin_auth(user_id: str = "user_admin", org_id: str = "org_1") -> AuthContext:
-    return AuthContext(user_id=org_id)
+    return AuthContext(user_id=org_id, human_session=True)
 
 
 def _org_member_auth(user_id: str = "user_member", org_id: str = "org_1") -> AuthContext:
-    return AuthContext(user_id=org_id)
+    return AuthContext(user_id=org_id, human_session=True)
 
 
 def _patch_auth(auth: AuthContext):

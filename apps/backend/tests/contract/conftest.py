@@ -322,7 +322,7 @@ def _signed_in_as_contract_user():
     from main import app
 
     async def _user():
-        return AuthContext(user_id="contract_test_user")
+        return AuthContext(user_id="contract_test_user", human_session=True)
 
     saved = app.dependency_overrides.get(get_current_user)
     app.dependency_overrides[get_current_user] = _user
@@ -336,7 +336,7 @@ def _signed_in_as_contract_user():
 @pytest.fixture
 def mock_auth():
     """Mock auth context for contract tests."""
-    return AuthContext(user_id="contract_test_user")
+    return AuthContext(user_id="contract_test_user", human_session=True)
 
 
 @pytest.fixture

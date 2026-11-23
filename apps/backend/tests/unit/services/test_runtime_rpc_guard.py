@@ -131,7 +131,7 @@ async def test_an_admin_and_a_member_reading_agents_are_admitted(monkeypatch, me
 
     monkeypatch.setattr(rpc, "execute_sync", _execute_sync)
     monkeypatch.setattr(rpc.container_repo, "touch_last_interactive", _touch)
-    status, response = await rpc.execute(AuthContext(user_id="org_a"), _rpc_request(method))
+    status, response = await rpc.execute(AuthContext(user_id="org_a", human_session=True), _rpc_request(method))
     assert status == 200
     assert response.payload == {"method": method}
 

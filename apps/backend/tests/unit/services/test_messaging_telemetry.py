@@ -125,7 +125,7 @@ def _wire_human_message(
 
 async def _send_human(text: str = "hey @friday", mentions: list[dict] | None = None):
     return await messaging.create_human_message(
-        AuthContext(user_id=USER),
+        AuthContext(user_id=USER, human_session=True),
         ROOM,
         messaging.CreateMessageRequest(
             clientMessageId=uuid.uuid4(),
@@ -194,7 +194,7 @@ async def test_wake_false_stores_the_message_without_dispatching_the_agent(monke
     request = messaging.CreateMessageRequest(
         clientMessageId=uuid.uuid4(), text="record", mentions=[], replyToMessageId=None, threadRootMessageId=None
     )
-    auth = AuthContext(user_id=USER)
+    auth = AuthContext(user_id=USER, human_session=True)
 
     await messaging.create_human_message(auth, ROOM, request, wake=False)
     quiet_dims = [m["dimensions"] for m in _metrics(put_metric, "messaging.message.created")]
@@ -528,7 +528,7 @@ async def test_creating_a_room_reports_the_room_and_each_member(monkeypatch, tel
     monkeypatch.setattr(messaging, "_room_detail", AsyncMock())
 
     await messaging.create_room(
-        AuthContext(user_id=USER),
+        AuthContext(user_id=USER, human_session=True),
         messaging.CreateRoomRequest(
             clientRoomId=uuid.uuid4(),
             name="planning",
@@ -597,7 +597,7 @@ async def test_adding_a_member_reports_the_adders_role(monkeypatch, telemetry):
     monkeypatch.setattr(messaging, "_room_detail", AsyncMock())
 
     await messaging.upsert_member(
-        AuthContext(user_id=USER),
+        AuthContext(user_id=USER, human_session=True),
         ROOM,
         messaging.UpsertRoomMemberRequest(kind="agent", id=AGENT, role="member", listenMode="mentions"),
     )

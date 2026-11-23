@@ -311,7 +311,7 @@ async def test_room_with_a_question_card_lists(monkeypatch):
     ]
     monkeypatch.setattr(messaging, "require_room_member", AsyncMock(return_value=({"roomId": ORIGIN}, {})))
     monkeypatch.setattr(messaging.messaging_repo, "list_messages", AsyncMock(return_value=(rows, None)))
-    page = await messaging.list_messages(AuthContext(user_id=WS), ORIGIN, 0, 50)
+    page = await messaging.list_messages(AuthContext(user_id=WS, human_session=True), ORIGIN, 0, 50)
     refs = [m.model_dump()["taskRefs"] for m in page.messages]
     assert refs == [
         [{"taskId": TID, "role": "started", "qid": "q-1"}],

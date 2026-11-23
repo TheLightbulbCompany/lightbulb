@@ -18,7 +18,7 @@ def _allowlist(monkeypatch):
 
 
 def test_listed_user_id_passes():
-    auth = AuthContext(user_id="user_listed", email=None)
+    auth = AuthContext(user_id="user_listed", email=None, human_session=True)
     assert require_platform_admin(auth) is auth
 
 
@@ -28,14 +28,16 @@ def test_listed_user_id_passes():
 )
 def test_team_email_without_listed_id_is_refused(email):
     with pytest.raises(HTTPException) as exc:
-        require_platform_admin(AuthContext(user_id="user_self_registered", email=email))
+        require_platform_admin(AuthContext(user_id="user_self_registered", email=email, human_session=True))
     assert exc.value.status_code == 403
 
 
 def test_empty_allowlist_admits_nobody(monkeypatch):
     monkeypatch.setattr(settings, "PLATFORM_ADMIN_USER_IDS", "")
     with pytest.raises(HTTPException):
-        require_platform_admin(AuthContext(user_id="user_listed", email="admin@thelightbulb.company"))
+        require_platform_admin(
+            AuthContext(user_id="user_listed", email="admin@thelightbulb.company", human_session=True)
+        )
 
 
 def test_internal_email_tagging():

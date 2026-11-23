@@ -65,7 +65,7 @@ async def test_an_activity_reply_to_a_feed_authors_post_mentions_it(monkeypatch,
     send = AsyncMock()
     monkeypatch.setattr(messaging, "create_human_message", send)
     await activity._run_message_action(
-        AuthContext(user_id=OWNER),
+        AuthContext(user_id=OWNER, human_session=True),
         "mention",
         [message_id, FEED, "3"],
         "reply",
@@ -94,10 +94,10 @@ async def test_run_controls_refuse_a_non_roster_agents_feed_run(monkeypatch, age
 
     monkeypatch.setattr(messaging_repo, "get_run", AsyncMock(return_value=_run(agent)))
     with pytest.raises(ApiProblem) as exc:
-        await router._resolved_run(AuthContext(user_id=OWNER), RUN)
+        await router._resolved_run(AuthContext(user_id=OWNER, human_session=True), RUN)
     assert exc.value.error.code == "RUN_NOT_ACTIVE"
     monkeypatch.setattr(messaging_repo, "get_run", AsyncMock(return_value=_run(AUTHOR)))
-    assert (await router._resolved_run(AuthContext(user_id=OWNER), RUN))[1]["agentId"] == AUTHOR
+    assert (await router._resolved_run(AuthContext(user_id=OWNER, human_session=True), RUN))[1]["agentId"] == AUTHOR
 
 
 @pytest.mark.asyncio
@@ -187,7 +187,7 @@ async def test_every_gate_refuses_another_workspaces_feed(monkeypatch, foreign_f
     run = {**_run(AUTHOR, OTHER_FEED), "eventKind": "user_request", "triggerMessageId": "m1"}
     monkeypatch.setattr(messaging_repo, "get_run", AsyncMock(return_value=run))
     with pytest.raises(ApiProblem):  # our human is not a member of their room
-        await router._resolved_run(AuthContext(user_id=OWNER), RUN)
+        await router._resolved_run(AuthContext(user_id=OWNER, human_session=True), RUN)
     with pytest.raises(ApiProblem) as exc:
         await messaging.create_agent_message(
             OWNER,

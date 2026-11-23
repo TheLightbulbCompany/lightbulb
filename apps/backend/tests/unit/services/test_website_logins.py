@@ -56,7 +56,7 @@ def _dump_everything(resource) -> str:
 
 
 def admin(user=USER_A):
-    return AuthContext(user_id=OWNER)
+    return AuthContext(user_id=OWNER, human_session=True)
 
 
 @pytest.mark.parametrize("bad", ["", "localhost", "ftp://x.com", "https://x.com:99999"])
@@ -274,4 +274,4 @@ def test_the_suffix_list_never_fetches():
 
 
 def member(user=USER_A):
-    return AuthContext(user_id=user)
+    return AuthContext(user_id=user, human_session=True)

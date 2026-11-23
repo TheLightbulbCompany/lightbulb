@@ -477,7 +477,7 @@ class TestDeleteMyAccount:
     @pytest.fixture
     def mock_auth_context(self) -> AuthContext:
         """A caller with no workspace (the legacy personal shape)."""
-        return AuthContext(user_id="user_test_123", email="person@example.com")
+        return AuthContext(user_id="user_test_123", email="person@example.com", human_session=True)
 
     @staticmethod
     def _report():

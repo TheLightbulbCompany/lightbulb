@@ -35,7 +35,7 @@ def client(monkeypatch, store):
     monkeypatch.setattr(agents_mod.voice_calls, "send_note_saved", AsyncMock())
     app = FastAPI()
     app.include_router(agents_mod.router)
-    app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id="user_1")
+    app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id="user_1", human_session=True)
     return TestClient(app)
 
 

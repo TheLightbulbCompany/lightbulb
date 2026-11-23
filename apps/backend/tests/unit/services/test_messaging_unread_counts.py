@@ -68,7 +68,7 @@ async def _say(room_id, author, text="hi", thread_root=None, mentions=()):
 
 
 async def _counts(room_id, user_id):
-    rooms = (await messaging.list_rooms(AuthContext(user_id=user_id))).rooms
+    rooms = (await messaging.list_rooms(AuthContext(user_id=user_id, human_session=True))).rooms
     room = next(r for r in rooms if str(r.room_id) == room_id)
     dumped = room.model_dump(mode="json", by_alias=True)
     return dumped["unreadCount"], dumped["mentionCount"]
@@ -183,3 +183,44 @@ async def test_a_mention_message_stays_well_inside_the_transaction_limit(table, 
     monkeypatch.setattr(repo, "_transact", spy)
     await _say(room_id, ANN, "all hands", mentions=[f"user_{i}" for i in range(31)])
     assert seen == [4 + 31 + 1]
+
+
+async def _one_person():
+    room_id, _ = await _room(members=[_member("human", USER_A, "owner"), _member("agent", FRIDAY, handle="friday")])
+    return room_id
+
+
+@pytest.mark.asyncio
+async def test_own_messages_are_excluded_because_posting_marks_the_room_read(table):
+    room_id = await _one_person()
+    await _say(room_id, AGENT, "one")
+    await _say(room_id, AGENT, "two")
+    await _say(room_id, ANN, "three")
+    assert await _counts(room_id, USER_A) == (0, 0)
+    assert await repo.get_read_cursor(room_id, USER_A) == 3
+    await _say(room_id, AGENT, "four")
+    assert await _counts(room_id, USER_A) == (1, 0)
+
+
+@pytest.mark.asyncio
+async def test_a_person_seated_later_counts_only_what_came_after(table):
+    room_id, _ = await _room(members=[_member("agent", FRIDAY, handle="friday")])
+    await _say(room_id, AGENT, "before")
+    await _say(room_id, AGENT, "before 2")
+    meta = await repo.upsert_member(room_id=room_id, owner_id=OWNER, member=_member("human", USER_A))
+    assert meta
+    await _say(room_id, AGENT, "after", mentions=[USER_A])
+    assert await _counts(room_id, USER_A) == (1, 1)
+
+
+@pytest.mark.asyncio
+async def test_an_unbackfilled_room_reads_as_zero_unread_never_negative(table):
+    room_id = await _one_person()
+    await _say(room_id, AGENT, "1")
+    await _say(room_id, AGENT, "2")
+    await repo.set_read_cursor(room_id, USER_A, 1)
+    _strip_ordinals(table, room_id)
+    assert (await _counts(room_id, USER_A))[0] == 0
+    # A reader whose cursor carries an ordinal above a room's missing topCount clamps at 0.
+    meta = await repo.get_room(room_id)
+    assert repo.unread_count(meta, {"joinedSeq": 0}, {"lastReadSeq": 2, "topOrdinal": 5}) == 0

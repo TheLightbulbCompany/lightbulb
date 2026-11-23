@@ -126,7 +126,7 @@ async def test_room_list_carries_the_preview_and_sorts_by_latest_top_level_messa
     await _post(busy, text="reply", client_id="b-2", thread_root=root["messageId"])
     await repo.patch_room_meta(busy, {"name": "busy!"})
 
-    rooms = (await messaging.list_rooms(AuthContext(user_id=OWNER))).rooms
+    rooms = (await messaging.list_rooms(AuthContext(user_id=OWNER, human_session=True))).rooms
     assert [str(r.room_id) for r in rooms] == [quiet, busy, empty]
     by_id = {str(r.room_id): r for r in rooms}
     assert by_id[busy].last_message.text_preview == "early"

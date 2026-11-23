@@ -81,7 +81,7 @@ def api(table, monkeypatch):
 
 
 def _as(api, user=SAM, *, admin=True):
-    api.app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id=user)
+    api.app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id=user, human_session=True)
     return api.client
 
 

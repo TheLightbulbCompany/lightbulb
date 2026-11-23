@@ -36,7 +36,9 @@ os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 
 @pytest.fixture
 def admin_env(app):
-    app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id="admin_1", email="admin@isol8.co")
+    app.dependency_overrides[get_current_user] = lambda: AuthContext(
+        user_id="admin_1", email="admin@isol8.co", human_session=True
+    )
     try:
         yield
     finally:
@@ -45,7 +47,9 @@ def admin_env(app):
 
 @pytest.fixture
 def non_admin_env(app):
-    app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id="user_test_123", email="user@example.com")
+    app.dependency_overrides[get_current_user] = lambda: AuthContext(
+        user_id="user_test_123", email="user@example.com", human_session=True
+    )
     try:
         yield
     finally:

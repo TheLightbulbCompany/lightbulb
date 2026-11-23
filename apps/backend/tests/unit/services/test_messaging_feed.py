@@ -134,7 +134,7 @@ async def test_humans_are_never_added_or_removed_in_the_feed_by_hand(workspace):
     from core.auth import AuthContext
 
     await _feed()
-    owner = AuthContext(user_id=OWNER)
+    owner = AuthContext(user_id=OWNER, human_session=True)
     with pytest.raises(messaging.ApiProblem) as exc:
         await messaging.remove_member(owner, FEED, "human", "user_B")
     assert exc.value.error.code == "ROOM_FORBIDDEN"
@@ -479,7 +479,7 @@ async def test_nobody_changes_feed_membership_by_hand(crowded, kind):
     from core.auth import AuthContext
 
     await _feed()
-    auth = AuthContext(user_id=OWNER)  # the feed's owner
+    auth = AuthContext(user_id=OWNER, human_session=True)  # the feed's owner
     member_id = CEO if kind == "agent" else "user_05"
     listen = "active" if kind == "agent" else None
     with pytest.raises(messaging.ApiProblem) as exc:

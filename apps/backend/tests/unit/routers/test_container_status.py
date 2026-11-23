@@ -18,7 +18,7 @@ def mock_auth_context(mock_org_admin_context):
 
 def _workspace_auth(user_id: str = "user_x", email: str = "u@example.com") -> AuthContext:
     """Organization-admin AuthContext for supported workspace requests."""
-    return AuthContext(user_id="org_x", email=email)
+    return AuthContext(user_id="org_x", email=email, human_session=True)
 
 
 def _org_member_auth(
@@ -27,7 +27,7 @@ def _org_member_auth(
     email: str = "m@example.com",
 ) -> AuthContext:
     """Org-member AuthContext. is_org_admin returns False because role != org:admin."""
-    return AuthContext(user_id=org_id, email=email)
+    return AuthContext(user_id=org_id, email=email, human_session=True)
 
 
 def _org_admin_auth(
@@ -36,7 +36,7 @@ def _org_admin_auth(
     email: str = "a@example.com",
 ) -> AuthContext:
     """Org-admin AuthContext. is_org_context + is_org_admin are derived properties."""
-    return AuthContext(user_id=org_id, email=email)
+    return AuthContext(user_id=org_id, email=email, human_session=True)
 
 
 @pytest.fixture(autouse=True)

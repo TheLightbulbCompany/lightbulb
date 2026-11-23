@@ -16,7 +16,7 @@ def client(monkeypatch):
     monkeypatch.setattr(agents_mod, "get_starter_agent_ids", AsyncMock(return_value=set()))
     from core.auth import AuthContext, get_current_user
 
-    app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id="o1")
+    app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id="o1", human_session=True)
     try:
         yield TestClient(app)
     finally:
@@ -196,7 +196,7 @@ def test_list_agents_without_a_cookie_sets_none(monkeypatch):
     monkeypatch.setattr(agents_mod, "_load_agent_sidecars", AsyncMock(return_value={}))
     monkeypatch.setattr(agents_mod, "get_seeded_agent_ids", AsyncMock(return_value=set()))
     monkeypatch.setattr(agents_mod, "get_starter_agent_ids", AsyncMock(return_value={"agent-ceo"}))
-    app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id="o1")
+    app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id="o1", human_session=True)
     try:
         r = TestClient(app).get("/api/v1/teams/agents")
     finally:

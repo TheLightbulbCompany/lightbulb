@@ -37,7 +37,7 @@ def _org_admin_auth(
     email: str = "u@example.com",
 ) -> AuthContext:
     """Org-admin AuthContext. is_org_context + is_org_admin are derived properties."""
-    return AuthContext(user_id=org_id, email=email)
+    return AuthContext(user_id=org_id, email=email, human_session=True)
 
 
 def _org_member_auth(
@@ -46,7 +46,7 @@ def _org_member_auth(
     email: str = "m@example.com",
 ) -> AuthContext:
     """Org-member AuthContext. is_org_admin returns False because role != org:admin."""
-    return AuthContext(user_id=org_id, email=email)
+    return AuthContext(user_id=org_id, email=email, human_session=True)
 
 
 # Workspace trial initialization.

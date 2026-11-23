@@ -35,7 +35,7 @@ async def test_human_send_maps_the_race_to_room_forbidden(monkeypatch):
     )
     with pytest.raises(messaging.ApiProblem) as exc:
         await messaging.create_human_message(
-            AuthContext(user_id=OWNER),
+            AuthContext(user_id=OWNER, human_session=True),
             ROOM,
             messaging.CreateMessageRequest(
                 client_message_id=uuid.uuid4(),

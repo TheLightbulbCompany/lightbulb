@@ -562,7 +562,7 @@ async def test_member_mode_update_preserves_conversation_front(world, monkeypatc
     monkeypatch.setattr(messaging, "_room_detail", AsyncMock(return_value=meta))
 
     await messaging.upsert_member(
-        AuthContext(user_id=OWNER),
+        AuthContext(user_id=OWNER, human_session=True),
         room_id,
         messaging.UpsertRoomMemberRequest(kind="agent", id=changed, role="member", listen_mode="active"),
     )
@@ -597,7 +597,7 @@ async def test_member_mode_update_cannot_erase_unavailable_legacy_front(world, m
     with pytest.raises(tc.NoFrontAgent):
         await tc.front_agent_id(OWNER, room_id=meta["roomId"])
     await messaging.upsert_member(
-        AuthContext(user_id=OWNER),
+        AuthContext(user_id=OWNER, human_session=True),
         meta["roomId"],
         messaging.UpsertRoomMemberRequest(kind="agent", id=C, role="member", listen_mode="active"),
     )

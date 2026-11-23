@@ -308,7 +308,7 @@ def admin_env(app):
     from core.auth import AuthContext, get_current_user
 
     app.dependency_overrides[get_current_user] = lambda: AuthContext(
-        user_id="user_platform_admin", email="admin@thelightbulb.company"
+        user_id="user_platform_admin", email="admin@thelightbulb.company", human_session=True
     )
     try:
         yield

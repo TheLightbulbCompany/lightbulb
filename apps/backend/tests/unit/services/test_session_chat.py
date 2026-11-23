@@ -10,8 +10,8 @@ from core.services import messaging, session_chat
 from core.services.messaging import ApiProblem
 
 OWNER = "org_o"
-ALICE = AuthContext(user_id=OWNER)
-BOB = AuthContext(user_id=OWNER)
+ALICE = AuthContext(user_id=OWNER, human_session=True)
+BOB = AuthContext(user_id=OWNER, human_session=True)
 SID = "11111111-1111-4111-8111-111111111111"
 CEO_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 ENG_ID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"

@@ -103,7 +103,7 @@ async def test_a_trial_owner_sets_listening_on_a_channel(monkeypatch):
     upsert = _upsert_fixture(monkeypatch, room_kind="channel")
     read = _billing(monkeypatch, TRIAL)
 
-    await messaging.upsert_member(AuthContext(user_id=USER), ROOM, _member("active"))
+    await messaging.upsert_member(AuthContext(user_id=USER, human_session=True), ROOM, _member("active"))
 
     assert upsert.call_args.kwargs["member"]["listenMode"] == "active"
     read.assert_not_awaited()
@@ -118,7 +118,7 @@ async def test_any_member_of_a_trial_workspace_changes_an_agents_mode(monkeypatc
     upsert = _upsert_fixture(monkeypatch, room_kind="channel", role="member", existing=IN_ROOM)
     _billing(monkeypatch, TRIAL)
 
-    await messaging.upsert_member(AuthContext(user_id=USER), ROOM, _member(mode))
+    await messaging.upsert_member(AuthContext(user_id=USER, human_session=True), ROOM, _member(mode))
 
     assert upsert.call_args.kwargs["member"]["listenMode"] == mode
 
@@ -138,7 +138,7 @@ async def test_a_vendor_side_member_cannot_change_the_customers_agents_mode(monk
     )
 
     with pytest.raises(messaging.ApiProblem) as exc:
-        await messaging.upsert_member(AuthContext(user_id=USER), ROOM, _member("active"))
+        await messaging.upsert_member(AuthContext(user_id=USER, human_session=True), ROOM, _member("active"))
 
     assert exc.value.error.code == "ROOM_FORBIDDEN"
     upsert.assert_not_awaited()
@@ -149,7 +149,7 @@ async def test_a_member_still_cannot_add_an_agent(monkeypatch):
     upsert = _upsert_fixture(monkeypatch, room_kind="channel", role="member", existing=None)
 
     with pytest.raises(messaging.ApiProblem) as exc:
-        await messaging.upsert_member(AuthContext(user_id=USER), ROOM, _member("mentions"))
+        await messaging.upsert_member(AuthContext(user_id=USER, human_session=True), ROOM, _member("mentions"))
 
     assert exc.value.error.code == "ROOM_FORBIDDEN"
     upsert.assert_not_awaited()
@@ -168,7 +168,7 @@ async def test_a_non_member_cannot_change_a_mode(monkeypatch):
     monkeypatch.setattr(messaging.messaging_repo, "upsert_member", upsert)
 
     with pytest.raises(messaging.ApiProblem) as exc:
-        await messaging.upsert_member(AuthContext(user_id=USER), ROOM, _member("active"))
+        await messaging.upsert_member(AuthContext(user_id=USER, human_session=True), ROOM, _member("active"))
 
     assert exc.value.error.code == "ROOM_FORBIDDEN"
     upsert.assert_not_awaited()
@@ -246,6 +246,6 @@ async def test_the_welcome_is_resolved_before_the_room_exists(monkeypatch):
 async def test_an_admin_set_mode_is_marked_as_the_users_choice(monkeypatch):
     upsert = _upsert_fixture(monkeypatch, room_kind="channel")
 
-    await messaging.upsert_member(AuthContext(user_id=USER), ROOM, _member("mentions"))
+    await messaging.upsert_member(AuthContext(user_id=USER, human_session=True), ROOM, _member("mentions"))
 
     assert upsert.call_args.kwargs["member"]["modeSetBy"] == "user"

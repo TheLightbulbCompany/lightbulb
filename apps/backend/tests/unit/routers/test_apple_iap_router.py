@@ -83,9 +83,9 @@ def _app_with_auth(auth: AuthContext) -> FastAPI:
     return app
 
 
-PERSONAL = AuthContext(user_id="user_1", email="a@b.co")
+PERSONAL = AuthContext(user_id="user_1", email="a@b.co", human_session=True)
 ORG = "org_1"
-ORG_ADMIN = AuthContext(user_id=ORG, email="a@b.co")
+ORG_ADMIN = AuthContext(user_id=ORG, email="a@b.co", human_session=True)
 
 
 @pytest.mark.asyncio
@@ -115,7 +115,7 @@ async def test_portal_resolves_the_workspace_owner_too():
     assert r.status_code == 404, r.text
 
 
-ORG_MEMBER = AuthContext(user_id="org_1", email="m@b.co")
+ORG_MEMBER = AuthContext(user_id="org_1", email="m@b.co", human_session=True)
 
 
 @pytest.mark.asyncio

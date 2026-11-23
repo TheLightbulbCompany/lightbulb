@@ -120,7 +120,7 @@ async def test_teams_patch_rename_and_its_undo_reach_the_open_window(world, monk
         return dict(world.roster[0])
 
     monkeypatch.setattr("core.services.agent_registry.update", AsyncMock(side_effect=update))
-    auth = AuthContext(user_id=OWNER)
+    auth = AuthContext(user_id=OWNER, human_session=True)
     agent = {"id": AGENT, "role": "general", "reportsTo": None}
 
     await agents_mod.patch_agent(agent, PatchAgentBody(name="Nova"), auth)

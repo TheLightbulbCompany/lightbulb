@@ -73,7 +73,7 @@ def _wire_add(
 async def test_any_group_chat_member_may_add_an_existing_workspace_person(monkeypatch):
     upsert, _ = _wire_add(monkeypatch, room_kind="group-dm")
 
-    await messaging.upsert_member(AuthContext(user_id=OWNER), ROOM, _request())
+    await messaging.upsert_member(AuthContext(user_id=OWNER, human_session=True), ROOM, _request())
 
     assert upsert.await_args.kwargs["room_id"] == ROOM
 
@@ -91,7 +91,7 @@ async def test_group_chat_rejects_admin_role_even_from_owner(monkeypatch):
 
     with pytest.raises(messaging.ApiProblem) as exc:
         await messaging.upsert_member(
-            AuthContext(user_id=OWNER),
+            AuthContext(user_id=OWNER, human_session=True),
             ROOM,
             _request(kind="human", member_id="user_b", role="admin"),
         )
@@ -110,7 +110,7 @@ async def test_new_human_receives_room_list_invalidation(monkeypatch):
     )
 
     await messaging.upsert_member(
-        AuthContext(user_id=OWNER),
+        AuthContext(user_id=OWNER, human_session=True),
         ROOM,
         _request(kind="human", member_id="user_b"),
     )
@@ -137,7 +137,7 @@ async def test_existing_humans_receive_room_list_invalidation(monkeypatch):
         ),
     )
 
-    await messaging.upsert_member(AuthContext(user_id=OWNER), ROOM, _request())
+    await messaging.upsert_member(AuthContext(user_id=OWNER, human_session=True), ROOM, _request())
 
     notified = {call.args[1] for call in publish_user.await_args_list}
     assert notified == {"user_a", "user_c"}
@@ -166,7 +166,7 @@ async def test_one_failed_invalidation_does_not_skip_the_rest(monkeypatch):
     publish_metadata = AsyncMock()
     monkeypatch.setattr(messaging, "_publish_room_metadata", publish_metadata)
 
-    await messaging.upsert_member(AuthContext(user_id=OWNER), ROOM, _request())
+    await messaging.upsert_member(AuthContext(user_id=OWNER, human_session=True), ROOM, _request())
 
     assert {call.args[1] for call in publish_user.await_args_list} == {"user_a", "user_c"}
     publish_metadata.assert_awaited_once()
@@ -181,7 +181,9 @@ async def test_retrying_an_addition_that_already_committed_is_allowed(monkeypatc
         AsyncMock(return_value={"kind": "human", "id": "user_b", "role": "member"}),
     )
 
-    await messaging.upsert_member(AuthContext(user_id=OWNER), ROOM, _request(kind="human", member_id="user_b"))
+    await messaging.upsert_member(
+        AuthContext(user_id=OWNER, human_session=True), ROOM, _request(kind="human", member_id="user_b")
+    )
 
     upsert.assert_awaited_once()
     publish_user.assert_not_awaited()

@@ -35,7 +35,7 @@ def owner_objects(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_first_message_keeps_normal_dispatch_then_schedules_onboarding_capture(monkeypatch):
-    auth = AuthContext(user_id="user_owner")
+    auth = AuthContext(user_id="user_owner", human_session=True)
     room_id = str(uuid.uuid4())
     client_id = uuid.uuid4()
     members = [
@@ -90,7 +90,7 @@ async def test_first_message_keeps_normal_dispatch_then_schedules_onboarding_cap
 @pytest.mark.asyncio
 async def test_a_human_message_opening_with_an_agents_name_is_dispatched_to_it(monkeypatch):
     """Prod 2026-09-27: 'Hey Friday, ...' without the @ was ambient, and Pulse answered it."""
-    auth = AuthContext(user_id="user_owner")
+    auth = AuthContext(user_id="user_owner", human_session=True)
     members = [
         {"kind": "human", "id": auth.user_id},
         {"kind": "agent", "id": "friday", "displayName": "Friday", "listenMode": "active"},
@@ -166,7 +166,7 @@ def test_public_tombstone_hides_original_attachment_and_preserves_thread_links()
 
 @pytest.mark.asyncio
 async def test_mark_unread_requires_membership_and_uses_join_floor(monkeypatch):
-    auth = AuthContext(user_id="user_owner")
+    auth = AuthContext(user_id="user_owner", human_session=True)
     room_id = str(uuid.uuid4())
     monkeypatch.setattr(
         messaging,
@@ -193,7 +193,7 @@ async def test_get_agent_receipt_maps_malformed_event_id_to_400_not_500():
 
 @pytest.mark.asyncio
 async def test_create_room_over_member_limit_returns_409_not_a_pydantic_400():
-    auth = AuthContext(user_id="user_owner")
+    auth = AuthContext(user_id="user_owner", human_session=True)
     members = [CreateRoomMember(kind="human", id=f"user_{i}", role="member", listen_mode=None) for i in range(32)]
     request = CreateRoomRequest(client_room_id=uuid.uuid4(), name=None, kind="group-dm", members=members)
 
@@ -207,7 +207,7 @@ async def test_create_room_over_member_limit_returns_409_not_a_pydantic_400():
 @pytest.mark.asyncio
 @pytest.mark.parametrize("count", [0, 2])
 async def test_create_room_refuses_a_dm_that_is_not_exactly_two_parties(count):
-    auth = AuthContext(user_id="user_owner")
+    auth = AuthContext(user_id="user_owner", human_session=True)
     members = [CreateRoomMember(kind="human", id=f"user_{i}", role="member", listen_mode=None) for i in range(count)]
     request = CreateRoomRequest(client_room_id=uuid.uuid4(), name=None, kind="dm", members=members)
 
@@ -224,7 +224,7 @@ async def test_create_room_reuses_an_existing_dm_instead_of_making_a_duplicate(m
     path's client-side `resolveDm` (packages/shared/src/messaging/useRooms.ts)
     -- so picking the same agent through both paths minted two ROOM# partitions
     that both rendered as an identical "Friday · Agent" row in Direct messages."""
-    auth = AuthContext(user_id="user_owner")
+    auth = AuthContext(user_id="user_owner", human_session=True)
     existing_meta = {"roomId": "room-existing", "kind": "dm", "ownerId": "org_1"}
     monkeypatch.setattr(
         messaging.messaging_repo,
@@ -299,7 +299,7 @@ def _dm_request():
 @pytest.mark.asyncio
 async def test_two_simultaneous_dm_creates_return_one_room(monkeypatch):
     rooms = _dm_create_stubs(monkeypatch)
-    auth = AuthContext(user_id="user_owner")
+    auth = AuthContext(user_id="user_owner", human_session=True)
 
     first, second = await asyncio.gather(create_room(auth, _dm_request()), create_room(auth, _dm_request()))
 
@@ -310,7 +310,7 @@ async def test_two_simultaneous_dm_creates_return_one_room(monkeypatch):
 @pytest.mark.asyncio
 async def test_a_pair_row_naming_a_dm_that_became_a_group_dm_is_taken_over(monkeypatch):
     rooms = _dm_create_stubs(monkeypatch, kind="group-dm")
-    auth = AuthContext(user_id="user_owner")
+    auth = AuthContext(user_id="user_owner", human_session=True)
 
     first = await create_room(auth, _dm_request())
     second = await create_room(auth, _dm_request())
@@ -441,7 +441,7 @@ async def test_unsupported_file_upload_reproduces_clear_api_400_at_attachment_va
     # VALIDATION, not some other error) is unchanged. Needs a real UUID
     # room_id: an unsupported type is now the ONLY thing that stops the
     # request before it reaches attachment_key's own UUID parse of room_id.
-    auth = AuthContext(user_id="user")
+    auth = AuthContext(user_id="user", human_session=True)
     monkeypatch.setattr(
         messaging,
         "require_room_member",
@@ -549,7 +549,7 @@ async def test_attachment_download_checks_current_room_membership(monkeypatch):
     monkeypatch.setattr(messaging, "require_room_member", deny)
     monkeypatch.setattr(messaging, "load_attachment", lambda *_: pytest.fail("loaded before membership check"))
     with pytest.raises(ApiProblem):
-        await get_room_attachment(str(uuid.uuid4()), str(uuid.uuid4()), AuthContext(user_id="user"))
+        await get_room_attachment(str(uuid.uuid4()), str(uuid.uuid4()), AuthContext(user_id="user", human_session=True))
     assert checked
 
 
@@ -564,7 +564,7 @@ async def test_zip_download_is_authorized_and_forced_to_safe_attachment_disposit
     monkeypatch.setattr(messaging, "require_room_member", require_member)
     monkeypatch.setattr(messaging, "load_attachment", lambda *_: (attachment, b"PK\x03\x04data"))
 
-    response = await get_room_attachment(room_id, str(attachment_id), AuthContext(user_id="user"))
+    response = await get_room_attachment(room_id, str(attachment_id), AuthContext(user_id="user", human_session=True))
 
     require_member.assert_awaited_once()
     assert response.headers["content-type"] == "application/zip"
@@ -574,7 +574,7 @@ async def test_zip_download_is_authorized_and_forced_to_safe_attachment_disposit
 
 @pytest.mark.asyncio
 async def test_patch_room_me_clears_a_section_with_an_explicit_null(monkeypatch):
-    auth = AuthContext(user_id="user_owner")
+    auth = AuthContext(user_id="user_owner", human_session=True)
     meta = {"roomId": "room-1", "ownerId": "org_1", "kind": "channel", "revision": 4}
     member = {"kind": "human", "id": "user_owner", "role": "owner", "joinedSeq": 0}
     set_prefs = AsyncMock(return_value=member)
@@ -596,7 +596,7 @@ async def test_room_member_updated_is_a_recognised_user_live_event():
 
 @pytest.mark.asyncio
 async def test_patch_room_sets_topic_alone_and_rejects_renaming_a_dm(monkeypatch):
-    auth = AuthContext(user_id="admin")
+    auth = AuthContext(user_id="admin", human_session=True)
     group_meta = {"roomId": "group", "ownerId": "org_1", "kind": "group-dm", "revision": 2}
     require_admin = AsyncMock(return_value=(group_meta, {"role": "admin"}))
     patch_meta = AsyncMock(return_value={**group_meta, "topic": "Ship v2"})
@@ -620,7 +620,7 @@ async def test_patch_room_sets_topic_alone_and_rejects_renaming_a_dm(monkeypatch
 
 @pytest.mark.asyncio
 async def test_patch_room_keeps_the_admin_check_in_front_of_persistence(monkeypatch):
-    auth = AuthContext(user_id="member")
+    auth = AuthContext(user_id="member", human_session=True)
     group_meta = {"roomId": "group", "ownerId": "org_1", "kind": "group-dm", "revision": 1}
     monkeypatch.setattr(messaging, "require_room_member", AsyncMock(return_value=(group_meta, {"role": "member"})))
     monkeypatch.setattr(messaging.messaging_repo, "get_room", AsyncMock(return_value=group_meta))
@@ -646,7 +646,7 @@ def test_room_topic_validation_trims_and_caps():
 
 @pytest.mark.asyncio
 async def test_leave_room_removes_a_non_owner_human_and_refuses_the_owner(monkeypatch):
-    auth = AuthContext(user_id="member")
+    auth = AuthContext(user_id="member", human_session=True)
     meta = {"roomId": "room-1", "ownerId": "org_1", "kind": "channel", "revision": 3}
     remove = AsyncMock(return_value=meta)
     monkeypatch.setattr(
@@ -727,7 +727,7 @@ async def test_removing_a_channel_owner_hands_it_on_or_still_removes_them_alone(
 
 @pytest.mark.asyncio
 async def test_set_pin_allows_any_member_validates_the_message_and_publishes_metadata(monkeypatch):
-    auth = AuthContext(user_id="member")
+    auth = AuthContext(user_id="member", human_session=True)
     meta = {"roomId": "room-1", "ownerId": "org_1", "kind": "channel", "revision": 2}
     monkeypatch.setattr(
         messaging,
@@ -748,7 +748,7 @@ async def test_set_pin_allows_any_member_validates_the_message_and_publishes_met
 
 @pytest.mark.asyncio
 async def test_set_pin_rejects_a_foreign_message_and_maps_the_cap_to_a_problem(monkeypatch):
-    auth = AuthContext(user_id="member")
+    auth = AuthContext(user_id="member", human_session=True)
     meta = {"roomId": "room-1", "ownerId": "org_1", "kind": "channel", "revision": 2}
     monkeypatch.setattr(
         messaging,
@@ -774,7 +774,7 @@ async def test_set_pin_rejects_a_foreign_message_and_maps_the_cap_to_a_problem(m
 
 @pytest.mark.asyncio
 async def test_set_pin_publishes_only_when_the_repo_actually_changed_pins(monkeypatch):
-    auth = AuthContext(user_id="member")
+    auth = AuthContext(user_id="member", human_session=True)
     meta = {"roomId": "room-1", "ownerId": "org_1", "kind": "channel", "revision": 2}
     monkeypatch.setattr(
         messaging,
@@ -805,7 +805,7 @@ async def test_set_pin_publishes_only_when_the_repo_actually_changed_pins(monkey
 
 @pytest.mark.asyncio
 async def test_mark_room_unread_threads_from_seq_and_defaults_to_the_whole_room(monkeypatch):
-    auth = AuthContext(user_id="member")
+    auth = AuthContext(user_id="member", human_session=True)
     room_id = str(uuid.uuid4())
     member = {"kind": "human", "id": "member", "role": "member", "joinedSeq": 2}
     mark = AsyncMock(return_value=4)
@@ -839,7 +839,7 @@ def _archive_fixture(monkeypatch, meta, role="admin"):
 
 @pytest.mark.asyncio
 async def test_patch_room_archives_and_unarchives_a_channel_idempotently(monkeypatch):
-    auth = AuthContext(user_id="admin")
+    auth = AuthContext(user_id="admin", human_session=True)
     meta = {"roomId": "chan", "ownerId": "org_1", "kind": "channel", "revision": 2}
     patch_meta, publish = _archive_fixture(monkeypatch, meta)
 
@@ -859,7 +859,7 @@ async def test_patch_room_archives_and_unarchives_a_channel_idempotently(monkeyp
 
 @pytest.mark.asyncio
 async def test_archiving_a_channel_ends_its_huddle(monkeypatch):
-    auth = AuthContext(user_id="admin")
+    auth = AuthContext(user_id="admin", human_session=True)
     meta = {"roomId": "chan", "ownerId": "org_1", "kind": "channel", "revision": 2}
     _archive_fixture(monkeypatch, meta)
     closed = AsyncMock()
@@ -873,7 +873,7 @@ async def test_archiving_a_channel_ends_its_huddle(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_any_group_dm_member_archives_and_unarchives_it(monkeypatch):
-    auth = AuthContext(user_id="member")
+    auth = AuthContext(user_id="member", human_session=True)
     meta = {"roomId": "group", "ownerId": "org_1", "kind": "group-dm", "revision": 2}
     patch_meta, publish = _archive_fixture(monkeypatch, meta, role="member")
 
@@ -889,7 +889,7 @@ async def test_any_group_dm_member_archives_and_unarchives_it(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_patch_room_refuses_to_archive_a_dm(monkeypatch):
-    auth = AuthContext(user_id="admin")
+    auth = AuthContext(user_id="admin", human_session=True)
     patch_meta, _ = _archive_fixture(
         monkeypatch, {"roomId": "r", "ownerId": "org_1", "kind": "dm", "revision": 1}, "owner"
     )
@@ -901,7 +901,7 @@ async def test_patch_room_refuses_to_archive_a_dm(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_patch_room_refuses_to_archive_general_and_the_shared_vendor_channel(monkeypatch):
-    auth = AuthContext(user_id="admin")
+    auth = AuthContext(user_id="admin", human_session=True)
     general = {"roomId": messaging.default_room_id("org_1"), "ownerId": "org_1", "kind": "channel", "revision": 1}
     patch_meta, _ = _archive_fixture(monkeypatch, general)
     with pytest.raises(ApiProblem) as exc:
@@ -919,7 +919,7 @@ async def test_patch_room_refuses_to_archive_general_and_the_shared_vendor_chann
 
 @pytest.mark.asyncio
 async def test_patch_room_archive_keeps_the_admin_check_in_front(monkeypatch):
-    auth = AuthContext(user_id="member")
+    auth = AuthContext(user_id="member", human_session=True)
     patch_meta, _ = _archive_fixture(monkeypatch, {"roomId": "chan", "ownerId": "org_1", "kind": "channel"}, "member")
     with pytest.raises(ApiProblem) as exc:
         await messaging.patch_room(auth, "chan", messaging.PatchRoomRequest(archived=True))
@@ -958,7 +958,7 @@ async def test_human_and_agent_posts_to_an_archived_room_are_a_409(monkeypatch):
     monkeypatch.setattr(
         messaging.messaging_repo, "create_message", AsyncMock(side_effect=messaging.messaging_repo.RoomArchived(room))
     )
-    auth = AuthContext(user_id="u1")
+    auth = AuthContext(user_id="u1", human_session=True)
     request = messaging.CreateMessageRequest.model_validate(
         {"clientMessageId": str(uuid.uuid4()), "text": "hi", "replyToMessageId": None, "threadRootMessageId": None}
     )
@@ -1016,7 +1016,7 @@ async def test_follow_up_into_an_archived_room_is_a_409(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_only_a_project_pauses_or_takes_an_icon(monkeypatch):
-    auth = AuthContext(user_id="admin")
+    auth = AuthContext(user_id="admin", human_session=True)
     patch_meta, _ = _archive_fixture(monkeypatch, {"roomId": "d", "ownerId": "org_1", "kind": "dm", "revision": 1})
     with pytest.raises(ApiProblem) as exc:
         await messaging.patch_room(auth, "d", messaging.PatchRoomRequest(paused=True))
@@ -1028,7 +1028,7 @@ async def test_only_a_project_pauses_or_takes_an_icon(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_icon_and_color_set_and_clear(monkeypatch):
-    auth = AuthContext(user_id="admin")
+    auth = AuthContext(user_id="admin", human_session=True)
     meta = {"roomId": "chan", "ownerId": "org_1", "kind": "channel", "revision": 2}
     patch_meta, _ = _archive_fixture(monkeypatch, meta)
     await messaging.patch_room(auth, "chan", messaging.PatchRoomRequest(icon="rocket", color="project-3"))
@@ -1083,7 +1083,7 @@ async def test_create_project_stores_topic_icon_and_color(monkeypatch):
     monkeypatch.setattr(messaging, "_room_detail", AsyncMock())
     monkeypatch.setattr(messaging, "_emit_room_created", lambda *a, **k: None)
     await messaging.create_room(
-        AuthContext(user_id="u1"),
+        AuthContext(user_id="u1", human_session=True),
         messaging.CreateRoomRequest(
             client_room_id=uuid.uuid4(),
             name="Spring sale",
@@ -1107,7 +1107,7 @@ async def test_create_refuses_project_fields_off_a_channel(monkeypatch, kind, fi
     member = messaging.CreateRoomMember(kind="human", id="u2", role="member", listen_mode=None)
     with pytest.raises(ApiProblem) as exc:
         await messaging.create_room(
-            AuthContext(user_id="u1"),
+            AuthContext(user_id="u1", human_session=True),
             messaging.CreateRoomRequest(client_room_id=uuid.uuid4(), name=None, kind=kind, members=[member], **field),
         )
     assert exc.value.error.code == "INVALID_REQUEST"
@@ -1133,7 +1133,9 @@ def _chat_project(monkeypatch, kind, role="member", seated=True):
 )
 async def test_any_group_chat_member_pauses_and_edits_its_instructions_and_icon(monkeypatch, request_fields):
     patch_meta = _chat_project(monkeypatch, "group-dm")
-    await messaging.patch_room(AuthContext(user_id="m"), "c", messaging.PatchRoomRequest(**request_fields))
+    await messaging.patch_room(
+        AuthContext(user_id="m", human_session=True), "c", messaging.PatchRoomRequest(**request_fields)
+    )
     patch_meta.assert_awaited_once()
 
 
@@ -1141,7 +1143,9 @@ async def test_any_group_chat_member_pauses_and_edits_its_instructions_and_icon(
 async def test_a_group_chat_member_still_cannot_rename_it(monkeypatch):
     patch_meta = _chat_project(monkeypatch, "group-dm")
     with pytest.raises(ApiProblem) as exc:
-        await messaging.patch_room(AuthContext(user_id="m"), "c", messaging.PatchRoomRequest(name="x"))
+        await messaging.patch_room(
+            AuthContext(user_id="m", human_session=True), "c", messaging.PatchRoomRequest(name="x")
+        )
     assert exc.value.error.code == "ROOM_FORBIDDEN"
     patch_meta.assert_not_awaited()
 
@@ -1149,7 +1153,9 @@ async def test_a_group_chat_member_still_cannot_rename_it(monkeypatch):
 @pytest.mark.asyncio
 async def test_the_dm_person_pauses_their_lightbulb_dm(monkeypatch):
     patch_meta = _chat_project(monkeypatch, "dm")
-    await messaging.patch_room(AuthContext(user_id="me"), "c", messaging.PatchRoomRequest(paused=True))
+    await messaging.patch_room(
+        AuthContext(user_id="me", human_session=True), "c", messaging.PatchRoomRequest(paused=True)
+    )
     assert patch_meta.await_args.args[1]["pausedBy"] == "me"
 
 
@@ -1158,7 +1164,7 @@ async def test_a_workspace_admin_never_pauses_someones_dm(monkeypatch):
     """Membership already keeps a non-member admin out; this is the rule itself, for a member without the DM role."""
     meta = {"roomId": "c", "ownerId": "org_1", "kind": "dm", "revision": 1}
     patch_meta, _ = _archive_fixture(monkeypatch, meta, role="member")
-    ws_admin = AuthContext(user_id="wa")
+    ws_admin = AuthContext(user_id="wa", human_session=True)
     with pytest.raises(ApiProblem) as exc:  # no Lightbulb seated: not a project, and the admin pass skips DMs
         await messaging.patch_room(ws_admin, "c", messaging.PatchRoomRequest(paused=True))
     assert exc.value.error.code == "ROOM_FORBIDDEN"
@@ -1169,7 +1175,9 @@ async def test_a_workspace_admin_never_pauses_someones_dm(monkeypatch):
 async def test_a_chat_without_lightbulb_is_not_a_project(monkeypatch):
     patch_meta = _chat_project(monkeypatch, "group-dm", role="owner", seated=False)
     with pytest.raises(ApiProblem) as exc:
-        await messaging.patch_room(AuthContext(user_id="o"), "c", messaging.PatchRoomRequest(paused=True))
+        await messaging.patch_room(
+            AuthContext(user_id="o", human_session=True), "c", messaging.PatchRoomRequest(paused=True)
+        )
     assert exc.value.error.code == "ROOM_NOT_PAUSABLE"
     patch_meta.assert_not_awaited()
 
@@ -1179,7 +1187,9 @@ async def test_a_channel_keeps_the_owner_admin_rule(monkeypatch):
     meta = {"roomId": "chan", "ownerId": "org_1", "kind": "channel", "revision": 1}
     patch_meta, _ = _archive_fixture(monkeypatch, meta, role="member")
     with pytest.raises(ApiProblem) as exc:
-        await messaging.patch_room(AuthContext(user_id="m"), "chan", messaging.PatchRoomRequest(topic="x"))
+        await messaging.patch_room(
+            AuthContext(user_id="m", human_session=True), "chan", messaging.PatchRoomRequest(topic="x")
+        )
     assert exc.value.error.code == "ROOM_FORBIDDEN"
     patch_meta.assert_not_awaited()
 
@@ -1204,7 +1214,7 @@ async def test_create_a_chat_with_lightbulb_takes_project_fields(monkeypatch, ki
     monkeypatch.setattr(messaging, "_room_detail", AsyncMock())
     monkeypatch.setattr(messaging, "_emit_room_created", lambda *a, **k: None)
     await messaging.create_room(
-        AuthContext(user_id="u1"),
+        AuthContext(user_id="u1", human_session=True),
         messaging.CreateRoomRequest(
             client_room_id=uuid.uuid4(), name=None, kind=kind, members=seated, icon="rocket", topic="Plan the trip"
         ),

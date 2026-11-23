@@ -32,13 +32,13 @@ os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 
 def _admit_test_user(app, email: str = "admin@isol8.co"):
     """Override auth so the caller looks like an Isol8 team member."""
-    ctx = AuthContext(user_id="user_platform_admin", email=email)
+    ctx = AuthContext(user_id="user_platform_admin", email=email, human_session=True)
     app.dependency_overrides[get_current_user] = lambda: ctx
 
 
 def _deny_all_admins(app):
     """Override auth so the caller is not on the admin allowlist => 403."""
-    ctx = AuthContext(user_id="user_test_123", email="user@example.com")
+    ctx = AuthContext(user_id="user_test_123", email="user@example.com", human_session=True)
     app.dependency_overrides[get_current_user] = lambda: ctx
 
 

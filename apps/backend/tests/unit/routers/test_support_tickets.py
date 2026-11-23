@@ -10,7 +10,9 @@ from main import app
 
 @pytest.mark.asyncio
 async def test_post_ticket_submits(async_client):
-    app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id="user_1", email="a@b.com")
+    app.dependency_overrides[get_current_user] = lambda: AuthContext(
+        user_id="user_1", email="a@b.com", human_session=True
+    )
     try:
         with patch(
             "routers.support_tickets.support_ticket.submit_ticket",
@@ -31,7 +33,7 @@ async def test_post_ticket_submits(async_client):
 
 @pytest.mark.asyncio
 async def test_post_ticket_requires_message(async_client):
-    app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id="user_1")
+    app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id="user_1", human_session=True)
     try:
         resp = await async_client.post(
             "/api/v1/support/tickets",

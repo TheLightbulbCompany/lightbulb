@@ -19,7 +19,7 @@ PAGE = {"asOf": "2026-10-27T00:00:00+00:00", "usedEvidenceTokens": 5, "results":
 @pytest.fixture
 def member(monkeypatch):
     monkeypatch.setattr(memory_api.settings, "AGENTCORE_MEMORY_ID", "mem-1", raising=False)
-    app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id="user_me")
+    app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id="user_me", human_session=True)
     yield TestClient(app)
     app.dependency_overrides.clear()
 

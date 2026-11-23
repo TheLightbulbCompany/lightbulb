@@ -30,7 +30,7 @@ def _authed_env(chaos_ddb):
 
     from tests.chaos.api.conftest import app
 
-    app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id="user_chaos_api")
+    app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id="user_chaos_api", human_session=True)
     try:
         yield
     finally:

@@ -41,13 +41,13 @@ def _audit_rows():
 
 def _admit_test_user(app):
     """Present an allowlisted caller to the Clerk platform-admin gate."""
-    ctx = AuthContext(user_id="user_platform_admin", email="admin@thelightbulb.company")
+    ctx = AuthContext(user_id="user_platform_admin", email="admin@thelightbulb.company", human_session=True)
     app.dependency_overrides[get_current_user] = lambda: ctx
 
 
 def _deny_all_admins(app):
     """Present a non-allowlisted caller => 403 from the platform-admin gate."""
-    ctx = AuthContext(user_id="user_test_123", email="user@example.com")
+    ctx = AuthContext(user_id="user_test_123", email="user@example.com", human_session=True)
     app.dependency_overrides[get_current_user] = lambda: ctx
 
 

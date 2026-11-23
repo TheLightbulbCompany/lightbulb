@@ -241,11 +241,11 @@ def override_auth(app):
 
 
 # Org admin who IS the recorded workspace owner (user_test_123 in user_test_123).
-ORG_OWNER_ADMIN = AuthContext(user_id="user_test_123")
+ORG_OWNER_ADMIN = AuthContext(user_id="user_test_123", human_session=True)
 # A second org admin who is NOT the recorded owner.
-ORG_OTHER_ADMIN = AuthContext(user_id="user_test_123")
+ORG_OTHER_ADMIN = AuthContext(user_id="user_test_123", human_session=True)
 # Plain org member (non-admin).
-ORG_MEMBER = AuthContext(user_id="user_test_123")
+ORG_MEMBER = AuthContext(user_id="user_test_123", human_session=True)
 
 
 class TestStatus:
@@ -317,3 +317,52 @@ async def test_poll_rejects_other_workspace_binding(async_client):
     ):
         response = await async_client.post("/api/v1/oauth/chatgpt/poll")
     assert response.status_code == 403
+
+
+class TestPollClaim:
+    """POST /api/v1/oauth/chatgpt/poll: the tenant's connection is claimed by the person on completion."""
+
+    @pytest.mark.asyncio
+    async def test_oauth_poll_claims_user_tenant(self, async_client, override_auth):
+        """A person is their own tenant: their completed sign-in claims their own tenant's connection, and no other."""
+        override_auth(AuthContext(user_id="user_test_123", human_session=True))
+        with (
+            patch(
+                "routers.oauth.poll_device_code",
+                new=AsyncMock(return_value=DevicePollResult(account_id="acc_1", bound_owner_id="user_test_123")),
+            ) as mock_poll,
+            patch("core.repositories.billing_repo.claim_oauth_connector", new=AsyncMock()) as mock_claim,
+        ):
+            resp = await async_client.post("/api/v1/oauth/chatgpt/poll")
+        assert resp.status_code == 200
+        mock_poll.assert_awaited_once_with(user_id="user_test_123", authorized_owner_id="user_test_123")
+        mock_claim.assert_awaited_once_with("user_test_123", connector_user_id="user_test_123")
+
+    @pytest.mark.asyncio
+    async def test_poll_completion_pushes_fresh_credential_to_container(self, async_client, override_auth):
+        """A completed device-code flow pushes the fresh token into the running container (reconnect heal)."""
+        override_auth(AuthContext(user_id="user_test_123", human_session=True))
+        with (
+            patch(
+                "routers.oauth.poll_device_code",
+                new=AsyncMock(return_value=DevicePollResult(account_id="acc_1", bound_owner_id="user_test_123")),
+            ),
+            patch("core.repositories.billing_repo.claim_oauth_connector", new=AsyncMock()),
+            patch("routers.oauth.push_oauth_credential_to_container", new=AsyncMock(return_value=True)) as mock_push,
+        ):
+            resp = await async_client.post("/api/v1/oauth/chatgpt/poll")
+        assert resp.status_code == 200
+        mock_push.assert_awaited_once_with(owner_id="user_test_123", connector_id="user_test_123")
+
+    @pytest.mark.asyncio
+    async def test_poll_pending_does_not_claim(self, async_client, override_auth):
+        """A still-pending poll must NOT claim ownership."""
+        override_auth(AuthContext(user_id="user_test_123", human_session=True))
+        with (
+            patch("routers.oauth.poll_device_code", new=AsyncMock(return_value=DevicePollPending)),
+            patch("core.repositories.billing_repo.claim_oauth_connector", new=AsyncMock()) as mock_claim,
+        ):
+            resp = await async_client.post("/api/v1/oauth/chatgpt/poll")
+        assert resp.status_code == 200
+        assert resp.json() == {"status": "pending"}
+        mock_claim.assert_not_awaited()

@@ -133,7 +133,7 @@ def world(monkeypatch):
 
 async def _send(text="pay acme", *, mentions=(), reply_to=None, room=ROOM, via=None):
     return await messaging.create_human_message(
-        AuthContext(user_id=OWNER),
+        AuthContext(user_id=OWNER, human_session=True),
         room,
         messaging.CreateMessageRequest(
             client_message_id=uuid.uuid4(),

@@ -27,7 +27,7 @@ def has_front_desk_agent(monkeypatch):
 
 
 def _admin():
-    return AuthContext(user_id="user_admin", email="admin@example.com")
+    return AuthContext(user_id="user_admin", email="admin@example.com", human_session=True)
 
 
 @pytest.mark.asyncio

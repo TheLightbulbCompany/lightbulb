@@ -18,7 +18,7 @@ from main import app
 
 @pytest.fixture
 def client():
-    app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id="o1")
+    app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id="o1", human_session=True)
     try:
         yield TestClient(app)
     finally:
@@ -80,7 +80,7 @@ def test_list_members_personal_context_is_just_the_caller(monkeypatch):
         }
 
     org_members = AsyncMock(return_value=[])
-    app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id="clerk_solo")
+    app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id="clerk_solo", human_session=True)
     try:
         monkeypatch.setattr(clerk_admin, "get_user", fake_get_user)
         monkeypatch.setattr(clerk_admin, "list_organization_members", org_members)

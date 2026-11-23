@@ -6,7 +6,7 @@ import pytest
 
 from core.auth import AuthContext
 
-_AUTH = AuthContext(user_id="org_xyz")
+_AUTH = AuthContext(user_id="org_xyz", human_session=True)
 _AGENT = {"id": "agent-1", "name": "Ada", "role": "engineer", "reportsTo": None}
 
 

@@ -32,7 +32,7 @@ TEAM = [{"id": "agent-fin", "name": "Finance"}, {"id": "agent-ceo-1", "name": "A
 
 @pytest.fixture
 def client():
-    app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id="user_a")
+    app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id="user_a", human_session=True)
     with (
         patch.object(mod.settings, "HUDDLE_WORKER_SECRET", SECRET),
         patch.object(mod.settings, "LIVEKIT_URL", "wss://lk.test"),

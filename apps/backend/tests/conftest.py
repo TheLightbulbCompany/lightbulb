@@ -253,13 +253,13 @@ def mock_current_user(mock_auth_context):
 @pytest.fixture
 def mock_org_admin_context() -> AuthContext:
     """Mock auth context for org admin."""
-    return AuthContext(user_id="user_test_123")
+    return AuthContext(user_id="user_test_123", human_session=True)
 
 
 @pytest.fixture
 def mock_org_member_context() -> AuthContext:
     """Mock auth context for org member (non-admin)."""
-    return AuthContext(user_id="user_test_123")
+    return AuthContext(user_id="user_test_123", human_session=True)
 
 
 @pytest.fixture

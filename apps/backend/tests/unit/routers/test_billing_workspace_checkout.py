@@ -16,7 +16,7 @@ def no_trial_row(monkeypatch):
 
 
 def _admin():
-    return AuthContext(user_id="user_admin", email="admin@example.com")
+    return AuthContext(user_id="user_admin", email="admin@example.com", human_session=True)
 
 
 def test_legacy_subscription_checkout_routes_are_not_registered():

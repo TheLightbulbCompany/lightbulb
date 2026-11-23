@@ -16,7 +16,7 @@ from routers import company_slug as mod  # noqa: E402
 @pytest.fixture
 def client(monkeypatch):
     # No org on the token: the caller is creating their first workspace.
-    app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id="user_new")
+    app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id="user_new", human_session=True)
     monkeypatch.setattr(mod.settings, "AGENT_EMAIL_DOMAIN", "dev.thelightbulb.company")
     yield TestClient(app)
     app.dependency_overrides.clear()

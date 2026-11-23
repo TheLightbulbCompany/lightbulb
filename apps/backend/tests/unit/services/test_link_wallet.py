@@ -534,7 +534,9 @@ async def test_canary_no_credential_reaches_logs_rows_or_returns(world, caplog):
 
 @pytest.fixture
 def client():
-    app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id=OWNER, email="a@example.com")
+    app.dependency_overrides[get_current_user] = lambda: AuthContext(
+        user_id=OWNER, email="a@example.com", human_session=True
+    )
     try:
         yield TestClient(app)
     finally:

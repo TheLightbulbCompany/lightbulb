@@ -43,8 +43,8 @@ sys.modules.setdefault("messaging_projector_index", projector)
 _spec.loader.exec_module(projector)
 
 
-def auth(user_id=USER_B):
-    return AuthContext(user_id=user_id)
+def auth(user_id=USER_A):
+    return AuthContext(user_id=user_id, human_session=True)
 
 
 @pytest.fixture(autouse=True)
@@ -115,7 +115,7 @@ async def say(room_id, author, text="hi", *, mentions=(), thread_root=None):
     return message
 
 
-async def feed(user_id=USER_B, cursor=None, limit=30):
+async def feed(user_id=USER_A, cursor=None, limit=30):
     page = await activity.list_activity(auth(user_id), cursor=cursor, limit=limit)
     return page.model_dump(mode="json", by_alias=True)
 
@@ -221,3 +221,115 @@ async def test_a_wrong_thread_root_seq_is_not_retried_as_a_sequence_race(world, 
         )
     assert len(calls) == 1
     assert int((await repo.get_room(room_id))["lastSeq"]) == 2  # nothing landed
+
+
+@pytest.mark.asyncio
+async def test_mention_is_self_explaining_and_read_follows_the_room_cursor(world):
+    room_id = await _room(members=(USER_A,))
+    message = await say(room_id, AGENT, "**Ship** it @ann", mentions=[USER_A])
+    page = await feed()
+    [item] = page["items"]
+    assert item["id"] == f"mention:{message['messageId']}:{room_id}:1"
+    assert item["kind"] == "mention" and item["roomId"] == room_id and item["messageId"] == message["messageId"]
+    assert item["actor"] == {"kind": "agent", "id": FRIDAY, "name": "Friday"}
+    assert item["summary"]["title"] == "Friday mentioned you in #general"
+    assert item["summary"]["requester"] == item["actor"]
+    assert item["summary"]["preview"]["text"] == "Ship it @ann"
+    assert item["state"] == "open" and item["read"] is False
+    assert [a["id"] for a in item["actions"]] == ["reply", "mark_done", "open"]
+    reply = item["actions"][0]
+    assert reply["input"] == {
+        "kind": "text",
+        "label": "Reply to Friday",
+        "required": True,
+        "options": None,
+        "hint": None,
+    }
+    assert item["actions"][2]["navigate"]["kind"] in {"thread", "room"}
+    assert page["unseenCount"] == 1 and page["sources"] == {"paperclip": "ok"}
+    assert item["roomKind"] == "channel"
+    # Viewing Activity (seen) does not clear the dot; opening the room does.
+    await activity.mark_seen(auth(), activity.ActivitySeenRequest(up_to=message["createdAt"]))
+    assert (await feed())["items"][0]["read"] is False
+    await repo.set_read_cursor(room_id, USER_A, 1)
+    assert (await feed())["items"][0]["read"] is True
+
+
+@pytest.mark.asyncio
+async def test_dm_to_me_is_an_item_but_never_for_its_author(world):
+    room_id = await _room("dm", (USER_A,), client_room_id="dm-1")
+    await say(room_id, AGENT, "hey")
+    [item] = (await feed())["items"]
+    assert item["kind"] == "dm"
+    assert item["summary"]["title"] == "Friday sent you a direct message"
+    assert [a["id"] for a in item["actions"]] == ["reply", "open"]
+
+
+@pytest.mark.asyncio
+async def test_pagination_is_newest_first_with_an_opaque_cursor(world):
+    room_id = await _room(members=(USER_A,))
+    sent = [await say(room_id, AGENT, f"@ann {n}", mentions=[USER_A]) for n in range(5)]
+    seen_ids = []
+    cursor = None
+    pages = 0
+    while True:
+        page = await feed(cursor=cursor, limit=2)
+        pages += 1
+        seen_ids += [i["messageId"] for i in page["items"]]
+        cursor = page["next"]
+        if pages > 1:
+            assert page["unseenCount"] is None  # the badge rides the first page only
+        if cursor is None:
+            break
+    assert seen_ids == [m["messageId"] for m in reversed(sent)]
+    with pytest.raises(messaging.ApiProblem) as bad:
+        await feed(cursor="not-a-cursor!!")
+    assert bad.value.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_leaving_a_room_hides_its_items_immediately(world):
+    room_id = await _room(members=(USER_A,))
+    other = await _room(members=(USER_A,), client_room_id="c-2", name="random")
+    await say(room_id, AGENT, "@ann one", mentions=[USER_A])
+    await say(other, AGENT, "@ann two", mentions=[USER_A])
+    assert len((await feed())["items"]) == 2
+    world.delete_item(Key={"pk": repo.room_pk(room_id), "sk": repo.member_sk("human", USER_A)})
+    items = (await feed())["items"]
+    assert [i["roomId"] for i in items] == [other]
+    assert (await feed())["unseenCount"] == 1
+
+
+@pytest.mark.asyncio
+async def test_unseen_counts_is_the_badge_by_kind(world, monkeypatch):
+    """The daily digest's source: the same unseen rule as ``unseenCount``, split by kind."""
+    room_id = await _room(members=(USER_A,))
+    await say(room_id, AGENT, "@ann one", mentions=[USER_A])
+    await say(room_id, AGENT, "@ann two", mentions=[USER_A])
+    dm = await _room("dm", members=(USER_A,), client_room_id="dm-1")
+    await say(dm, AGENT, "psst")
+    page = await feed()
+    counts = await activity.unseen_counts(OWNER, USER_A)
+    assert counts == {"mention": 2, "dm": 1}
+    assert sum(counts.values()) == page["unseenCount"]
+    # Seen moves everything out, exactly like the badge.
+    await activity.mark_seen(auth(), activity.ActivitySeenRequest(up_to="2100-01-01T00:00:00Z"))
+    assert await activity.unseen_counts(OWNER, USER_A) == {}
+
+
+@pytest.mark.asyncio
+async def test_seen_cursor_is_monotonic_and_the_dot_waits_for_the_room_cursor(world):
+    room_id = await _room(members=(USER_A,))
+    mention = await say(room_id, AGENT, "@ann look", mentions=[USER_A])
+    page = await feed()
+    assert page["unseenCount"] == 1 and page["items"][0]["read"] is False
+    seen = await activity.mark_seen(auth(), activity.ActivitySeenRequest(up_to=mention["createdAt"]))
+    assert seen.seen_up_to is not None
+    page = await feed()
+    # Seen clears the badge count, not the dot: the mention is read once the room cursor passes it.
+    assert page["unseenCount"] == 0 and page["items"][0]["read"] is False
+    await repo.set_read_cursor(room_id, USER_A, int(mention["messageSeq"]))
+    assert (await feed())["items"][0]["read"] is True
+    # An older upTo never moves the cursor back.
+    await activity.mark_seen(auth(), activity.ActivitySeenRequest(up_to="2000-01-01T00:00:00+00:00"))
+    assert (await feed())["unseenCount"] == 0

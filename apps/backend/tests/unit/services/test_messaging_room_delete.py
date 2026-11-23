@@ -33,7 +33,7 @@ def _no_user_lookups(monkeypatch):
 
 
 def _auth(user):
-    return AuthContext(user_id=user)
+    return AuthContext(user_id=user, human_session=True)
 
 
 async def _channel():

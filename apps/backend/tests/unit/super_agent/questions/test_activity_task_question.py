@@ -47,7 +47,7 @@ def feed_world(table, monkeypatch):
 
 
 async def _feed(user="user_sam"):
-    page = await activity.list_activity(AuthContext(user_id=user), cursor=None, limit=30)
+    page = await activity.list_activity(AuthContext(user_id=user, human_session=True), cursor=None, limit=30)
     return page.model_dump(by_alias=True, mode="json")
 
 

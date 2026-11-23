@@ -1171,7 +1171,7 @@ async def test_a_hidden_room_is_in_no_room_list_but_an_old_meeting_room_stays(ta
             req_hash=repo.request_hash(client),
             extra=extra,
         )
-    listed = await messaging.list_rooms(AuthContext(user_id=USER_A))
+    listed = await messaging.list_rooms(AuthContext(user_id=USER_A, human_session=True))
     assert [r.name for r in listed.rooms] == ["old"]
 
 

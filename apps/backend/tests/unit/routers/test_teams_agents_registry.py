@@ -39,7 +39,7 @@ def client(monkeypatch):
     )
     app = FastAPI()
     app.include_router(agents_mod.router, prefix="/api/v1/teams")
-    app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id=WS)
+    app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id=WS, human_session=True)
     return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t")
 
 

@@ -14,6 +14,7 @@ const capture = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/analytics", () => ({ capture }));
 vi.mock("@/components/landing/Navbar", () => ({ Navbar: () => null }));
 vi.mock("@/components/landing/Footer", () => ({ Footer: () => null }));
+vi.mock("next/font/google", () => ({ Bricolage_Grotesque: () => ({ variable: "" }), Silkscreen: () => ({ variable: "" }) }));
 vi.mock("@clerk/nextjs", () => ({
   useAuth: () => ({ isLoaded: true, isSignedIn: s.signedIn }),
   SignUp: () => <div data-testid="clerk-sign-up" />,
@@ -54,34 +55,51 @@ afterEach(() => {
 });
 
 describe("/os landing page (dev only)", () => {
-  it("has the hero, every section and six questions", async () => {
+  it("has the hero, eight scenes and six questions", async () => {
     const { container } = await page();
-    expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("Meet Spark");
-    expect(container.textContent).toContain("One-click voice interface for your Mac.");
-    expect(container.querySelector(".os-how-line")?.textContent).toBe(
-      "Hold fn and say what you want done. Spark does it on your Mac.",
-    );
+    expect(screen.getAllByRole("heading", { level: 1 }).map((h) => h.textContent)).toEqual([
+      "Talk to your Mac. Spark does the clicking.",
+    ]);
     expect(screen.getAllByRole("heading", { level: 2 }).map((h) => h.textContent)).toEqual([
-      "How Spark works",
-      "What Spark can do",
-      "Runs on your ChatGPT or Claude",
-      "Where your things go",
-      "Questions",
+      "One sentence instead of all the clicking.",
+      "Hold fn, say it, and Spark does it.",
+      "It works in the apps you already use.",
+      "Spark thinks with a plan you already have.",
+      "Where your things go.",
+      "Questions.",
       "Try Spark free for 3 days.",
     ]);
     expect(container.querySelectorAll("details")).toHaveLength(6);
-    expect(container.textContent).toContain("In Spark, open Settings › Account › Manage subscription.");
-    expect(container.textContent).toContain(
-      "Spark runs on your own ChatGPT account or a Claude plan of Pro or higher. Claude Free cannot run it.",
-    );
     expect(container.textContent).toContain("Each friend who joins with your link adds a free day.");
+    expect(container.textContent).toContain("For Mac with Apple silicon (M1 or later). Requires macOS 14 or later.");
+  });
+
+  it("the privacy lines stay as they are true today", async () => {
+    const { container } = await page();
+    const priv = [...container.querySelectorAll(".priv li")].map((li) => li.textContent);
+    expect(priv).toEqual([
+      "Your voice goes to OpenAI so Spark can understand and answer you. We don't store the audio.",
+      "What Spark sees and does on your Mac goes to your own ChatGPT or Claude account, not to us.",
+      "Your files and history stay on your Mac.",
+    ]);
+    const voice = [...container.querySelectorAll("details")].find((d) => d.textContent?.startsWith("Is my voice stored?"));
+    expect(voice?.querySelector("p")?.textContent).toBe(
+      "No. Your voice is processed by OpenAI to understand and answer you, and we do not store the audio. We keep a text transcript for 90 days to improve Spark.",
+    );
+  });
+
+  it("the demo windows are pictures: hidden from screen readers, nothing in them to tab to", async () => {
+    const { container } = await page();
+    for (const sel of [".chat", ".daw", ".dia", ".sp-fixed"]) expect(container.querySelector(sel)).toHaveAttribute("aria-hidden", "true");
+    container.querySelectorAll('[aria-hidden="true"]').forEach((el) => expect(el.querySelector("a, button, input")).toBeNull());
+    container.querySelectorAll("canvas").forEach((c) => expect(c.closest('[aria-hidden="true"]')).not.toBeNull());
   });
 
   it("reads the price from the config", async () => {
     const { container } = await page();
     expect(screen.getByText(HERO_PRICE)).toBeInTheDocument();
     expect(container.textContent).toContain("Then $20/month.");
-    expect(container.textContent).toContain("Free for 3 days, then $20/month. It renews monthly until you cancel.");
+    expect(container.textContent).toContain("For 3 days. Then it's $20/month.");
   });
 
   it("drops every number when the config fails", async () => {
@@ -92,6 +110,7 @@ describe("/os landing page (dev only)", () => {
     expect(text).not.toMatch(/\$|\d+ days/);
     expect(screen.getByRole("heading", { name: "Try Spark." })).toBeInTheDocument();
     expect(text).toContain("See the price when you download.");
+    expect(screen.queryByText(HERO_PRICE)).toBeNull();
   });
 
   it("both Download buttons count their placement", async () => {
@@ -115,12 +134,12 @@ describe("/os landing page (dev only)", () => {
   it("an invite puts the sign-up in the hero and keeps the sections", async () => {
     s.query = "ref=abc123XYZ";
     const { container } = await page();
-    const hero = container.querySelector(".os-hero") as HTMLElement;
+    const hero = container.querySelector(".sp-hero") as HTMLElement;
     expect(within(hero).getByTestId("clerk-sign-up")).toBeInTheDocument();
     expect(
       within(hero).getByText("You've been invited to Spark. Create your account, then download."),
     ).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "How Spark works" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Hold fn, say it, and Spark does it." })).toBeInTheDocument();
     expect(container.querySelectorAll("details")).toHaveLength(6);
   });
 
@@ -134,12 +153,5 @@ describe("/os landing page (dev only)", () => {
     expect(text).not.toMatch(/\$/);
   });
 
-  it("the art is a canvas hidden from screen readers, the hero described once", async () => {
-    const { container } = await page();
-    const canvases = container.querySelectorAll("canvas");
-    expect(canvases).toHaveLength(6); // hero, four setup bulbs, closing
-    canvases.forEach((c) => expect(c).toHaveAttribute("aria-hidden", "true"));
-    expect(screen.getByRole("img").getAttribute("aria-label")).toMatch(/^Spark: a small blue creature/);
-  });
 
 });

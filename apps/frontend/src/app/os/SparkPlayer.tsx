@@ -30,9 +30,9 @@ const SCENES: Record<number, Line[]> = {
   ],
   5: [L(0, HEARD, "Set me up.", 0.04, 0.12), L(0.12, DOING, "Set me up."), L(0.86, SAYING, "All set. Say hi any time.", null, null, true)],
   6: [L(0, HEARD, "Where do my files go?", 0.08, 0.2), L(0.2, DOING, "Where do my files go?"), L(0.62, SAYING, "Nowhere. They stay on your Mac.", null, null, true)],
-  7: [L(0, HEARD, "Is my voice stored?", 0.06, 0.18), L(0.18, DOING, "Is my voice stored?"), L(0.5, SAYING, "No. We don't store the audio.", null, null, true)],
-  8: [L(0, HEARD, "Circle the download.", 0.08, 0.2), L(0.2, DOING, "Circle the download."), L(0.62, SAYING, "That's the one. See you on your Mac.", null, null, true)],
 };
+// Spark acts in scenes 1 to 6 only; the questions, the closing and the footer stay still.
+const LAST = 6;
 const TYPED_NOTE = "From today 🌊";
 const SPOKEN = "“Text Sam the beach photos.”";
 const LIVE = "Book the 3 pm room.";
@@ -444,10 +444,6 @@ function start(): (() => void) | undefined {
   // 6
   const pl = [$("pl0"), $("pl1")];
   // 7
-  const q5 = $("q5") as HTMLDetailsElement;
-  let q5auto = false;
-  const q5click = () => (q5auto = true);
-  q5.querySelector("summary")?.addEventListener("click", q5click);
   // hovering a Download lights the creature up
   let lit = false;
   const onLight = (e: Event) => (lit = !!(e as CustomEvent).detail);
@@ -458,12 +454,11 @@ function start(): (() => void) | undefined {
   const strikes = stepEls.map((li, i) => makeMark(li.querySelector(".st") as HTMLElement, 8, 8, i * 1.7, "line", made));
   const ringCard = makeMark($("circCard"), 20, 14, 1.1, "ring", made);
   const ring6 = makeMark($("stays"), 14, 12, 2.2, "ring", made);
-  const ring8 = makeMark($("r8"), 26, 20, 1.3, "ring", made);
   function layout() {
     phone = innerWidth <= 640;
     navB = document.querySelector(".sp .landing-nav")?.getBoundingClientRect().bottom ?? 70;
     notch.style.top = navB + "px";
-    [...strikes, ringCard, ring6, ring8].forEach((mk) => mk.layout());
+    [...strikes, ringCard, ring6].forEach((mk) => mk.layout());
     paintSky($("sky1") as HTMLCanvasElement, 0.42);
     paintSky($("sky8") as HTMLCanvasElement, 0.72);
   }
@@ -484,7 +479,7 @@ function start(): (() => void) | undefined {
     }
     Z[1] = Z[0];
     let own = 1;
-    for (let k = 2; k <= 8; k++) if (Z[k] > Z[own]) own = k;
+    for (let k = 2; k <= LAST; k++) if (Z[k] > Z[own]) own = k;
     const st = { want: 0, label: "", full: "", typedP: 1, cur: null as P2 | null, curOp: 1, ro: 0, look: null as P2 | null, happy: false };
     type Ghost = { cls: string; txt?: string; x: number; y: number; w: number; h: number };
     const carry: { p: Ghost | null; c: Ghost | null } = { p: null, c: null }; // the photo or loop being dragged
@@ -762,47 +757,6 @@ function start(): (() => void) | undefined {
       }
     }
 
-    /* 7 · questions */
-    {
-      const p = P[7];
-      if (SEEK || reduce) q5.open = p >= 0.4;
-      else if (p >= 0.4 && !q5auto) {
-        q5.open = true;
-        q5auto = true;
-      }
-      if (own === 7) {
-        st.want = seg(p, 0.04, 0.08);
-        st.ro = Math.min(seg(p, 0.18, 0.22), 1 - seg(p, 0.55, 0.62));
-        says(7);
-        const r = (q5.querySelector("summary") as HTMLElement).getBoundingClientRect(),
-          tg: P2 = [r.left + Math.min(240, r.width * 0.4), r.top + r.height * 0.55];
-        if (p >= 0.2) {
-          const o = eo(seg(p, 0.42, 0.5));
-          st.cur = p < 0.38 ? arc(home, tg, ease(seg(p, 0.2, 0.38)), 0.2) : [tg[0] + 20 * o, tg[1] + 26 * o];
-          st.look = tg;
-          st.curOp = 1 - seg(p, 0.55, 0.6);
-        }
-      }
-    }
-
-    /* 8 · closing */
-    {
-      const p = P[8];
-      ring8.set(seg(p, 0.32, 0.58));
-      if (own === 8) {
-        st.want = seg(p, 0.05, 0.1);
-        st.ro = Math.min(seg(p, 0.2, 0.24), 1 - seg(p, 0.62, 0.68));
-        says(8);
-        if (p >= 0.22) {
-          const e = ring8.at(1),
-            o = eo(seg(p, 0.58, 0.64));
-          st.cur = p < 0.32 ? arc(home, ring8.at(0), ease(seg(p, 0.22, 0.32)), -0.2) : p < 0.58 ? ring8.at(seg(p, 0.32, 0.58)) : [e[0] + 30 * o, e[1] + 36 * o];
-          st.look = st.cur;
-          st.curOp = 1 - seg(p, 0.62, 0.68);
-        }
-      }
-    }
-
     if (reduce) {
       st.ro = 0;
       st.cur = null;
@@ -929,7 +883,6 @@ function start(): (() => void) | undefined {
     cancelAnimationFrame(raf);
     removeEventListener("resize", layout);
     window.removeEventListener("spark:light", onLight);
-    q5.querySelector("summary")?.removeEventListener("click", q5click);
     made.forEach((n) => n.parentNode?.removeChild(n));
   };
 }

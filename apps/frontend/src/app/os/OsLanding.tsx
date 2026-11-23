@@ -60,7 +60,7 @@ const SETUP = [
   ["Hi", "Say hi to check it hears you."],
 ] as const;
 
-// Spark's landing page: eight scenes in which Spark's pointer acts on the page (SparkPlayer drives them
+// Spark's landing page: eight scenes; in the first six Spark's pointer acts on the page (SparkPlayer drives them
 // from the scroll position; the demo windows are pictures, hidden from screen readers). Every price and
 // trial length comes from GET /os/config (`price`); without it the sentences that carry numbers are
 // omitted or said without them.
@@ -457,7 +457,7 @@ export function OsLanding({ ready, price }: { ready: boolean; price: SparkPrice 
         </div>
       </section>
 
-      <section id="s7" className="pin" style={{ height: "200vh" }} aria-labelledby="sp-s7">
+      <section id="s7" className="pin" aria-labelledby="sp-s7">
         <div className="stick">
           <h2 className="say" id="sp-s7">
             {S7}
@@ -466,8 +466,8 @@ export function OsLanding({ ready, price }: { ready: boolean; price: SparkPrice 
             Something else? Hold <kbd>fn</kbd> and ask Spark.
           </p>
           <div className="faq">
-            {faq.map(([q, a], i) => (
-              <details key={q} id={i === 4 ? "q5" : undefined}>
+            {faq.map(([q, a]) => (
+              <details key={q}>
                 <summary>{q}</summary>
                 <p>{a}</p>
               </details>
@@ -476,13 +476,13 @@ export function OsLanding({ ready, price }: { ready: boolean; price: SparkPrice 
         </div>
       </section>
 
-      <section id="s8" className="pin" style={{ height: "200vh" }} aria-labelledby="sp-s8">
+      <section id="s8" className="pin" aria-labelledby="sp-s8">
         <div className="stick">
           <canvas className="sky" id="sky8" aria-hidden="true" />
           <div className="s8in">
             <h2 id="sp-s8">{price ? `Try Spark free for ${price.trialDays} days.` : "Try Spark."}</h2>
             <div className="act">
-              <span className="mk" id="r8">
+              <span>
                 {ready ? <SparkGet source="os_closing" /> : <span className="soon">{SOON}</span>}
               </span>
               <div className="small">

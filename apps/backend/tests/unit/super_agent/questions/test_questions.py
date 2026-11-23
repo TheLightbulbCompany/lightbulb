@@ -236,3 +236,13 @@ def test_output_for_review_kinds_only(kind, operands, expected):
 )
 def test_a_purchase_title_names_the_currency(operands, title):
     assert questions.title_for({"kind": "purchase", "operands": operands}) == title
+
+
+async def test_another_id_in_the_stored_lists_is_still_refused(policy):
+    q = {
+        "subkind": "question",
+        "answerers": [WS, "user_new"],
+        "answererRule": "requester",
+        "baseAnswerers": ["user_new"],
+    }
+    assert not await questions.can_answer_now(WS, q, "user_new")

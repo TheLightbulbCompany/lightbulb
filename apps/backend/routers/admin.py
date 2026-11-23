@@ -34,6 +34,7 @@ from core.services import (
 )
 from core.services.account_wipe import (
     MalformedUserIdError,
+    _refuse_malformed_id,
     preview_wipe,
     resolve_account_emails,
     wipe_account,
@@ -607,6 +608,11 @@ async def admin_wipe_execute(
     request: Request,
     auth: AuthContext = Depends(require_platform_admin),
 ):
+    try:
+        _refuse_malformed_id(owner_id)  # before any read by this id
+    except MalformedUserIdError:
+        raise HTTPException(status_code=400, detail="invalid_user_id")
+
     # Authoritative email(s) from Clerk (the users-row email is written by an
     # unreliable webhook — see resolve_account_emails). The typed confirm must
     # match one of them, case-insensitively; never trusted from the client alone.

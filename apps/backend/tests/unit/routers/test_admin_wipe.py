@@ -224,6 +224,18 @@ class TestWipeExecute:
         mock_audit_repo.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_malformed_id_400_before_any_lookup(self, async_client, admin_env, mock_audit_repo):
+        with (
+            patch("routers.admin.resolve_account_emails", new=AsyncMock()) as mock_resolve,
+            patch("routers.admin.wipe_account", new=AsyncMock()) as mock_wipe,
+        ):
+            res = await async_client.post("/api/v1/admin/users/bad_id/wipe", json={"confirm_email": "a@b.co"})
+        assert res.status_code == 400 and res.json()["detail"] == "invalid_user_id"
+        mock_resolve.assert_not_awaited()
+        mock_wipe.assert_not_awaited()
+        mock_audit_repo.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_403_for_non_admin(self, async_client, non_admin_env):
         res = await async_client.post(
             "/api/v1/admin/users/user_target/wipe",

@@ -527,6 +527,25 @@ class TestDeleteMyAccount:
     @patch("routers.users.admin_actions_repo")
     @patch("core.services.account_wipe.wipe_account", new_callable=AsyncMock)
     @patch("core.services.account_wipe.resolve_account_emails", new_callable=AsyncMock)
+    async def test_retry_after_partial_success_reports_deleted(self, mock_emails, mock_wipe, mock_audit, async_client):
+        """Second attempt after rows were already removed: skipped steps are not failures."""
+        from unittest.mock import MagicMock
+
+        mock_emails.return_value = ["person@example.com"]
+        report = MagicMock()
+        report.to_dict.return_value = {"steps": [{"status": "skipped"}, {"status": "ok"}]}
+        mock_wipe.return_value = report
+        mock_audit.create = AsyncMock()
+
+        response = await async_client.post("/api/v1/users/me/delete", json={"confirm_email": "person@example.com"})
+
+        assert response.status_code == 200
+        assert response.json() == {"status": "deleted"}
+
+    @pytest.mark.asyncio
+    @patch("routers.users.admin_actions_repo")
+    @patch("core.services.account_wipe.wipe_account", new_callable=AsyncMock)
+    @patch("core.services.account_wipe.resolve_account_emails", new_callable=AsyncMock)
     async def test_partial_failure_never_reports_deleted(self, mock_emails, mock_wipe, mock_audit, async_client):
         """A failed teardown step 502s (still audited) — never a false 'deleted'."""
         from unittest.mock import MagicMock

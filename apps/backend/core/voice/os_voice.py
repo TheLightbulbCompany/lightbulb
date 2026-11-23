@@ -429,11 +429,20 @@ async def _flush(s: dict, idle: float = 0.0) -> None:
 
 
 async def _transcribe(s: dict, role: str, delta: str, start_ms) -> None:
-    """Add a delta to its side's turn. Each side keeps its own turn: the other side speaking does not end it
-    (Spark often starts replying before the person's last words arrive); only that side's silence does."""
+    """Add a delta to its side's turn. A delta spoken before the other side's latest turn began belongs to
+    this side's held turn (Spark often starts replying before the person's last words arrive); one spoken
+    after it starts a new turn, saving the held one. A held turn also ends after its side's silence."""
     if type(start_ms) is not int:  # no timing on the event: when it arrived, in ms into the session
         start_ms = max(0, time.time_ns() // 1_000_000 - int(s["startedAt"]) * 1000)
-    turn = s.setdefault("turns", {}).setdefault(role, [[], 0.0, start_ms])
+    turns, starts = s.setdefault("turns", {}), s.setdefault("turnStarts", {})
+    held, other = turns.get(role), starts.get("spark" if role == "user" else "user")
+    if held and other is not None and held[2] < other <= start_ms:  # the other side spoke in between
+        del turns[role]
+        if text := "".join(held[0]).strip():
+            await _save_turn(s, role, text, held[2])
+    if role not in turns:
+        starts[role] = start_ms
+    turn = turns.setdefault(role, [[], 0.0, start_ms])
     turn[0].append(delta)
     turn[1] = time.monotonic()
 

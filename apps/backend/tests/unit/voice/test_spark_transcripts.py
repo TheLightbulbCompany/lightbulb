@@ -86,6 +86,21 @@ async def test_interleaved_deltas_become_one_item_per_side_in_spoken_order(table
     assert first["ttl"] == first["at"] + 90 * 86400
 
 
+async def test_a_quick_back_and_forth_keeps_every_turn(table, on):
+    s = state()
+    await hear(
+        s,
+        ("user", "Are you there?", 0),
+        ("spark", "Yes.", 500),
+        ("user", "Thanks.", 1000),
+        ("spark", "You are welcome.", 1500),
+    )
+    await os_voice._flush(s)
+    assert [(r["role"], r["text"]) for r in rows(table)] == [
+        ("user", "Are you there?"), ("spark", "Yes."), ("user", "Thanks."), ("spark", "You are welcome."),
+    ]  # fmt: skip
+
+
 async def test_a_pause_ends_a_turn(table, on, monkeypatch):
     s = state()
     await hear(s, ("user", "what time is it"))

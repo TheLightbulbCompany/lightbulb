@@ -5,7 +5,6 @@ import { vi, it, expect } from "vitest";
 const conn = vi.hoisted(() => ({ connections: [] as { provider: string; status: string }[], startOAuth: vi.fn() }));
 vi.mock("@/hooks/useConnections", () => ({ useConnections: () => ({ connections: conn.connections, isLoading: false, startOAuth: conn.startOAuth }) }));
 
-vi.mock("@/components/settings/DailySummaryCard", () => ({ DailySummaryCard: () => <div>daily ok</div> }));
 vi.mock("../VoicePlanCard", () => ({ VoicePlanCard: () => null }));
 vi.mock("../PhonePinCard", () => ({ PhonePinCard: () => { throw new Error("pin exploded"); } }));
 vi.mock("../data", () => ({ useUsage: () => ({ data: undefined, isLoading: true }), useAgentConfig: () => ({ data: undefined, save: () => {} }) }));
@@ -17,7 +16,7 @@ it("one section throwing leaves the other sections on the page", () => {
   const quiet = vi.spyOn(console, "error").mockImplementation(() => {});
   render(<VoiceSettings />);
   quiet.mockRestore();
-  expect(screen.getByText("daily ok")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Connect Google Calendar" })).toBeInTheDocument();
   const broken = screen.getByRole("alert");
   expect(broken).toHaveTextContent("Phone PIN");
   expect(broken).toHaveTextContent("couldn't load");

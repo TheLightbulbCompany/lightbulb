@@ -113,7 +113,7 @@ def _no_lifespan_background_workers(request, monkeypatch):
     if request.node.get_closest_marker("real_background_workers"):
         return
     import main
-    from core.services import browser_control, daily_digest, durable_activity, memory_api, needs_you_email, run_ledger
+    from core.services import browser_control, durable_activity, memory_api, run_ledger
     from core.voice import voice_calls
 
     monkeypatch.setattr(main, "run_scheduled_worker", _no_background_work)
@@ -124,8 +124,6 @@ def _no_lifespan_background_workers(request, monkeypatch):
         (browser_control, "run_autosave_sweeper"),
         (voice_calls, "voice_call_sweeper"),
         (memory_api, "run_memory_sweeper"),
-        (daily_digest, "run_digest_sweeper"),
-        (needs_you_email, "run_needs_you_sweeper"),
     ):
         monkeypatch.setattr(module, name, _no_background_work)
 

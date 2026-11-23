@@ -80,10 +80,9 @@ async def test_outbox_failure_returns_error_and_the_retry_admits(env):
     assert await tasks_repo.get_trigger(WS, "mail:<m1@example.com>") is not None
 
 
-@pytest.mark.parametrize("router", ["ses_inbound", "photon_inbound"])
-def test_stranger_caps_stay_in_the_callers_before_admission(router):
+def test_stranger_caps_stay_in_the_callers_before_admission():
     """§14.6: today's stranger caps run in the routers; a capped message never reaches `deliver_to_agent`."""
-    src = (Path(__file__).parents[4] / "routers" / f"{router}.py").read_text()
+    src = (Path(__file__).parents[4] / "routers" / "photon_inbound.py").read_text()
     assert src.index("try_consume_stranger_wake(") < src.index("await deliver_to_agent(")
 
 
@@ -92,21 +91,6 @@ def test_stranger_caps_stay_in_the_callers_before_admission(router):
 
 def _trigger(source, reply):
     return {"triggerId": f"{source}:x", "source": source, "ref": {"agentId": AGENT, "reply": reply}}
-
-
-async def test_deliver_reply_mail_uses_thread():
-    with patch("core.services.agent_mail_reply.send_reply", AsyncMock(return_value="sent")) as send:
-        await source_replies.deliver_reply(WS, _trigger("mail", MAIL_REF), "Paid: invoice 12 went out today.")
-    ctx = send.await_args.kwargs["ctx"]
-    assert ctx == {
-        "owner_id": WS,
-        "agent_id": AGENT,
-        "reply_to": "ada@example.com",
-        "subject": "Invoice 12",
-        "in_reply_to": "<m1@example.com>",
-        "references": None,
-    }
-    assert send.await_args.kwargs["body_text"] == "Paid: invoice 12 went out today."
 
 
 async def test_deliver_reply_text_without_a_rail_raises():
@@ -166,24 +150,10 @@ async def test_deliver_reply_is_idempotent_on_the_routers_event_id():
     assert seen == {"reply:org_1:evt-1"}  # scoped per workspace
 
 
-async def test_a_mail_reply_that_was_not_sent_frees_the_key():
-    """`send_reply` never raises: a `not_sent` answer must still free the key, or the retry is a no-op."""
-    from core.services.webhook_dedup import WebhookDedupResult
-
-    freed = []
-    with (
-        patch("core.services.source_replies.record_event_or_skip", AsyncMock(return_value=WebhookDedupResult.RECORDED)),
-        patch("core.services.source_replies.delete_event", AsyncMock(side_effect=lambda k: freed.append(k))),
-        patch("core.services.agent_mail_reply.send_reply", AsyncMock(return_value="not_sent")),
-    ):
-        with pytest.raises(RuntimeError, match="not_sent"):
-            await source_replies.deliver_reply(WS, _trigger("mail", MAIL_REF), "hello", idempotency_key="evt-2")
-    assert freed == ["reply:org_1:evt-2"]
-
-
 async def test_deliver_reply_without_a_reply_ref_is_a_noop():
-    with patch("core.services.agent_mail_reply.send_reply", AsyncMock()) as send:
-        await source_replies.deliver_reply(WS, _trigger("mail", None), "hello")
+    with patch("core.services.photon.send_text", AsyncMock()) as send:
+        await source_replies.deliver_reply(WS, _trigger("text", None), "hello")
+        await source_replies.deliver_reply(WS, _trigger("mail", MAIL_REF), "hello")  # mail replies are retired
         await source_replies.deliver_reply(WS, {"triggerId": "chat:m", "source": "chat", "ref": {}}, "hello")
     assert not send.called
 

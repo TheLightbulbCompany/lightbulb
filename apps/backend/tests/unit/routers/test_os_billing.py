@@ -919,6 +919,19 @@ async def test_delete_without_an_org_removes_everything_and_the_clerk_user(ddb, 
     assert gone.deleted == ["user_a"] and gone.events.count("account_deleted") == 1
 
 
+async def test_every_account_deletion_path_deletes_the_transcripts(ddb, clock, fake, gone):
+    """cancel_for_deleted_user is shared by DELETE /os/account and account_wipe (Clerk, /users/me, admin)."""
+    from core.voice import os_voice
+
+    await a_spark_account(ddb, fake)
+    t = dynamodb.get_table("spark-transcripts")
+    t.put_item(Item={"user_id": "user_a", "sk": f"1#{SID}#1", "text": "hi"})
+    t.put_item(Item={"user_id": "user_b", "sk": f"1#{SID}#1", "text": "hi"})
+    await os_billing.cancel_for_deleted_user("user_a")
+    assert (await os_voice.get(SID))["endedReason"] == "signed_out"
+    assert [i["user_id"] for i in t.scan()["Items"]] == ["user_b"]
+
+
 async def test_delete_twice_is_204_both_times(ddb, clock, fake, gone):
     await a_spark_account(ddb, fake)
     assert (await req("DELETE", "/os/account", A)).status_code == 204

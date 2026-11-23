@@ -177,10 +177,8 @@ async def delete_account(auth: AuthContext = Depends(get_human_session)) -> Resp
 
     uid = auth.user_id
     try:
-        await os_billing.cancel_for_deleted_user(uid)  # raises before any Spark data is removed
-        for sid in (await os_billing._row(uid)).get(os_voice.ACTIVE) or ():
-            await os_voice.close_and_wait(sid, "signed_out")  # OpenAI gets session.close before the cleanup
-        await os_voice.delete_transcripts(uid)  # after the close: its last turn is saved as the session ends
+        # Stripe first (raises before any Spark data is removed), then open sessions closed, transcripts deleted
+        await os_billing.cancel_for_deleted_user(uid)
         row = await os_billing._row(uid)  # re-read: ending a session adds to os_voice_seconds
         spark = {f"#a{i}": k for i, k in enumerate(k for k in row if k.startswith("os_") and k != "os_deleted_at")}
         if spark:

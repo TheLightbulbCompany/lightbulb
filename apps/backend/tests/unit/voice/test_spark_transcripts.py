@@ -28,6 +28,14 @@ def table(monkeypatch):
             ],
             BillingMode="PAY_PER_REQUEST",
         )
+        sessions = resource.create_table(
+            TableName=dynamodb.table_name("containers"),
+            KeySchema=[{"AttributeName": "owner_id", "KeyType": "HASH"}],
+            AttributeDefinitions=[{"AttributeName": "owner_id", "AttributeType": "S"}],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        for sid in (SID, "vs_2"):
+            sessions.put_item(Item={**os_voice._key(sid), "status": os_voice.ACTIVE, "sessionId": sid})
         monkeypatch.setattr(dynamodb, "_dynamodb_resource", resource)
         yield t
 
@@ -37,8 +45,8 @@ def on(monkeypatch):
     monkeypatch.setattr(settings, "SPARK_TRANSCRIPTS_ENABLED", True)
 
 
-def state(user="user_a"):
-    return {"sessionId": SID, "userId": user, "startedAt": 1_800_000_000, "usageSeconds": 0}
+def state(user="user_a", sid=SID):
+    return {"sessionId": sid, "userId": user, "startedAt": 1_800_000_000, "usageSeconds": 0}
 
 
 def delta(role, text):
@@ -104,12 +112,25 @@ async def test_a_failed_write_never_breaks_the_session(on, monkeypatch, caplog):
 
 
 async def test_delete_removes_only_that_persons_transcripts(table, on):
-    for user in ("user_a", "user_b"):
-        s = state(user)
+    for user, sid in (("user_a", SID), ("user_b", "vs_2")):
+        s = state(user, sid)
         await hear(s, ("user", "hi"))
         await os_voice._flush(s)
     await os_voice.delete_transcripts("user_a")
     assert [r["user_id"] for r in rows(table)] == ["user_b"]
+
+
+async def test_an_ended_session_saves_no_more_turns(table, on, monkeypatch):
+    seen = []
+    monkeypatch.setattr(os_voice, "put_metric", lambda name, **kw: seen.append(name))
+    s = state()
+    await hear(s, ("user", "said before the account was deleted"))
+    table.meta.client.update_item(
+        TableName=dynamodb.table_name("containers"), Key=os_voice._key(SID), UpdateExpression="REMOVE #st",
+        ExpressionAttributeNames={"#st": "status"},
+    )  # fmt: skip
+    await os_voice._flush(s)  # the sideband's late final flush
+    assert rows(table) == [] and seen == []
 
 
 def test_the_script_hides_the_user_id():

@@ -390,14 +390,27 @@ async def _tick(ws, s: dict) -> bool:
 
 
 async def _save_turn(s: dict, role: str, text: str) -> None:
-    """Write one turn. A failure is counted and logged without its text; it never touches the session."""
+    """Write one turn, only while the session is active: an ended one (closed for an account deletion, say)
+    saves nothing more. A failure is counted and logged without its text; it never touches the session."""
     # ponytail: seq starts at this attach's wall-clock ms, so a re-attach (new `s`) sorts after, never overwrites
     seq = s["transcriptSeq"] = s.get("transcriptSeq", time.time_ns() // 1_000_000) + 1
     at = now()
     item = {"user_id": s["userId"], "sk": f"{int(s['startedAt'])}#{s['sessionId']}#{seq:015d}", "role": role}
     item |= {"text": text, "at": at, "sessionId": s["sessionId"], "ttl": at + TRANSCRIPT_TTL_S}
     try:
-        await run_in_thread(get_table(TRANSCRIPTS).put_item, Item=item)
+        table = get_table(TRANSCRIPTS)
+        active = {
+            "TableName": _table().name,
+            "Key": _key(s["sessionId"]),
+            "ConditionExpression": "#st = :active",
+            "ExpressionAttributeNames": {"#st": "status"},
+            "ExpressionAttributeValues": {":active": ACTIVE},
+        }
+        await transact(table, [{"ConditionCheck": active}, {"Put": {"TableName": table.name, "Item": item}}])
+    except ClientError as e:
+        if not is_cancelled(e):
+            put_metric("os_voice.transcript.write_failed")
+            logger.warning("os voice session %s: transcript write failed: %s", s["sessionId"], type(e).__name__)
     except Exception as e:  # noqa: BLE001 -- the type only: the text is never logged
         put_metric("os_voice.transcript.write_failed")
         logger.warning("os voice session %s: transcript write failed: %s", s["sessionId"], type(e).__name__)
@@ -518,6 +531,14 @@ async def run_sideband(sid: str) -> None:
         await _flush(s)  # a dropped or cancelled sideband keeps the turns it heard
 
 
+async def forget(user_id: str, sessions) -> None:
+    """Close the person's open sessions, then delete their saved transcripts. A closed session's sideband can
+    save no more turns (`_save_turn` writes only while the session is active)."""
+    for sid in sessions or ():
+        await close_and_wait(sid, "signed_out")  # OpenAI gets session.close before the cleanup
+    await delete_transcripts(user_id)
+
+
 async def delete_transcripts(user_id: str) -> None:
     """Delete every saved transcript turn of this person (their Spark account is being deleted)."""
 
@@ -528,6 +549,7 @@ async def delete_transcripts(user_id: str) -> None:
                 KeyConditionExpression="user_id = :u",
                 ExpressionAttributeValues={":u": user_id},
                 ProjectionExpression="user_id, sk",
+                ConsistentRead=True,  # includes the turn a closing session saved just before
                 **start,
             )
             with table.batch_writer() as batch:

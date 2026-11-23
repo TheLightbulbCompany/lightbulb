@@ -86,19 +86,29 @@ async def test_interleaved_deltas_become_one_item_per_side_in_spoken_order(table
     assert first["ttl"] == first["at"] + 90 * 86400
 
 
-async def test_a_quick_back_and_forth_keeps_every_turn(table, on):
+async def test_a_late_request_word_stamped_after_the_reply_began_stays_in_the_request(table, on):
+    """Dev, 2026-11-23 re-run: the person's last delta carried a start after Spark's reply began."""
     s = state()
     await hear(
         s,
-        ("user", "Are you there?", 0),
-        ("spark", "Yes.", 500),
-        ("user", "Thanks.", 1000),
-        ("spark", "You are welcome.", 1500),
+        ("user", "Text Sam the beach photos from ", 1800),
+        ("spark", "Sure— ", 3000),
+        ("spark", "could you share Sam's number or open Messages so I can draft it?", 3200),
+        ("user", "today.", 3200),
     )
     await os_voice._flush(s)
     assert [(r["role"], r["text"]) for r in rows(table)] == [
-        ("user", "Are you there?"), ("spark", "Yes."), ("user", "Thanks."), ("spark", "You are welcome."),
-    ]  # fmt: skip
+        ("user", "Text Sam the beach photos from today."),
+        ("spark", "Sure— could you share Sam's number or open Messages so I can draft it?"),
+    ]
+
+
+async def test_a_rapid_back_and_forth_merges_per_side(table, on):
+    """Accepted trade-off (owner): only a side's own silence ends its turn."""
+    s = state()
+    await hear(s, ("user", "Are you there? ", 0), ("spark", "Yes. ", 500), ("user", "Thanks.", 1000))
+    await os_voice._flush(s)
+    assert [(r["role"], r["text"]) for r in rows(table)] == [("user", "Are you there? Thanks."), ("spark", "Yes.")]
 
 
 async def test_a_pause_ends_a_turn(table, on, monkeypatch):

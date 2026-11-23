@@ -389,13 +389,14 @@ async def _tick(ws, s: dict) -> bool:
     return True
 
 
-async def _save_turn(s: dict, role: str, text: str) -> None:
+async def _save_turn(s: dict, role: str, text: str, start_ms: int) -> None:
     """Write one turn, only while the session is active: an ended one (closed for an account deletion, say)
-    saves nothing more. A failure is counted and logged without its text; it never touches the session."""
-    # ponytail: seq starts at this attach's wall-clock ms, so a re-attach (new `s`) sorts after, never overwrites
-    seq = s["transcriptSeq"] = s.get("transcriptSeq", time.time_ns() // 1_000_000) + 1
+    saves nothing more. Turns sort by when they started (ms into the session), so a reply that began before
+    the request's last words arrived still sorts after the request. A failure is counted and logged without
+    its text; it never touches the session."""
     at = now()
-    item = {"user_id": s["userId"], "sk": f"{int(s['startedAt'])}#{s['sessionId']}#{seq:015d}", "role": role}
+    sk = f"{int(s['startedAt'])}#{s['sessionId']}#{start_ms:012d}#{role}"
+    item = {"user_id": s["userId"], "sk": sk, "role": role}
     item |= {"text": text, "at": at, "sessionId": s["sessionId"], "ttl": at + TRANSCRIPT_TTL_S}
     try:
         table = get_table(TRANSCRIPTS)
@@ -416,22 +417,32 @@ async def _save_turn(s: dict, role: str, text: str) -> None:
         logger.warning("os voice session %s: transcript write failed: %s", s["sessionId"], type(e).__name__)
 
 
-async def _flush(s: dict, *roles: str, idle: float = 0.0) -> None:
-    """Save each held turn (of `roles`, default both) whose side has been silent `idle` seconds."""
+async def _flush(s: dict, idle: float = 0.0) -> None:
+    """Save each held turn whose side has been silent `idle` seconds (0: every held turn, at session end)."""
     turns = s.get("turns") or {}
-    for role in roles or tuple(turns):
-        turn = turns.get(role)
-        if turn and time.monotonic() - turn[1] >= idle:
+    for role in tuple(turns):
+        parts, last, start_ms = turns[role]
+        if time.monotonic() - last >= idle:
             del turns[role]
-            if text := "".join(turn[0]).strip():
-                await _save_turn(s, role, text)
+            if text := "".join(parts).strip():
+                await _save_turn(s, role, text, start_ms)
 
 
-async def _transcribe(s: dict, role: str, delta: str) -> None:
-    turns = s.setdefault("turns", {})
-    if role not in turns:  # one side starting a turn ends the other's
-        await _flush(s, "spark" if role == "user" else "user")
-    turn = turns.setdefault(role, [[], 0.0])
+async def _transcribe(s: dict, role: str, delta: str, start_ms) -> None:
+    """Add a delta to its side's turn. A delta spoken before the other side's latest turn began belongs to
+    this side's held turn (Spark often starts replying before the person's last words arrive); one spoken
+    after it starts a new turn, saving the held one. A held turn also ends after its side's silence."""
+    if type(start_ms) is not int:  # no timing on the event: when it arrived, in ms into the session
+        start_ms = max(0, time.time_ns() // 1_000_000 - int(s["startedAt"]) * 1000)
+    turns, starts = s.setdefault("turns", {}), s.setdefault("turnStarts", {})
+    held, other = turns.get(role), starts.get("spark" if role == "user" else "user")
+    if held and other is not None and held[2] < other <= start_ms:  # the other side spoke in between
+        del turns[role]
+        if text := "".join(held[0]).strip():
+            await _save_turn(s, role, text, held[2])
+    if role not in turns:
+        starts[role] = start_ms
+    turn = turns.setdefault(role, [[], 0.0, start_ms])
     turn[0].append(delta)
     turn[1] = time.monotonic()
 
@@ -462,7 +473,7 @@ async def _event(s: dict, raw) -> bool:
             s["expiresAt"] = session["expires_at"]
     elif kind in _ROLES:
         if settings.SPARK_TRANSCRIPTS_ENABLED and isinstance(event.get("delta"), str):
-            await _transcribe(s, _ROLES[kind], event["delta"])
+            await _transcribe(s, _ROLES[kind], event["delta"], event.get("start_ms"))
     elif kind == "session.closed":
         await _flush(s)
         seconds = max(int(s["usageSeconds"]), _seconds(event) or 0)

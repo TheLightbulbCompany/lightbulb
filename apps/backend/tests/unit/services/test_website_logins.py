@@ -15,7 +15,6 @@ import pytest
 from core.auth import AuthContext
 from core.services import activity, website_logins as store
 from core.services.activity import ActivityActionRequest
-from core.services.messaging import ApiProblem
 from tests.unit.repositories.test_messaging_repo import (  # noqa: F401
     FRIDAY,
     OWNER,
@@ -57,11 +56,7 @@ def _dump_everything(resource) -> str:
 
 
 def admin(user=USER_A):
-    return AuthContext(user_id=user, org_id=OWNER, org_role="org:admin")
-
-
-def member(user=USER_A):
-    return AuthContext(user_id=user, org_id=OWNER, org_role="org:member")
+    return AuthContext(user_id=OWNER)
 
 
 @pytest.mark.parametrize("bad", ["", "localhost", "ftp://x.com", "https://x.com:99999"])
@@ -91,15 +86,10 @@ async def test_login_ask_round_trip_through_activity(env):
 
     # The room's human sees a pinned Needs-you item with the secure form.
     rows = await repo.list_activity(OWNER, USER_A, before_sk=None, limit=10)
-    items = await activity._render_rows(OWNER, USER_A, rows, None, admin=True)
+    items = await activity._render_rows(OWNER, USER_A, rows, None)
     item = next(i for i in items if i.kind == "login")
     assert activity.needs_you(item) and item.summary.title == "Friday needs the login for supademo.com"
     assert [a.id for a in item.actions] == ["provide", "decline"] and item.actions[0].input.kind == "login"
-    # A member (not admin) sees it without actions, and cannot answer.
-    viewer = await activity._render_rows(OWNER, USER_A, rows, None, admin=False)
-    assert next(i for i in viewer if i.kind == "login").actions == []
-    with pytest.raises(ApiProblem):
-        await activity.run_action(member(), item.id, "provide", ActivityActionRequest(value="{}"))
 
     assert (await store.poll_request(OWNER, rid))["status"] == "pending"
     done = await activity.run_action(
@@ -274,7 +264,7 @@ async def test_a_login_ask_carries_a_hint_when_the_sites_connector_is_connected(
             OWNER, kind="login", origin=origin, agent_id=FRIDAY, room_id=None, thread_root_message_id=None
         )
     row = await store.get_request(OWNER, created["requestId"])
-    item = activity.render_login_request(row, seen=None, admin=True)
+    item = activity.render_login_request(row, seen=None)
     assert item.actions[0].input.hint == hint
     assert item.model_dump(by_alias=True)["actions"][0]["input"]["hint"] == hint
 

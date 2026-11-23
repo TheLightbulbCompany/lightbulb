@@ -90,7 +90,6 @@ from typing import Awaitable, Callable, Literal
 import boto3
 import httpx
 
-from core.auth import is_org_owner_id
 from core.billing.bedrock_gate_tokens import delete_gate_token_rows, owner_gate_token_hashes
 from core.billing.metronome_client import for_settings as metronome_for_settings
 from core.billing.metronome_fast_gate import MetronomeFastGate
@@ -397,7 +396,7 @@ async def _read_identifiers(owner_id: str, *, read_clerk: bool = True) -> _Ident
 
 
 def _refuse_org_owners(owner_id: str) -> None:
-    if is_org_owner_id(owner_id):
+    if owner_id.startswith("org_"):  # a Clerk organization id: `workspace_wipe` is its door
         raise OrgWipeUnsupportedError(owner_id)
     if not _USER_ID.fullmatch(owner_id or ""):
         raise MalformedUserIdError(owner_id)
@@ -407,7 +406,7 @@ async def _workspaces_of(user_id: str) -> list[str]:
     """The human's workspaces from Clerk. Strict: a read failure raises, and
     the wipe stops before its first step instead of guessing "none"."""
     orgs = await clerk_admin.list_user_organizations(user_id, strict=True)
-    return sorted({o["id"] for o in orgs if o.get("id") and is_org_owner_id(o["id"])})
+    return sorted({o["id"] for o in orgs if o.get("id") and o["id"].startswith("org_")})
 
 
 def _org_hint_for_missing_container(workspaces: list[str]) -> str:

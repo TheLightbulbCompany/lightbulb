@@ -9,8 +9,14 @@ from core.auth import AuthContext
 from routers import billing
 
 
+@pytest.fixture(autouse=True)
+def no_trial_row(monkeypatch):
+    """The trial row's create-if-absent is the billing store's; these tests mock the billing reads."""
+    monkeypatch.setattr(billing, "_ensure_person_trial", AsyncMock())
+
+
 def _admin():
-    return AuthContext(user_id="user_admin", org_id="org_1", org_role="org:admin", email="admin@example.com")
+    return AuthContext(user_id="user_admin", email="admin@example.com")
 
 
 def test_legacy_subscription_checkout_routes_are_not_registered():
@@ -21,29 +27,11 @@ def test_legacy_subscription_checkout_routes_are_not_registered():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("plan", ["workspace"])
-async def test_org_admin_can_start_workspace_checkout(plan, monkeypatch):
-    monkeypatch.setattr(
-        billing,
-        "_get_billing_account",
-        AsyncMock(return_value={"owner_id": "org_1", "stripe_customer_id": "cus_1"}),
-    )
-    create = AsyncMock(return_value={"checkout_url": "https://checkout.test/cs_1"})
-    with patch("core.services.billing_service.create_workspace_checkout", new=create):
-        result = await billing.create_workspace_checkout(billing.CheckoutRequest(plan=plan), auth=_admin())
-
-    assert result == {"checkout_url": "https://checkout.test/cs_1"}
-    create.assert_awaited_once_with(
-        owner_id="org_1", clerk_user_id="user_admin", plan=plan, return_to="web", confirm=False, then=None
-    )
-
-
-@pytest.mark.asyncio
 async def test_workspace_checkout_passes_return_to_app_through(monkeypatch):
     monkeypatch.setattr(
         billing,
         "_get_billing_account",
-        AsyncMock(return_value={"owner_id": "org_1", "stripe_customer_id": "cus_1"}),
+        AsyncMock(return_value={"owner_id": "user_admin", "stripe_customer_id": "cus_1"}),
     )
     create = AsyncMock(return_value={"checkout_url": "https://checkout.test/cs_1"})
     with patch("core.services.billing_service.create_workspace_checkout", new=create):
@@ -53,7 +41,7 @@ async def test_workspace_checkout_passes_return_to_app_through(monkeypatch):
 
     assert result == {"checkout_url": "https://checkout.test/cs_1"}
     create.assert_awaited_once_with(
-        owner_id="org_1", clerk_user_id="user_admin", plan="workspace", return_to="app", confirm=False, then=None
+        owner_id="user_admin", clerk_user_id="user_admin", plan="workspace", return_to="app", confirm=False, then=None
     )
 
 
@@ -64,29 +52,11 @@ async def test_workspace_checkout_rejects_an_unknown_return_to(async_client):
 
 
 @pytest.mark.asyncio
-async def test_workspace_checkout_rejects_a_member():
-    member = AuthContext(user_id="user_member", org_id="org_1", org_role="org:member")
-    with pytest.raises(HTTPException) as exc:
-        await billing.create_workspace_checkout(billing.CheckoutRequest(plan="workspace"), auth=member)
-    assert exc.value.status_code == 403
-
-
-@pytest.mark.asyncio
-async def test_workspace_checkout_requires_an_active_workspace():
-    with pytest.raises(HTTPException) as exc:
-        await billing.create_workspace_checkout(
-            billing.CheckoutRequest(plan="workspace"), auth=AuthContext(user_id="user_1")
-        )
-    assert exc.value.status_code == 409
-    assert exc.value.detail["code"] == "workspace_required"
-
-
-@pytest.mark.asyncio
 async def test_workspace_checkout_returns_same_plan_noop(monkeypatch):
     monkeypatch.setattr(
         billing,
         "_get_billing_account",
-        AsyncMock(return_value={"owner_id": "org_1", "stripe_customer_id": "cus_1"}),
+        AsyncMock(return_value={"owner_id": "user_admin", "stripe_customer_id": "cus_1"}),
     )
     create = AsyncMock(return_value={"updated": False})
     with patch("core.services.billing_service.create_workspace_checkout", new=create):
@@ -101,7 +71,11 @@ async def test_workspace_checkout_refuses_an_apple_billed_workspace(monkeypatch)
         billing,
         "_get_billing_account",
         AsyncMock(
-            return_value={"owner_id": "org_1", "stripe_customer_id": "cus_1", "apple_subscription_status": "active"}
+            return_value={
+                "owner_id": "user_admin",
+                "stripe_customer_id": "cus_1",
+                "apple_subscription_status": "active",
+            }
         ),
     )
     create = AsyncMock(return_value={"checkout_url": "https://checkout.test/cs_1"})

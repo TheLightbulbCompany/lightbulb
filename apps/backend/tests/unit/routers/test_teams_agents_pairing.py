@@ -6,7 +6,7 @@ import pytest
 
 from core.auth import AuthContext
 
-_AUTH = AuthContext(user_id="user_member_b", org_id="org_xyz")
+_AUTH = AuthContext(user_id="org_xyz")
 _AGENT = {"id": "agent-1", "name": "Ada", "role": "engineer", "reportsTo": None}
 
 
@@ -42,7 +42,7 @@ async def test_teams_patch_agent_refreshes_soul_only_on_identity_edits(monkeypat
 
     assert refresh.await_count == (1 if expected else 0)
     if expected:
-        refresh.assert_awaited_once_with("org_xyz", "agent-1", by="user_member_b")
+        refresh.assert_awaited_once_with("org_xyz", "agent-1", by="org_xyz")
 
 
 def test_soul_fields_covers_every_field_build_soul_md_renders():

@@ -210,44 +210,6 @@ async def test_is_internal_clerk_lookup_failure_is_false_and_not_cached():
     assert mock_email.await_count == 2
 
 
-async def test_is_internal_org_owner_resolves_via_clerk_created_by():
-    """Org owners resolve through the org's Clerk created_by user — that
-    user's primary email decides internal vs customer."""
-    with (
-        patch.object(
-            run_analytics.clerk_admin, "get_organization", AsyncMock(return_value={"created_by": "user_founder"})
-        ) as mock_org,
-        patch.object(
-            run_analytics.clerk_admin, "get_primary_email", AsyncMock(return_value="founder@thelightbulb.company")
-        ) as mock_email,
-    ):
-        assert await run_analytics._is_internal_owner("org_abc") is True
-    mock_org.assert_awaited_once_with("org_abc")
-    mock_email.assert_awaited_once_with("user_founder")
-
-    with (
-        patch.object(
-            run_analytics.clerk_admin, "get_organization", AsyncMock(return_value={"created_by": "user_cust"})
-        ),
-        patch.object(run_analytics.clerk_admin, "get_primary_email", AsyncMock(return_value="cust@acme.com")),
-    ):
-        assert await run_analytics._is_internal_owner("org_customer") is False
-
-
-async def test_is_internal_org_lookup_miss_is_false_and_not_cached():
-    """A None org (Clerk 404/outage) or missing created_by must not stick for
-    an hour — the next call re-queries."""
-    with patch.object(run_analytics.clerk_admin, "get_organization", AsyncMock(return_value=None)) as mock_org:
-        assert await run_analytics._is_internal_owner("org_abc") is False
-        assert "org_abc" not in run_analytics._internal_cache
-        assert await run_analytics._is_internal_owner("org_abc") is False
-    assert mock_org.await_count == 2
-
-    with patch.object(run_analytics.clerk_admin, "get_organization", AsyncMock(return_value={"id": "org_abc"})):
-        assert await run_analytics._is_internal_owner("org_abc") is False
-    assert "org_abc" not in run_analytics._internal_cache
-
-
 async def test_is_internal_lands_on_the_event():
     kwargs = await _emit({"agent_id": "a", "source": "webchat"}, is_internal=True)
     assert kwargs["properties"]["is_internal"] is True

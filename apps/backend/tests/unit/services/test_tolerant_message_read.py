@@ -67,7 +67,7 @@ async def test_room_lists_around_a_malformed_message(monkeypatch):
     rows = [_row(1), _row(2, via="rolled_back_value"), _row(3, roomRevision="nope"), _row(4)]
     monkeypatch.setattr(messaging, "require_room_member", AsyncMock(return_value=({"roomId": ROOM}, {})))
     monkeypatch.setattr(messaging.messaging_repo, "list_messages", AsyncMock(return_value=(rows, None)))
-    page = await messaging.list_messages(AuthContext(user_id="user_sam", org_id="org_1"), ROOM, 0, 50)
+    page = await messaging.list_messages(AuthContext(user_id="org_1"), ROOM, 0, 50)
     assert [m.message_seq for m in page.messages] == [1, 2, 4]  # 3's core field is broken: skipped, logged
 
 

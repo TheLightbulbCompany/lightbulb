@@ -5,8 +5,6 @@ failed' -> get a pre-filled automation."
 machinery via ``core/services/inbound_triggers.py``. Gated the same way as
 every other trigger-creation path in the system:
 
-- ``require_org_admin`` — wiring an integration trigger is an admin action,
-  same posture as every mutating endpoint in ``routers/connections.py``.
 - ``require_always_on_entitlement`` — a webhook trigger IS always-on
   automation: a trial container scales to zero and never wakes to serve a triggered dispatch.
 
@@ -33,9 +31,9 @@ from ulid import ULID
 from core.temporal import client as temporal_client
 from core.temporal.automations import SKIP_TEXTS, FireInput
 
-from core.auth import AuthContext, get_current_user, require_org_admin, resolve_owner_id
+from core.auth import AuthContext, get_current_user, resolve_owner_id
 from core.config import settings
-from core.repositories import automations_repo, messaging_repo, tasks_repo
+from core.repositories import automations_repo, tasks_repo
 from core.repositories.tasks_repo import IllegalTransition, VersionConflict
 from core.services.inbound_triggers import (
     seed_trigger_routine,
@@ -110,7 +108,6 @@ async def from_integration(
 ) -> dict:
     """Arm a webhook-triggered automation from a connected integration's events (a ``HOOK#`` row) —
     or, with ``routine_id``, add them to an automation the owner already has."""
-    require_org_admin(auth)
     owner_id = resolve_owner_id(auth)
     await require_always_on_entitlement(owner_id, message=WEBHOOK_AUTOMATIONS_MESSAGE)
     try:
@@ -142,7 +139,6 @@ async def set_webhook_secret(
 
     Stores the secret and arms the caller's ``HOOK#`` row for ``public_id`` (404 when there is none).
     """
-    require_org_admin(auth)
     owner_id = resolve_owner_id(auth)
 
     # Same path-injection / unbounded-key guard the proxy fire route uses
@@ -243,41 +239,10 @@ async def _ws(auth: AuthContext) -> str:
     return ws
 
 
-def _may_edit(row: dict, auth: AuthContext) -> None:
-    if not (auth.is_org_admin or row.get("ownerUserId") == auth.user_id):
-        raise _err(403, "forbidden")
-
-
-def _may_activate(row: dict, auth: AuthContext) -> None:
-    """Turning an automation on: a room automation runs for everyone in the room, so an org admin (the
-    Router's proposal is deliverTo=room with ownerUserId=requester); a personal one, its owner only."""
-    # A room automation, or one the workspace itself owns (the proactive layer: owner id = the workspace).
-    if (row.get("deliverTo") or "none").startswith("room:") or row.get("ownerUserId") == auth.org_id:
-        require_org_admin(auth)
-    elif row.get("ownerUserId") != auth.user_id:
-        raise _err(403, "forbidden")
-
-
-async def _visible(row: dict, auth: AuthContext) -> bool:
-    """Who sees an automation: its owner, an org admin, and the members of the room it delivers to. A rule's
-    audience is the rooms it watches; a personal (calendar) rule is its owner's alone (lead, 5 Nov)."""
-    match = row.get("match") or {}
-    if "calendar" in match.get("sources", []):
-        return row.get("ownerUserId") == auth.user_id
-    if auth.is_org_admin or row.get("ownerUserId") == auth.user_id:
-        return True
-    deliver_to = row.get("deliverTo") or "none"
-    rooms = [deliver_to.removeprefix("room:")] if deliver_to.startswith("room:") else []
-    for room_id in [*rooms, *(match.get("roomIds") or [])]:
-        if await messaging_repo.get_member(room_id, "human", auth.user_id) is not None:
-            return True
-    return False
-
-
-async def _row(ws: str, sid: str, auth: AuthContext) -> dict:
+async def _row(ws: str, sid: str) -> dict:
     row = await automations_repo.get_schedule(ws, sid)
-    if row is None or not await _visible(row, auth):
-        raise _err(404, "not_found")  # hidden reads as missing, as the task routes do
+    if row is None:
+        raise _err(404, "not_found")
     return row
 
 
@@ -375,23 +340,19 @@ async def _activate(ws: str, row: dict) -> dict:
     return row
 
 
-async def _may_turn_on_rule(ws: str, row: dict, auth: AuthContext) -> None:
-    """Who turns a rule on (contracts §18; lead, 5 Nov): a personal (calendar) rule its owner alone, a room rule
-    an org admin, within the room cap. 403 / 409 otherwise. Typed text never gets here (C20)."""
+async def _check_rule_scope(ws: str, row: dict) -> None:
+    """A room rule turns on within the room cap (contracts §18); a personal (calendar) rule has no scope. 409
+    otherwise. Typed text never gets here (C20)."""
     match = row["match"]
-    if "calendar" in match.get("sources", []):
-        if row.get("ownerUserId") != auth.user_id:
-            raise _err(403, "forbidden")
-    else:
-        require_org_admin(auth)
+    if "calendar" not in match.get("sources", []):
         await check_scope(
             ws, row["ownerUserId"], RuleMatchIn.model_validate(match), row.get("builtin"), except_sid=row["scheduleId"]
         )
 
 
-async def _turn_on_rule(ws: str, row: dict, auth: AuthContext) -> dict:
+async def _turn_on_rule(ws: str, row: dict) -> dict:
     """A rule turns on in observe, always."""
-    await _may_turn_on_rule(ws, row, auth)
+    await _check_rule_scope(ws, row)
     row = await _activate(ws, row)
     if row.get("mode") != "observe":
         row = await automations_repo.update_schedule(
@@ -403,7 +364,7 @@ async def _turn_on_rule(ws: str, row: dict, auth: AuthContext) -> dict:
 @router.get("")
 async def list_automations(auth: AuthContext = Depends(get_current_user)) -> dict:
     ws = await _ws(auth)
-    rows = [r for r in await automations_repo.list_schedules(ws) if await _visible(r, auth)]
+    rows = await automations_repo.list_schedules(ws)
     rows.sort(key=lambda r: r.get("createdAt") or "", reverse=True)
     return {"automations": [await _view(ws, r) for r in rows]}
 
@@ -413,8 +374,7 @@ async def create_automation(body: AutomationIn, auth: AuthContext = Depends(get_
     ws = await _ws(auth)
     check_dm_owner(body.deliver_to, auth.user_id)
     await check_deliver_room(body.deliver_to, ws, auth.user_id)
-    if body.events:  # a webhook on a provider is an org-admin act, as `from_integration` is today
-        require_org_admin(auth)
+    if body.events:
         unknown = sorted({ev.provider for ev in body.events} - registry.all_providers().keys())
         if unknown:
             raise _err(400, "invalid_trigger", message=f"unknown integration provider: {unknown[0]!r}")
@@ -473,21 +433,19 @@ async def create_automation(body: AutomationIn, auth: AuthContext = Depends(get_
     if body.activate:
         try:
             if row.get("match"):
-                await _may_turn_on_rule(ws, row, auth)
-            else:
-                _may_activate(row, auth)
+                await _check_rule_scope(ws, row)
             await require_always_on_entitlement(ws, message=_ACTIVATE_MESSAGE)
         except HTTPException:
             await _destroy(ws, sid)  # not turned on: nothing of it is kept
             raise
-        row = await (_turn_on_rule(ws, row, auth) if row.get("match") else _activate(ws, row))
+        row = await (_turn_on_rule(ws, row) if row.get("match") else _activate(ws, row))
     return {**await _view(ws, row), "setup": setup}
 
 
 @router.get("/{sid}")
 async def get_automation(sid: str, auth: AuthContext = Depends(get_current_user)) -> dict:
     ws = await _ws(auth)
-    return await _view(ws, await _row(ws, sid, auth))
+    return await _view(ws, await _row(ws, sid))
 
 
 @router.get("/{sid}/runs")
@@ -496,7 +454,7 @@ async def list_runs(sid: str, auth: AuthContext = Depends(get_current_user)) -> 
     from core.engine.api import _summary  # O's TaskSummary builder (names open answerers)
 
     ws = await _ws(auth)
-    row = await _row(ws, sid, auth)
+    row = await _row(ws, sid)
     ids = [t for t in [row.get("activeRunTaskId"), *(row.get("runTaskIds") or [])] if t]
     runs = []
     for task_id in dict.fromkeys(ids):
@@ -512,8 +470,7 @@ async def list_runs(sid: str, auth: AuthContext = Depends(get_current_user)) -> 
 @router.patch("/{sid}")
 async def patch_automation(sid: str, body: AutomationPatch, auth: AuthContext = Depends(get_current_user)) -> dict:
     ws = await _ws(auth)
-    row = await _row(ws, sid, auth)
-    _may_edit(row, auth)
+    row = await _row(ws, sid)
     fields: dict = {}
     if body.name is not None:
         fields["name"] = body.name.strip()
@@ -559,12 +516,11 @@ async def patch_automation(sid: str, body: AutomationPatch, auth: AuthContext = 
 @router.post("/{sid}/resume")
 async def activate_automation(sid: str, auth: AuthContext = Depends(get_current_user)) -> dict:
     ws = await _ws(auth)
-    row = await _row(ws, sid, auth)
+    row = await _row(ws, sid)
     if row.get("match"):
-        await _may_turn_on_rule(ws, row, auth)
+        await _check_rule_scope(ws, row)
         await require_always_on_entitlement(ws, message=_ACTIVATE_MESSAGE)
-        return await _view(ws, await _turn_on_rule(ws, row, auth))
-    _may_activate(row, auth)
+        return await _view(ws, await _turn_on_rule(ws, row))
     await require_always_on_entitlement(ws, message=_ACTIVATE_MESSAGE)
     return await _view(ws, await _activate(ws, row))
 
@@ -572,8 +528,7 @@ async def activate_automation(sid: str, auth: AuthContext = Depends(get_current_
 @router.post("/{sid}/pause")
 async def pause_automation(sid: str, auth: AuthContext = Depends(get_current_user)) -> dict:
     ws = await _ws(auth)
-    row = await _row(ws, sid, auth)
-    _may_edit(row, auth)
+    row = await _row(ws, sid)
     try:
         row = await automations_repo.set_status(ws, sid, "paused", reason=None, allowed_from=frozenset({"active"}))
     except IllegalTransition as exc:
@@ -594,7 +549,7 @@ async def _destroy(ws: str, sid: str) -> None:
 @router.delete("/{sid}", status_code=204)
 async def delete_automation(sid: str, auth: AuthContext = Depends(get_current_user)) -> Response:
     ws = await _ws(auth)
-    _may_edit(await _row(ws, sid, auth), auth)
+    await _row(ws, sid)
     await _destroy(ws, sid)
     return Response(status_code=204)
 
@@ -603,8 +558,7 @@ async def delete_automation(sid: str, auth: AuthContext = Depends(get_current_us
 async def run_now(sid: str, auth: AuthContext = Depends(get_current_user)) -> dict:
     """Run now: today's chat gate first (§14.10), one run at a time, then a `TriggerFireWorkflow`."""
     ws = await _ws(auth)
-    row = await _row(ws, sid, auth)
-    _may_edit(row, auth)
+    row = await _row(ws, sid)
     if row.get("match"):
         raise _err(409, "rule_never_runs")  # observe records; Run now would be the fire path
     if row["status"] != "active":

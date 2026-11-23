@@ -135,11 +135,8 @@ def asks(mode: str, kind: str, operands: dict, *, members: Collection[str] = (),
 
 
 async def member_emails(ws: str) -> set[str]:
-    """The workspace members' primary emails, lower-case, strictly read (a Clerk error raises: the caller asks)."""
-    if not ws.startswith("org_"):
-        return {(await clerk_admin.get_primary_email(ws)).lower()}
-    members = await clerk_admin.list_organization_members(ws, strict=True)
-    return {m["email"].lower() for m in members if m.get("email")}
+    """The person's primary email, lower-case, strictly read (a Clerk error raises: the caller asks)."""
+    return {(await clerk_admin.get_primary_email(ws)).lower()}
 
 
 #: The operand an Always-allow rule binds to: the recipient, app, repo or agent.
@@ -271,11 +268,8 @@ def qid_for(idem_key: str) -> str:
 
 
 async def _members(ws: str) -> dict[str, str]:
-    """{user_id: role} of the workspace, strictly read (a Clerk error raises, never reads as "nobody")."""
-    if not ws.startswith("org_"):
-        return {ws: "org:admin"}  # a personal workspace's owner is its only member and admin
-    members = await clerk_admin.list_organization_members(ws, strict=True)
-    return {m["user_id"]: m.get("role") or "" for m in members if m.get("user_id")}
+    """{user_id: role} of the workspace: the person is its only member and admin."""
+    return {ws: "org:admin"}
 
 
 async def _admins(ws: str) -> list[str]:

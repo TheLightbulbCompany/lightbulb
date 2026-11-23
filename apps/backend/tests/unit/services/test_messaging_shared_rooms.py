@@ -122,7 +122,7 @@ def test_feature_off_means_no_room_is_ever_shared(monkeypatch):
 @pytest.mark.asyncio
 async def test_vendor_room_membership_and_name_are_platform_managed(vendor, monkeypatch):
     meta = {**META, "roomId": messaging.messaging_repo.vendor_room_id(CUSTOMER)}
-    auth = AuthContext(user_id="user_c", org_id=CUSTOMER)
+    auth = AuthContext(user_id=CUSTOMER)
     monkeypatch.setattr(
         messaging, "require_room_admin", AsyncMock(return_value=(meta, _human("user_c", CUSTOMER, "owner")))
     )
@@ -146,7 +146,7 @@ async def test_vendor_room_membership_and_name_are_platform_managed(vendor, monk
 @pytest.mark.asyncio
 async def test_vendor_room_still_lets_admins_change_the_agents_listen_mode(vendor, monkeypatch):
     meta = {**META, "roomId": messaging.messaging_repo.vendor_room_id(CUSTOMER)}
-    auth = AuthContext(user_id="user_c", org_id=CUSTOMER)
+    auth = AuthContext(user_id=CUSTOMER)
     agent = {
         "kind": "agent",
         "id": str(uuid.uuid4()),
@@ -190,7 +190,7 @@ async def test_attachment_download_reads_the_rooms_owner_workspace_not_the_calle
             (SimpleNamespace(content_type="image/png", file_name="a.png"), b"x"),
         )[1],
     )
-    response = await router.get_room_attachment(ROOM, str(uuid.uuid4()), AuthContext(user_id="user_v", org_id=VENDOR))
+    response = await router.get_room_attachment(ROOM, str(uuid.uuid4()), AuthContext(user_id=VENDOR))
     assert response.status_code == 200 and seen == [CUSTOMER]
 
 
@@ -225,7 +225,7 @@ async def test_a_foreign_members_message_is_written_under_the_rooms_owner(monkey
         lambda owner, item: captured.append(owner) or _noop(),
     )
     await messaging.create_human_message(
-        AuthContext(user_id="user_v", org_id=VENDOR),
+        AuthContext(user_id=VENDOR),
         ROOM,
         messaging.CreateMessageRequest(
             client_message_id=uuid.uuid4(),
@@ -260,7 +260,7 @@ async def test_a_foreign_admin_can_only_add_the_rooms_own_org_members(monkeypatc
     monkeypatch.setattr(messaging, "_room_detail", AsyncMock(return_value="detail"))
 
     await messaging.upsert_member(
-        AuthContext(user_id="user_v", org_id=VENDOR),
+        AuthContext(user_id=VENDOR),
         ROOM,
         messaging.UpsertRoomMemberRequest(kind="agent", id=agent_id, role="member", listen_mode="mentions"),
     )

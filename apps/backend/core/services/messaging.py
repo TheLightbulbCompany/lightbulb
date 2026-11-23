@@ -43,7 +43,8 @@ from core.dynamodb import run_in_thread
 from core.repositories import billing_repo, container_repo, messaging_repo
 from core.services.person_label import email_label, is_relay_email
 from core.services.push_service import send_push_to_user
-from core.services import clerk_admin, hermes_profiles, run_analytics
+from core.services import hermes_profiles, run_analytics
+from core.services.workspace_name import saved_name
 from core.engine import hooks
 from core.engine.contract import PRODUCT_META_FIELDS, MessageVia
 from core.engine.hooks import ContextAsk, EngineEvent
@@ -132,20 +133,6 @@ _FIRST_MESSAGE = (
     "Hi, I'm Lightbulb. I answer your calls, book appointments and take messages. "
     'Ask me anything, like "Who called today?" or "What\'s on tomorrow?"'
 )
-
-
-#: Posted once by the CEO in #general after the first finished run, while the workspace has one
-#: person (08 §3, screen 6). Static on purpose: a model-written ask would not fire reliably or be
-#: measurable. The link renders as the inline invite card on the web (``RoomAppLinks``).
-INVITE_ASK = (
-    "Who should see this with you? Add them now and they'll see the plan the moment it's ready, "
-    "and can approve it with you."
-)
-INVITE_ASK_MARKER = "invite-ask"
-
-
-def invite_ask_text() -> str:
-    return f"{INVITE_ASK}\n\n[Invite someone]({settings.FRONTEND_URL.rstrip('/')}/chat?panel=invite)"
 
 
 #: Super-agent (UX slice 6): the welcome and its first-reply chips sit in the owner's Lightbulb DM, marked by this
@@ -1792,13 +1779,7 @@ async def _touch_last_interactive_quietly(owner_id: str) -> None:
 
 
 async def _validate_human_in_owner(owner_id: str, user_id: str) -> None:
-    if owner_id == user_id:
-        return
-    if not owner_id.startswith("org_"):
-        raise ApiProblem("MEMBER_NOT_FOUND", "That human is not in this workspace.")
-    from core.services.clerk_admin import list_user_organizations
-
-    if not any(org.get("id") == owner_id for org in await list_user_organizations(user_id, limit=100)):
+    if owner_id != user_id:  # the tenant is one person
         raise ApiProblem("MEMBER_NOT_FOUND", "That human is not in this workspace.")
 
 
@@ -2308,10 +2289,10 @@ async def ensure_default_room(owner_id: str, owner_user_id: str) -> str | None:
     )
     client_room_id = f"workspace-bootstrap-v2:{owner_id}"
     # Resolve the welcome BEFORE the room exists: an empty room is visible the moment
-    # create_room returns, and a Clerk call that pauses there would let the owner's
+    # create_room returns, and a read that pauses there would let the owner's
     # first message take seq 1 -- which hides the starter chips for good.
-    org = await clerk_admin.get_organization(owner_id) or {}
-    welcome = default_room_welcome(org.get("name"))
+    name = await saved_name(owner_id)
+    welcome = default_room_welcome(name)
     if existing_room is None:
         await messaging_repo.ensure_user_stream(owner_id, owner_user_id)
         normalized = [{key: member.get(key) for key in ("kind", "id", "role", "listenMode")} for member in members]
@@ -2334,7 +2315,7 @@ async def ensure_default_room(owner_id: str, owner_user_id: str) -> str | None:
         # Super-agent (UX slice 6): the owner's first run is a chat with Lightbulb, in their DM. The DM goes
         # first: #general's message is the "done" signal above, so a failure in between redoes this, idempotently.
         await _post_first_run_welcome(owner_id, owner_user_id, front, welcome)
-        welcome, attrs = team_welcome(org.get("name")), {"kind": TEAM_WELCOME_KIND}
+        welcome, attrs = team_welcome(name), {"kind": TEAM_WELCOME_KIND}
     await messaging_repo.create_message(
         room_id=room_id,
         owner_id=owner_id,
@@ -2590,9 +2571,9 @@ async def patch_room(auth: AuthContext, room_id: str, request: PatchRoomRequest)
         if chat_project
         else kind == "group-dm" and not updates and request.paused is None  # archive/unarchive a group chat
     )
-    # Pause/resume alone: a workspace admin may do it too (UX slice 6), but never someone's private DM.
+    # Pause/resume alone: the person may do it too (UX slice 6), but never on a private DM.
     pause_only = request.paused is not None and not updates and request.archived is None
-    if not room_admin and not member_may and not feed_brief and not (pause_only and auth.is_org_admin and kind != "dm"):
+    if not room_admin and not member_may and not feed_brief and not (pause_only and kind != "dm"):
         raise ApiProblem("ROOM_FORBIDDEN", "Room owner or admin access required.")
     # A DM's display name is derived from its counterpart; a stored name would
     # shadow it with nothing in the UI able to clear it. (Finding from #2483,
@@ -4685,10 +4666,6 @@ async def handle_run_event(owner_id: str, event: RunEventRequest) -> RunEventRes
                 await _after_run_ended(owner_id, row, event.outcome, event.usage)
             except Exception:
                 logger.exception("run post-processing failed")
-            try:
-                await ask_who_should_see(owner_id, row, event.outcome)
-            except Exception:
-                logger.exception("invite ask failed")
     if not applied and await messaging_repo.get_run(owner_id, run_id) is None:
         put_metric("messaging.run.callback", dimensions={"type": event.type, "outcome": "unknown"})
         raise ApiProblem("RUN_NOT_FOUND", "Run not found.")
@@ -4794,61 +4771,6 @@ async def _after_run_ended(owner_id: str, row: dict, outcome: str, usage: RunUsa
             )
         except Exception:
             logger.exception("run failure push failed")
-
-
-async def ask_who_should_see(owner_id: str, row: dict, outcome: str) -> None:
-    """After the first completed run in #general of a one-person workspace, the CEO asks
-    "Who should see this with you?" with the invite card -- once per workspace, ever.
-
-    The marker is claimed before the Clerk read so a busy #general costs one failed
-    conditional put per run afterwards; a read that cannot answer releases it to retry.
-    A workspace that already has two people keeps the marker: the ask is for one person."""
-    room_id = row.get("roomId")
-    if outcome != "completed" or not room_id:
-        return
-    general = default_room_id(owner_id)
-    front = await _front_agent_id(owner_id)
-    # Super-agent: the first run is in the owner's Lightbulb DM. In a one-person workspace (checked below) any DM
-    # with Lightbulb is that DM. The marker stays on #general's id either way: one ask per workspace.
-    if room_id != general and not (front and ((await messaging_repo.get_room(room_id)) or {}).get("kind") == "dm"):
-        return
-    if not await messaging_repo.claim_room_marker(general, INVITE_ASK_MARKER):
-        return
-    org = await clerk_admin.get_organization(owner_id, include_members_count=True)
-    if org is None or org.get("members_count") is None:
-        await messaging_repo.release_room_marker(general, INVITE_ASK_MARKER)
-        return
-    if org["members_count"] != 1:
-        return
-    from core.repositories.workspace_repo import WorkspaceRepo
-
-    company = await WorkspaceRepo().resolve_owner_row(owner_id)
-    ceo_id = (getattr(company, "starter_agent_ids", None) or {}).get("ceo") if company else None
-    if not ceo_id or await messaging_repo.get_member(room_id, "agent", ceo_id) is None:
-        return  # a legacy roster or a CEO removed from #general: nobody to ask in its voice
-    name = (
-        FRONT_AGENT_NAME  # super-agent: every post in a people's room is Lightbulb's
-        if front
-        else next((a["name"] for a in await load_agent_roster(owner_id) if a["id"] == ceo_id), "Lightbulb")
-    )
-    text = invite_ask_text()
-    await messaging_repo.create_message(
-        room_id=room_id,
-        owner_id=owner_id,
-        idemp_pk=messaging_repo.room_pk(room_id),
-        idemp_sk=messaging_repo.human_idemp_sk("__system__", f"{room_id}:{INVITE_ASK_MARKER}"),
-        req_hash=messaging_repo.request_hash(text, ceo_id),
-        author={"kind": "agent", "id": ceo_id, "displayName": name},
-        text=text,
-        mentions=[],
-        reply_to_message_id=None,
-        thread_root_message_id=None,
-        run_id=None,
-        dispatch_targets=[],
-        source_agent_id=ceo_id,
-        client_message_id=None,
-    )
-    put_metric("messaging.invite_ask.posted")
 
 
 async def require_agent_in_live_room(owner_id: str, room_id: str, agent_id: str) -> None:
@@ -5483,29 +5405,17 @@ async def _agent_dm_room_id(owner_id: str, user_id: str, agent_id: str, *, meta_
 
 
 async def _user_for_handle(owner_id: str, handle: str) -> str:
-    """A workspace member by messaging handle, derived exactly as rooms derive it.
+    """The tenant's person by messaging handle, derived exactly as rooms derive it.
 
     ponytail: handles are per-room derived (see ``with_human_handles``), so this uses the
     workspace-wide derivation; two humans whose handles collide only in some room still
     resolve here. Pass ``userId`` when a handle is ambiguous."""
-    from core.services.clerk_admin import list_organization_members
-
-    people = await list_organization_members(owner_id)
-    if not people:
-        raise ApiProblem("RUNTIME_UNAVAILABLE", "Could not read workspace members.", retryable=True, retry_after=3)
     agents = [
         {"kind": "agent", "mentionHandle": h}
         for h in (await _handles_for(owner_id, await load_agent_roster(owner_id))).values()
     ]
-    humans = [
-        {
-            "kind": "human",
-            "id": p["user_id"],
-            "displayName": " ".join(x for x in (p.get("first_name"), p.get("last_name")) if x) or p["user_id"],
-        }
-        for p in people
-    ]
-    emails = {p["user_id"]: p["email"] for p in people if p.get("email")}
+    humans = [{"kind": "human", "id": owner_id, "displayName": await human_display_name(owner_id)}]
+    emails = await human_emails(humans)
     wanted = handle.removeprefix("@").lower()
     for row in with_human_handles(agents + humans, emails):
         if row["kind"] == "human" and row["mentionHandle"] == wanted:

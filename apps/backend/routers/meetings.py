@@ -20,7 +20,7 @@ from core.engine import engine
 from core.engine.contract import LineIn, Principal
 from core.observability.metrics import put_metric
 from core.repositories import billing_repo
-from core.services import clerk_admin
+from core.services.workspace_name import saved_name
 from core.voice import livekit_huddles, rooms
 from core.voice.meetings import meeting_bots, meeting_invites, meeting_notes
 from core.services.live_events import get_live_event_publisher
@@ -240,16 +240,13 @@ async def _on_status(
                 await _publish(room_id, "bot_failed")
                 await livekit_huddles.close_room(room_id, meet=True)
                 return
-            try:
-                org = await clerk_admin.get_organization(owner_id) or {}
-            except Exception:  # noqa: BLE001 -- a Clerk blip must not cost the meeting its agents
-                org = {}
+            name = await saved_name(owner_id)
             metadata = {
                 "roomId": room_id,
                 "ownerId": owner_id,
                 "roomToken": livekit_huddles.room_token(room_id, owner_id),
                 "source": "meet",
-                "company": org.get("name") or "Your team",
+                "company": name or "Your team",
             }
             # Dispatch BEFORE in_call is written: a failure raises with the step untaken, so
             # Recall's retry dispatches again instead of leaving a paid bot with no worker.

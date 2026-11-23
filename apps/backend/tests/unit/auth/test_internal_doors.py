@@ -12,7 +12,7 @@ import pytest
 from core.auth import resolve_owner_id
 from core.engine import api as engine
 from core.engine.api import EngineError
-from core.engine.contract import LineIn, OpenIn, Principal
+from core.engine.contract import AnswerIn, EventIn, LineIn, OpenIn, Principal, StartIn
 from core.repositories import messaging_repo
 from core.repositories.workspace_repo import WorkspaceRepo
 from core.services import local_session_grants, messaging, onboarding_brief, task_conversation, workspace_provisioning
@@ -53,6 +53,16 @@ async def _line(conversation: str, speaker: str, text: str = "hello") -> LineIn:
         text=text,
         idempotency_key=f"door-line-{speaker}",
         respond="none",
+    )
+
+
+def _open_room(kind: str, creator: str) -> OpenIn:
+    return OpenIn(
+        tenant_id=A,
+        conversation_id=str(uuid.uuid5(uuid.NAMESPACE_URL, f"door-{kind}")),
+        client_key=f"door-{kind}",
+        kind=kind,
+        creator=Principal(kind="member", id=creator),
     )
 
 
@@ -185,7 +195,126 @@ async def write_photon_text(front, stubs, web):
     assert (await messaging_repo.get_room(room))["ownerId"] == A
 
 
+async def refuse_engine_open_call(front, stubs, web, held):
+    before = held()
+    with pytest.raises(EngineError) as refused:
+        await engine.open_conversation(_open_room("call", B))
+    assert refused.value.status == 403
+    assert held() == before
+
+
+async def write_engine_open_call(front, stubs, web):
+    room = await engine.open_conversation(_open_room("call", A))
+    assert (await messaging_repo.get_room(room.conversation_id))["ownerId"] == A
+    assert {m["id"] for m in await messaging_repo.list_members(room.conversation_id) if m["kind"] == "human"} == {A}
+
+
+async def refuse_engine_open_channel(front, stubs, web, held):
+    before = held()
+    with pytest.raises(EngineError) as refused:
+        await engine.open_conversation(_open_room("channel", B))
+    assert refused.value.status == 403
+    assert held() == before
+
+
+async def write_engine_open_channel(front, stubs, web):
+    room = await engine.open_conversation(_open_room("channel", A))
+    assert (await messaging_repo.get_room(room.conversation_id))["ownerId"] == A
+    assert {m["id"] for m in await messaging_repo.list_members(room.conversation_id) if m["kind"] == "human"} == {A}
+
+
+def _event(speaker: str) -> EventIn:
+    return EventIn(
+        tenant_id=A,
+        trigger_id=f"door-event-{speaker}",
+        source="webhook",
+        admission="candidate",
+        principal=Principal(kind="member", id=speaker),
+        text="hello",
+    )
+
+
+async def refuse_engine_submit_event(front, stubs, web, held):
+    before = held()
+    with pytest.raises(EngineError) as refused:
+        await engine.submit_event(_event(B))
+    assert refused.value.status == 403
+    assert held() == before
+
+
+async def write_engine_submit_event(front, stubs, web):
+    sent = await engine.submit_event(_event(A))
+    assert sent.created is True and sent.trigger_id == f"door-event-{A}"
+
+
+async def refuse_engine_start_task(front, stubs, web, held):
+    dm = await _a_dm(front)
+    before = held()
+    request = StartIn(
+        tenant_id=A,
+        principal=Principal(kind="member", id=B),
+        conversation_id=dm,
+        trigger_id="door-start",
+        source="voice",
+        title="t",
+        brief="b",
+    )
+    with pytest.raises(EngineError) as refused:
+        await engine.start_task(request)
+    assert refused.value.status == 403
+    assert held() == before
+
+
+async def write_engine_start_task(front, stubs, web):
+    dm = await _a_dm(front)
+    request = StartIn(
+        tenant_id=A,
+        principal=Principal(kind="member", id=A),
+        conversation_id=dm,
+        trigger_id="door-start",
+        source="voice",
+        title="t",
+        brief="b",
+    )
+    assert (await engine.start_task(request)).created is True
+
+
+async def refuse_engine_answer(front, stubs, web, held):
+    before = held()
+    request = AnswerIn(
+        tenant_id=A,
+        task_id="t1",
+        qid="q1",
+        principal=Principal(kind="member", id=B),
+        option_id="yes",
+        client_answer_id="door-answer",
+    )
+    with pytest.raises(EngineError) as refused:
+        await engine.answer(request)
+    assert refused.value.status == 403
+    assert held() == before
+
+
+async def write_engine_answer(front, stubs, web):
+    request = AnswerIn(
+        tenant_id=A,
+        task_id="t1",
+        qid="q1",
+        principal=Principal(kind="member", id=A),
+        option_id="yes",
+        client_answer_id="door-answer",
+    )
+    with pytest.raises(EngineError) as unknown:  # A is the tenant's person: it reaches the task lookup
+        await engine.answer(request)
+    assert unknown.value.status == 404
+
+
 DOORS = {
+    "engine open_conversation (call)": (refuse_engine_open_call, write_engine_open_call),
+    "engine open_conversation (channel)": (refuse_engine_open_channel, write_engine_open_channel),
+    "engine submit_event": (refuse_engine_submit_event, write_engine_submit_event),
+    "engine start_task": (refuse_engine_start_task, write_engine_start_task),
+    "engine answer": (refuse_engine_answer, write_engine_answer),
     "engine open_conversation (dm)": (refuse_engine_open_dm, write_engine_open_dm),
     "engine append_line (member)": (refuse_engine_append_line, write_engine_append_line),
     "agent_reader (messaging router)": (refuse_agent_reader, write_agent_reader),
@@ -207,3 +336,31 @@ async def test_internal_door_writes_owner_tenant(env, door, seams, client):  # n
     """Handed A, the door writes under A's tenant, authored by A."""
     front = await _accounts()
     await DOORS[door][1](front, seams, client)
+
+
+async def test_voice_doors_answer_an_engine_refusal_as_their_own_403(monkeypatch):
+    """An engine refusal reaches the voice worker as the door's 403, not a 5xx."""
+    from types import SimpleNamespace
+
+    from fastapi import HTTPException
+
+    from routers import voice_meet, voice_owner
+
+    async def refused(*args, **kwargs):
+        raise EngineError("not_tenant_person", 403, {"code": "not_tenant_person"})
+
+    async def owner(*args):
+        return "room", A, None
+
+    monkeypatch.setattr(engine, "append_line", refused)
+    monkeypatch.setattr(engine, "get_conversation", refused)
+    monkeypatch.setattr(voice_owner, "_owner", owner)
+    body = SimpleNamespace(ownerId=A, text="hi", sessionId="s", n=1, answers=None, roomToken="t", participantId=None)
+    with pytest.raises(HTTPException) as turn:
+        await voice_owner.turn("room", body)
+    assert turn.value.status_code == 403
+    monkeypatch.setattr(voice_meet, "_room_id", lambda r: r)
+    monkeypatch.setattr(voice_meet, "_require_room_token", lambda *a: None)
+    with pytest.raises(HTTPException) as meeting:
+        await voice_meet._meeting("room", body)
+    assert meeting.value.status_code == 403 and meeting.value.detail == {"code": "not_tenant_person"}

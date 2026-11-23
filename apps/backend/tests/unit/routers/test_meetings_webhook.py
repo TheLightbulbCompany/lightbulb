@@ -90,7 +90,7 @@ def env(monkeypatch):
         patch.object(messaging_repo, "get_room", AsyncMock(side_effect=lambda _r: meta)),
         patch.object(mod.meeting_invites, "_patch_meeting", AsyncMock(side_effect=patch_meeting)),
         patch.object(mod.meeting_invites, "_post_line", AsyncMock()) as line,
-        patch.object(mod.clerk_admin, "get_organization", AsyncMock(return_value={"name": "Acme"})),
+        patch.object(mod, "saved_name", AsyncMock(return_value="Acme")),
         patch.object(lk, "dispatch_meet", AsyncMock()) as dispatch,
         patch.multiple(mod.meeting_bots, leave=bot_leave, audio_mode=audio_mode),
         patch.object(lk, "close_room", AsyncMock()) as close,
@@ -564,12 +564,6 @@ def test_a_redelivery_to_an_ended_meeting_retries_unfinished_notes(env):
     assert _post(env["client"], _status("done")).status_code == 200
     env["notes"].assert_called_once_with("org_a", ROOM)
     env["close"].assert_not_awaited()
-
-
-def test_a_clerk_blip_still_dispatches(env):
-    with patch.object(mod.clerk_admin, "get_organization", AsyncMock(side_effect=RuntimeError("clerk"))):
-        assert _post(env["client"], _status("in_call_recording")).status_code == 200
-    assert env["dispatch"].await_args.args[1]["company"] == "Your team"
 
 
 def test_realtime_from_a_stale_bot_is_dropped(env):

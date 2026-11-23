@@ -23,6 +23,7 @@ from tests.unit.repositories.test_messaging_repo import (  # noqa: F401
     table,
 )
 
+
 USER_C = "user_C"
 
 
@@ -32,7 +33,7 @@ def _no_user_lookups(monkeypatch):
 
 
 def _auth(user):
-    return AuthContext(user_id=user, org_id=OWNER)
+    return AuthContext(user_id=user)
 
 
 async def _channel():
@@ -105,14 +106,6 @@ async def test_a_delete_landing_between_the_meta_read_and_the_commit_still_refus
     with pytest.raises(repo.RoomNotFound):
         await _post(room_id, client_id="racing")
     assert (await real_get_room(room_id))["lastSeq"] == 0
-
-
-@pytest.mark.parametrize("user", [USER_B, USER_C])
-@pytest.mark.asyncio
-async def test_only_the_owner_may_delete(table, user):
-    room_id, _ = await _channel()
-    assert await _problem(messaging.delete_room(_auth(user), room_id)) == "ROOM_FORBIDDEN"
-    assert "deletedAt" not in await repo.get_room(room_id)
 
 
 @pytest.mark.parametrize("kind", ["dm", "group-dm"])

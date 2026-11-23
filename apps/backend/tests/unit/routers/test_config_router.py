@@ -19,15 +19,15 @@ def client():
 
 
 def _personal_auth(user_id: str = "user_personal") -> AuthContext:
-    return AuthContext(user_id=f"human_{user_id}", org_id=user_id, org_role="org:admin")
+    return AuthContext(user_id=user_id)
 
 
 def _org_admin_auth(user_id: str = "user_admin", org_id: str = "org_1") -> AuthContext:
-    return AuthContext(user_id=user_id, org_id=org_id, org_role="org:admin")
+    return AuthContext(user_id=org_id)
 
 
 def _org_member_auth(user_id: str = "user_member", org_id: str = "org_1") -> AuthContext:
-    return AuthContext(user_id=user_id, org_id=org_id, org_role="org:member")
+    return AuthContext(user_id=org_id)
 
 
 def _patch_auth(auth: AuthContext):
@@ -39,20 +39,6 @@ def _patch_auth(auth: AuthContext):
     return lambda: app.dependency_overrides.pop(get_current_user, None)
 
 
-def test_patch_config_org_member_rejected(client):
-    cleanup = _patch_auth(_org_member_auth())
-    try:
-        with patch("routers.config.config_patch_roster", AsyncMock()) as mock_patch:
-            resp = client.patch(
-                "/api/v1/config",
-                json={"patch": {"tools": {"profile": "full"}}},
-            )
-        assert resp.status_code == 403
-        mock_patch.assert_not_called()
-    finally:
-        cleanup()
-
-
 def test_patch_config_validation_rejects_non_dict_patch(client):
     cleanup = _patch_auth(_personal_auth())
     try:
@@ -61,22 +47,6 @@ def test_patch_config_validation_rejects_non_dict_patch(client):
             json={"patch": "not a dict"},
         )
         assert resp.status_code == 422  # Pydantic rejects
-    finally:
-        cleanup()
-
-
-def test_get_config_org_member_rejected(client):
-    """Non-admin org members can't read the shared org config — it carries
-    secrets (MCP env, etc.) only the admin set up."""
-    cleanup = _patch_auth(_org_member_auth())
-    try:
-        with patch(
-            "routers.config._config_get_roster_map", AsyncMock(return_value={"config": {}, "hash": "h"})
-        ) as read:
-            resp = client.get("/api/v1/config")
-        assert resp.status_code == 403
-        # Read should never have been attempted.
-        read.assert_not_awaited()
     finally:
         cleanup()
 

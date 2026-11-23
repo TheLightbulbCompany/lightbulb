@@ -106,14 +106,6 @@ async def test_account_requires_a_human_session(users, clock, token):
     assert users.scan()["Items"] == []
 
 
-async def test_works_with_and_without_an_organisation(users, clock):
-    without = await account(A)
-    clock[0] += DAY
-    with_org = await account(replace(A, org_id="org_a"))
-    assert without == with_org
-    assert [i["user_id"] for i in users.scan()["Items"]] == ["user_a"]
-
-
 async def test_account_has_referral_fields(users, clock):
     body = await account(B)
     assert body["referralUrl"] == f"{settings.FRONTEND_URL.rstrip('/')}/os?ref=b"

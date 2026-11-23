@@ -19,7 +19,7 @@ WS = "org_1"
 def _client(role: str) -> httpx.AsyncClient:
     app = FastAPI()
     app.include_router(router_mod.router, prefix="/api/v1")
-    app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id="user_sam", org_id=WS, org_role=role)
+    app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id=WS)
     return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t")
 
 
@@ -63,9 +63,3 @@ async def test_export_streams_every_workspace_task_as_ndjson(world):
         assert set(line) == {"taskId", "status", "title", "createdAt", "resolvedAt", "outputs"}
         assert line["status"] == "queued" and line["createdAt"] and line["resolvedAt"] is None
     assert next(line for line in lines if line["taskId"] == b)["outputs"][0]["title"] == "Venue"
-
-
-async def test_export_is_owner_only(world):
-    await _task("Draft the memo")
-    r = await _client("org:member").get("/api/v1/tasks/export")
-    assert r.status_code == 403

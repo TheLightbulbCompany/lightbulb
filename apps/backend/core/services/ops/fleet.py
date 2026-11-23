@@ -47,7 +47,7 @@ def _clerk_user_email(user: dict) -> str | None:
 
 
 async def _fetch_display_name(owner_id: str) -> str | None:
-    """Best-effort owner_id → human label: user_ → email, org_ → org name."""
+    """Best-effort owner_id → human label: user_ → email."""
     if owner_id.startswith("user_"):
         # The users table stores email best-effort (older rows predate the
         # column) — cheap DDB read first, Clerk only on a miss.
@@ -56,9 +56,6 @@ async def _fetch_display_name(owner_id: str) -> str | None:
             return row["email"]
         user = await clerk_admin.get_user(owner_id)
         return _clerk_user_email(user) if user else None
-    if owner_id.startswith("org_"):
-        org = await clerk_admin.get_organization(owner_id)
-        return (org or {}).get("name") or None
     return None
 
 

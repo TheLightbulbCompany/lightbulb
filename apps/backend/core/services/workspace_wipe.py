@@ -83,7 +83,6 @@ from dataclasses import dataclass, field
 from typing import Awaitable, Callable
 
 
-from core.auth import is_org_owner_id
 from core.billing.bedrock_gate_tokens import delete_gate_token_rows, owner_gate_token_hashes
 from core.config import settings
 from core.repositories import (
@@ -127,6 +126,12 @@ from core.services.owner_secret_sweep import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _is_org_id(owner_id: str) -> bool:
+    """A Clerk organization id. Held for the admin org wipe: the only code that still names organizations."""
+    return owner_id.startswith("org_")
+
 
 # ---------------------------------------------------------------------------
 # Layers
@@ -1122,7 +1127,7 @@ async def wipe_own_workspace(org_id: str, *, user_id: str) -> WorkspaceWipeRepor
 
 
 def _refuse_org(org_id: str) -> None:
-    if not is_org_owner_id(org_id):
+    if not _is_org_id(org_id):
         raise WorkspaceWipeError(f"{org_id!r} is not a workspace (Clerk organization) id.")
     if settings.VENDOR_ORG_ID and org_id == settings.VENDOR_ORG_ID:
         raise WorkspaceWipeError(f"{org_id} is the vendor (Lightbulb) org; refusing.")

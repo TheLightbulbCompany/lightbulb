@@ -37,7 +37,7 @@ def world(table, monkeypatch):
     who = {"user": SAM}
     app = FastAPI()
     app.include_router(router_mod.router, prefix="/api/v1")
-    app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id=who["user"], org_id=WS)
+    app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id=WS)
     client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t")
     return {"client": client, "who": who}
 

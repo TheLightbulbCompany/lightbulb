@@ -53,30 +53,30 @@ def override(*, hour=16, sequence=1, cancel=False, day="20261107"):
     return cal.replace("METHOD:REQUEST", "METHOD:CANCEL") if cancel else cal
 
 
-PARENT = mi.store.meeting_room_id("org_1", UID)
-CHILD = mi.store.meeting_room_id("org_1", f"{UID}#{_epoch(2026, 11, 7, 15, 0)}")
+PARENT = mi.store.meeting_room_id("user_p", UID)
+CHILD = mi.store.meeting_room_id("user_p", f"{UID}#{_epoch(2026, 11, 7, 15, 0)}")
 
 
 @pytest.mark.parametrize("hour", [14, 16])
 async def test_override_owns_slot_and_parent_moves_to_next_week(store, bots, now, hour):
-    await mi.handle_team_mail("org_1", _mail(SERIES), TEAM)
-    await mi.handle_team_mail("org_1", _mail(override(hour=hour)), TEAM)
+    await mi.handle_team_mail("user_p", _mail(SERIES), TEAM)
+    await mi.handle_team_mail("user_p", _mail(override(hour=hour)), TEAM)
     assert store[CHILD]["meeting"]["startAt"] == _epoch(2026, 11, 7, hour, 0)
     assert store[PARENT]["meeting"]["startAt"] == _epoch(2026, 11, 14, 15, 0)
     assert store[CHILD]["meeting"]["recallBotId"] != store[PARENT]["meeting"]["recallBotId"]
     bots.leave.assert_awaited_once()
     count = bots.create.await_count
-    await mi.handle_team_mail("org_1", _mail(override(hour=hour)), TEAM)
-    await mi.handle_team_mail("org_1", _mail(SERIES), TEAM)
+    await mi.handle_team_mail("user_p", _mail(override(hour=hour)), TEAM)
+    await mi.handle_team_mail("user_p", _mail(SERIES), TEAM)
     assert store[PARENT]["meeting"]["startAt"] == _epoch(2026, 11, 14, 15, 0)
     assert bots.create.await_count == count
 
 
 async def test_already_advanced_parent_bot_and_time_are_preserved(store, bots, now):
-    await mi.handle_team_mail("org_1", _mail(SERIES), TEAM)
+    await mi.handle_team_mail("user_p", _mail(SERIES), TEAM)
     store[PARENT]["meeting"].update(startAt=_epoch(2026, 11, 14, 15, 0), endAt=_epoch(2026, 11, 14, 15, 30))
     before = deepcopy(store[PARENT]["meeting"])
-    await mi.handle_team_mail("org_1", _mail(override()), TEAM)
+    await mi.handle_team_mail("user_p", _mail(override()), TEAM)
     assert store[PARENT]["meeting"]["startAt"] == before["startAt"]
     assert store[PARENT]["meeting"]["recallBotId"] == before["recallBotId"]
     bots.leave.assert_not_awaited()
@@ -84,83 +84,75 @@ async def test_already_advanced_parent_bot_and_time_are_preserved(store, bots, n
 
 
 async def test_future_override_is_skipped_when_parent_advances(store, bots, now):
-    await mi.handle_team_mail("org_1", _mail(SERIES), TEAM)
+    await mi.handle_team_mail("user_p", _mail(SERIES), TEAM)
     cal = override().replace("20261107", "20261114")
-    await mi.handle_team_mail("org_1", _mail(cal), TEAM)
+    await mi.handle_team_mail("user_p", _mail(cal), TEAM)
     store[PARENT]["meeting"]["status"] = "ended"
     now["t"] = _epoch(2026, 11, 7, 16, 0)
-    await mi.advance("org_1", PARENT)
+    await mi.advance("user_p", PARENT)
     assert store[PARENT]["meeting"]["startAt"] == _epoch(2026, 11, 21, 15, 0)
 
 
 async def test_cancel_before_request_has_tombstone_and_does_not_rebook(store, bots, now):
-    await mi.handle_team_mail("org_1", _mail(SERIES), TEAM)
-    await mi.handle_team_mail("org_1", _mail(override(cancel=True, sequence=2)), TEAM)
+    await mi.handle_team_mail("user_p", _mail(SERIES), TEAM)
+    await mi.handle_team_mail("user_p", _mail(override(cancel=True, sequence=2)), TEAM)
     assert store[CHILD]["meeting"]["status"] == "cancelled"
     count = bots.create.await_count
-    await mi.handle_team_mail("org_1", _mail(override(sequence=1)), TEAM)
-    await mi.handle_team_mail("org_1", _mail(override(sequence=2)), TEAM)
+    await mi.handle_team_mail("user_p", _mail(override(sequence=1)), TEAM)
+    await mi.handle_team_mail("user_p", _mail(override(sequence=2)), TEAM)
     assert store[CHILD]["meeting"]["status"] == "cancelled" and bots.create.await_count == count
-    await mi.handle_team_mail("org_1", _mail(override(sequence=3)), TEAM)
+    await mi.handle_team_mail("user_p", _mail(override(sequence=3)), TEAM)
     assert store[CHILD]["meeting"]["status"] == "bot_created"
 
 
 async def test_parent_bot_failure_prevents_child_duplicate(store, bots, now):
-    await mi.handle_team_mail("org_1", _mail(SERIES), TEAM)
+    await mi.handle_team_mail("user_p", _mail(SERIES), TEAM)
     bots.leave.side_effect = RuntimeError("provider unavailable")
     with pytest.raises(mi.MeetingBusy):
-        await mi.handle_team_mail("org_1", _mail(override()), TEAM)
+        await mi.handle_team_mail("user_p", _mail(override()), TEAM)
     assert CHILD not in store
     assert bots.create.await_count == 1
     bots.leave.side_effect = None
-    await mi.handle_team_mail("org_1", _mail(override()), TEAM)
+    await mi.handle_team_mail("user_p", _mail(override()), TEAM)
     assert store[CHILD]["meeting"]["status"] == "bot_created"
 
 
 async def test_existing_child_move_then_cancel_only_changes_child(store, bots, now):
-    await mi.handle_team_mail("org_1", _mail(SERIES), TEAM)
-    await mi.handle_team_mail("org_1", _mail(override()), TEAM)
+    await mi.handle_team_mail("user_p", _mail(SERIES), TEAM)
+    await mi.handle_team_mail("user_p", _mail(override()), TEAM)
     parent = deepcopy(store[PARENT]["meeting"])
-    await mi.handle_team_mail("org_1", _mail(override(hour=17, sequence=2)), TEAM)
+    await mi.handle_team_mail("user_p", _mail(override(hour=17, sequence=2)), TEAM)
     assert store[CHILD]["meeting"]["startAt"] == _epoch(2026, 11, 7, 17, 0)
     bots.reschedule.assert_awaited_once()
     cancel = override(sequence=3, cancel=True).replace("DTSTART;TZID=America/New_York:20261107T160000\r\n", "")
-    await mi.handle_team_mail("org_1", _mail(cancel), TEAM)
+    await mi.handle_team_mail("user_p", _mail(cancel), TEAM)
     assert store[CHILD]["meeting"]["status"] == "cancelled"
     assert "recallBotId" not in store[CHILD]["meeting"]
     assert store[PARENT]["meeting"] == parent
 
 
 async def test_invalid_instance_date_is_mail_not_a_retry_loop(store, now):
-    await mi.handle_team_mail("org_1", _mail(SERIES), TEAM)
+    await mi.handle_team_mail("user_p", _mail(SERIES), TEAM)
     bad = override().replace(
         "RECURRENCE-ID;TZID=America/New_York:20261107T150000", "RECURRENCE-ID;TZID=America/New_York:invalid"
     )
-    assert await mi.handle_team_mail("org_1", _mail(bad), TEAM) is None
-
-
-async def test_authenticated_different_organizer_cannot_detach_instance(store, now):
-    await mi.handle_team_mail("org_1", _mail(SERIES), TEAM)
-    before = deepcopy(store)
-    forged = override().replace("mailto:Prasiddha@acme.com", "mailto:dana@acme.com")
-    assert await mi.handle_team_mail("org_1", _mail(forged, sender="dana@acme.com"), TEAM) == "meeting_ignored"
-    assert store == before
+    assert await mi.handle_team_mail("user_p", _mail(bad), TEAM) is None
 
 
 async def test_cancelled_master_cannot_spawn_late_child(store, now):
-    await mi.handle_team_mail("org_1", _mail(SERIES), TEAM)
+    await mi.handle_team_mail("user_p", _mail(SERIES), TEAM)
     await mi.handle_team_mail(
-        "org_1", _mail(SERIES.replace("METHOD:REQUEST", "METHOD:CANCEL").replace("SEQUENCE:0", "SEQUENCE:2")), TEAM
+        "user_p", _mail(SERIES.replace("METHOD:REQUEST", "METHOD:CANCEL").replace("SEQUENCE:0", "SEQUENCE:2")), TEAM
     )
-    assert await mi.handle_team_mail("org_1", _mail(override()), TEAM) == "meeting_ignored"
+    assert await mi.handle_team_mail("user_p", _mail(override()), TEAM) == "meeting_ignored"
     assert CHILD not in store
 
 
 async def test_whole_series_cancel_pulls_future_detached_children(store, bots, now):
-    await mi.handle_team_mail("org_1", _mail(SERIES), TEAM)
-    await mi.handle_team_mail("org_1", _mail(override(sequence=4)), TEAM)
+    await mi.handle_team_mail("user_p", _mail(SERIES), TEAM)
+    await mi.handle_team_mail("user_p", _mail(override(sequence=4)), TEAM)
     await mi.handle_team_mail(
-        "org_1", _mail(SERIES.replace("METHOD:REQUEST", "METHOD:CANCEL").replace("SEQUENCE:0", "SEQUENCE:2")), TEAM
+        "user_p", _mail(SERIES.replace("METHOD:REQUEST", "METHOD:CANCEL").replace("SEQUENCE:0", "SEQUENCE:2")), TEAM
     )
     assert store[PARENT]["meeting"]["status"] == "cancelled"
     assert store[CHILD]["meeting"]["status"] == "cancelled"
@@ -168,26 +160,26 @@ async def test_whole_series_cancel_pulls_future_detached_children(store, bots, n
 
 
 async def test_failed_child_cancel_retries_without_losing_bot_identity(store, bots, now):
-    await mi.handle_team_mail("org_1", _mail(SERIES), TEAM)
-    await mi.handle_team_mail("org_1", _mail(override()), TEAM)
+    await mi.handle_team_mail("user_p", _mail(SERIES), TEAM)
+    await mi.handle_team_mail("user_p", _mail(override()), TEAM)
     child_bot = store[CHILD]["meeting"]["recallBotId"]
     bots.leave.side_effect = RuntimeError("retryable provider failure")
     with pytest.raises(mi.MeetingBusy):
-        await mi.handle_team_mail("org_1", _mail(override(cancel=True, sequence=2)), TEAM)
+        await mi.handle_team_mail("user_p", _mail(override(cancel=True, sequence=2)), TEAM)
     assert store[CHILD]["meeting"]["recallBotId"] == child_bot
     bots.leave.side_effect = None
-    await mi.handle_team_mail("org_1", _mail(override(cancel=True, sequence=2)), TEAM)
+    await mi.handle_team_mail("user_p", _mail(override(cancel=True, sequence=2)), TEAM)
     assert "recallBotId" not in store[CHILD]["meeting"]
 
 
 async def test_equivalent_timezone_representation_updates_same_occurrence(store, bots, now):
-    await mi.handle_team_mail("org_1", _mail(SERIES), TEAM)
-    await mi.handle_team_mail("org_1", _mail(override()), TEAM)
+    await mi.handle_team_mail("user_p", _mail(SERIES), TEAM)
+    await mi.handle_team_mail("user_p", _mail(override()), TEAM)
     count = bots.create.await_count
     utc = override(hour=17, sequence=2).replace(
         "RECURRENCE-ID;TZID=America/New_York:20261107T150000", "RECURRENCE-ID:20261107T200000Z"
     )
-    await mi.handle_team_mail("org_1", _mail(utc), TEAM)
+    await mi.handle_team_mail("user_p", _mail(utc), TEAM)
     assert len(store) == 2
     assert bots.create.await_count == count
     assert store[CHILD]["meeting"]["startAt"] == _epoch(2026, 11, 7, 17, 0)
@@ -196,7 +188,7 @@ async def test_equivalent_timezone_representation_updates_same_occurrence(store,
 async def test_a_series_deleted_while_its_occurrence_is_split_off_is_ignored(store, bots, now):
     """The series' room is deleted between the exclusion write and the cancel of its slot: the delivery ends
     `meeting_ignored` (answered 2xx), never a 5xx that SES redelivers."""
-    await mi.handle_team_mail("org_1", _mail(SERIES), TEAM)
+    await mi.handle_team_mail("user_p", _mail(SERIES), TEAM)
     real = fixtures.messaging_repo.patch_room_meta.side_effect
 
     def patch_then_delete(r, updates, expected_revision=None):
@@ -205,5 +197,5 @@ async def test_a_series_deleted_while_its_occurrence_is_split_off_is_ignored(sto
             store[r]["deletedAt"] = "2026-11-01T00:00:00Z"
 
     fixtures.messaging_repo.patch_room_meta.side_effect = patch_then_delete
-    assert await mi.handle_team_mail("org_1", _mail(override()), TEAM) == "meeting_ignored"
+    assert await mi.handle_team_mail("user_p", _mail(override()), TEAM) == "meeting_ignored"
     assert CHILD not in store

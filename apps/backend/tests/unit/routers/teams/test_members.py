@@ -18,7 +18,7 @@ from main import app
 
 @pytest.fixture
 def client():
-    app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id="clerk_a", org_id="o1")
+    app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id="o1")
     try:
         yield TestClient(app)
     finally:
@@ -52,47 +52,6 @@ def _org_member(user_id: str, first: str, last: str, email: str) -> dict:
     }
 
 
-def test_list_members_is_the_clerk_org_roster(client, monkeypatch):
-    """Every Clerk org member is listed — including one Paperclip has never
-    heard of — and Paperclip's member list is never consulted."""
-    admin = MagicMock()
-    admin.list_members = AsyncMock(return_value=[{"id": "m1", "principalId": "pcu_a"}])
-    org_members = AsyncMock(
-        return_value=[
-            _org_member("clerk_a", "Ada", "Lovelace", "ada@x.co"),
-            # No name at all → the label falls back to the email.
-            _org_member("clerk_leo", "", "", "leo@x.co"),
-        ]
-    )
-
-    import core.services.clerk_admin as clerk_admin
-
-    monkeypatch.setattr(clerk_admin, "list_organization_members", org_members)
-
-    r = client.get("/api/v1/teams/members", headers={"Authorization": "Bearer x"})
-    assert r.status_code == 200
-    assert r.json()["members"] == [
-        # paperclipUserId is what a task's assigneeUserId holds; a member with
-        # no Paperclip identity yet carries null and cannot own a task.
-        {
-            "userId": "clerk_a",
-            "name": "Ada Lovelace",
-            "email": "ada@x.co",
-            "imageUrl": "https://img/clerk_a",
-            "paperclipUserId": "pcu_a",
-        },
-        {
-            "userId": "clerk_leo",
-            "name": "leo@x.co",
-            "email": "leo@x.co",
-            "imageUrl": "https://img/clerk_leo",
-            "paperclipUserId": None,
-        },
-    ]
-    org_members.assert_awaited_once_with("o1")
-    admin.list_members.assert_not_called()
-
-
 def test_list_members_empty_when_clerk_unavailable(client, monkeypatch):
     """The Clerk helper degrades to [] on failure; the route ships that, never a 500."""
     import core.services.clerk_admin as clerk_admin
@@ -121,7 +80,7 @@ def test_list_members_personal_context_is_just_the_caller(monkeypatch):
         }
 
     org_members = AsyncMock(return_value=[])
-    app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id="clerk_solo", org_id=None)
+    app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id="clerk_solo")
     try:
         monkeypatch.setattr(clerk_admin, "get_user", fake_get_user)
         monkeypatch.setattr(clerk_admin, "list_organization_members", org_members)

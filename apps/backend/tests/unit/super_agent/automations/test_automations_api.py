@@ -75,9 +75,7 @@ def api(table, monkeypatch):
 
 
 def _as(api, user=SAM, *, admin=True):
-    api.app.dependency_overrides[get_current_user] = lambda: AuthContext(
-        user_id=user, org_id=WS, org_role="org:admin" if admin else "org:member"
-    )
+    api.app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id=WS)
     return api.client
 
 

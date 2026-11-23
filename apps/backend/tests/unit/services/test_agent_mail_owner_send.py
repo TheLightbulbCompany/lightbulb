@@ -76,7 +76,7 @@ def wired(monkeypatch):
             st.settled = state
             st.settle_reason = reason
 
-    async def _owner_email(*, org_id, fallback_user_id):
+    async def _owner_email(user_id):
         return st.owner_email
 
     async def _ensure(owner_id, owner_email):

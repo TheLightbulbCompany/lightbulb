@@ -202,7 +202,7 @@ async def test_an_addressed_line_is_the_inviters_message_naming_who_said_it(m):
         await voice_meet.ask(ROOM, body)  # a retry
     first, again = ch.await_args_list
     auth, room, req = first.args
-    assert (auth.user_id, auth.org_id, room) == ("user_maya", None, ROOM)  # the inviter's authority
+    assert (auth.user_id, room) == ("user_maya", ROOM)  # the inviter's authority
     assert req.text == "Sam said in the meeting: Nova, what shipped?"
     assert first.kwargs == {"via": "voice", "wake": True}  # wakes the meeting room's Router
     assert again.args[2].client_message_id == req.client_message_id

@@ -56,7 +56,7 @@ async def test_disconnect_takes_the_owner_guard_around_the_teardown(async_client
 
     response = await async_client.delete("/api/v1/connections/synth")
     assert response.status_code == 200
-    assert order == [("acquire", "org_test_456"), ("teardown", "org_test_456"), ("release", "org_test_456")]
+    assert order == [("acquire", "user_test_123"), ("teardown", "user_test_123"), ("release", "user_test_123")]
 
 
 @pytest.mark.asyncio

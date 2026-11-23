@@ -279,9 +279,9 @@ async def send_note_saved(owner_id: str, agent_id: str, name: str | None, text: 
 async def send_renamed_notices(
     owner_id: str, agent_id: str, to: str, by: str | None, old_names: dict[str, str | None]
 ) -> None:
-    """``old_names`` = {roomId: displayName before the rename}. ``collides``: a person in the
-    workspace answers to the new name (full name or first word)."""
-    from core.services.clerk_admin import list_organization_members
+    """``old_names`` = {roomId: displayName before the rename}. ``collides``: the person
+    answers to the new name (full name or first word)."""
+    from core.services.clerk_admin import get_user
 
     try:
         open_rooms = {r.get("roomId") for r in await _open_windows(owner_id, int(time.time()))}
@@ -293,7 +293,7 @@ async def send_renamed_notices(
         return  # almost always: no Live window open, so skip the Clerk call
     wanted = to.casefold()
     try:
-        people = await list_organization_members(owner_id)
+        people = [await get_user(owner_id) or {}]
     except Exception:  # noqa: BLE001 -- unknown means "no collision"; the notice still goes out
         people = []
     collides = False

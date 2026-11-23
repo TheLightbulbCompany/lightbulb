@@ -25,8 +25,6 @@ from pydantic import BaseModel
 from core.auth import (
     AuthContext,
     get_current_user,
-    is_org_owner_id,
-    require_org_admin,
     resolve_owner_id,
 )
 from core.dynamodb import run_in_thread
@@ -200,15 +198,12 @@ NONE_CLAIMED = {"address": None, "invite_address": None, "status": "none_claimed
 
 @router.get("/address")
 async def get_address(auth: AuthContext = Depends(get_current_user)) -> dict:
-    """An org's read creates its company slug and mailbox. A person's only reads: their mailbox is made by the slug
-    claim (`POST /company/slug/claim`), and before that this answers `none_claimed`."""
+    """A read only reads: the mailbox is made by the slug claim (`POST /company/slug/claim`), and before that this
+    answers `none_claimed`."""
     owner_id = resolve_owner_id(auth)
-    if not is_org_owner_id(owner_id):
-        address = await team_address(owner_id)
-        row = await agent_email_repo.get_by_address(address) if address else None
-        return _project(row) if row and row.get("owner_id") == owner_id else NONE_CLAIMED
-    row, _ = await _team_row(owner_id)
-    return _project(row)
+    address = await team_address(owner_id)
+    row = await agent_email_repo.get_by_address(address) if address else None
+    return _project(row) if row and row.get("owner_id") == owner_id else NONE_CLAIMED
 
 
 class AddressSettings(BaseModel):
@@ -220,10 +215,9 @@ class AddressSettings(BaseModel):
 
 @router.patch("/address")
 async def patch_address(body: AddressSettings, auth: AuthContext = Depends(get_current_user)) -> dict:
-    require_org_admin(auth)
     owner_id = resolve_owner_id(auth)
     widens = body.send_to_anyone or ("outbound_disabled" in body.model_fields_set and body.outbound_disabled is None)
-    if widens and not is_org_owner_id(owner_id):
+    if widens:
         # A person mails anyone, or clears a complaint pause, only on a paid plan (Team or the voice plan).
         if not has_always_on_entitlement(await billing_repo.get_by_owner_id(owner_id)):
             raise HTTPException(status_code=402, detail={"status": "paid_plan_required"})

@@ -23,9 +23,7 @@ async def start(owner_id: str, *, accepted_by: str) -> dict:
     if not account or not account.get("stripe_customer_id"):
         from core.services.billing_service import BillingService
 
-        await BillingService().create_customer_for_owner(
-            owner_id=owner_id, owner_type="org" if owner_id.startswith("org_") else "personal"
-        )
+        await BillingService().create_customer_for_owner(owner_id=owner_id)
         account = await billing_repo.get_by_owner_id(owner_id, consistent_read=True)
     if not account or not account.get("stripe_customer_id"):
         raise voice_plan.VoicePlanError("payment_setup_required")

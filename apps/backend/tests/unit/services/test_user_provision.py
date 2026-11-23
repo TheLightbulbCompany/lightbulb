@@ -28,7 +28,7 @@ def _mock_create_trial_local_if_absent(monkeypatch):
 
 def _personal_auth(user_id: str = "user_123", email: str = "u@example.com", human_session=False) -> AuthContext:
     """Personal-context AuthContext (no org)."""
-    return AuthContext(user_id=user_id, org_id=None, org_role=None, email=email, human_session=human_session)
+    return AuthContext(user_id=user_id, email=email, human_session=human_session)
 
 
 def _org_admin_auth(
@@ -37,12 +37,7 @@ def _org_admin_auth(
     email: str = "u@example.com",
 ) -> AuthContext:
     """Org-admin AuthContext. is_org_context + is_org_admin are derived properties."""
-    return AuthContext(
-        user_id=user_id,
-        org_id=org_id,
-        org_role="org:admin",
-        email=email,
-    )
+    return AuthContext(user_id=org_id, email=email)
 
 
 def _org_member_auth(
@@ -51,12 +46,7 @@ def _org_member_auth(
     email: str = "m@example.com",
 ) -> AuthContext:
     """Org-member AuthContext. is_org_admin returns False because role != org:admin."""
-    return AuthContext(
-        user_id=user_id,
-        org_id=org_id,
-        org_role="org:member",
-        email=email,
-    )
+    return AuthContext(user_id=org_id, email=email)
 
 
 # Workspace trial initialization.
@@ -75,12 +65,12 @@ async def test_workspace_trial_is_unarmed_and_shared_by_all_members(
     _mock_create_trial_local_if_absent.return_value = True
     with patch.object(user_provision, "capture_product_event") as capture:
         await user_provision.ensure_workspace_trial_default(auth, "org_456")
-    _mock_create_trial_local_if_absent.assert_awaited_once_with(owner_id="org_456", owner_type="org", trial_end=None)
+    _mock_create_trial_local_if_absent.assert_awaited_once_with(owner_id="org_456", trial_end=None)
     event = capture.call_args.kwargs
     # The PERSON is the human who hit the door; the workspace rides as a property.
     assert event["distinct_id"] == auth.user_id
     assert event["event"] == "trial_started"
-    assert event["properties"] == {"owner_type": "org", "workspace_id": "org_456"}
+    assert event["properties"] == {"workspace_id": "org_456"}
 
 
 @pytest.mark.asyncio
@@ -148,7 +138,7 @@ async def test_workspace_trial_started_event_dedups_across_members(
         await user_provision.ensure_workspace_trial_default(_org_admin_auth(), "org_456")
         await user_provision.ensure_workspace_trial_default(_org_member_auth(), "org_456")
     first, second = [c.kwargs for c in capture.call_args_list]
-    assert first["properties"] == {"owner_type": "org", "workspace_id": "org_456"}
+    assert first["properties"] == {"workspace_id": "org_456"}
     # Two humans, one workspace: different persons, one deterministic uuid, so
     # PostHog keeps the earlier capture and the trial counts once.
     assert first["distinct_id"] == _org_admin_auth().user_id

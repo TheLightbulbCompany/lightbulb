@@ -21,7 +21,7 @@ import uuid
 
 from botocore.exceptions import ClientError
 
-from core.auth import AuthContext
+from core.auth import AuthContext, resolve_owner_id
 from core.dynamodb import run_in_thread
 from core.repositories import local_sessions_repo as repo, messaging_repo as store
 from core.services import local_sessions as sessions, session_pickup as pickup
@@ -39,7 +39,7 @@ def _gone() -> ApiProblem:
 
 
 async def _member(auth: AuthContext | None, row: dict) -> bool:
-    if auth is None or auth.org_id != row["ownerId"]:
+    if auth is None or resolve_owner_id(auth) != row["ownerId"]:
         return False
     try:
         await _still_a_member(row, auth.user_id)

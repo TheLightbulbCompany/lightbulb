@@ -182,6 +182,12 @@ async def list_conversations(tenant_id: str, kinds: list[str], limit: int) -> li
     ]
 
 
+def _tenant_person(tenant_id: str, principal: Principal | None) -> None:
+    """The tenant is one person: a `member` principal is that person, nobody else."""
+    if principal is not None and principal.kind == "member" and principal.id != tenant_id:
+        raise _problem(403, "not_tenant_person")
+
+
 async def open_conversation(req: OpenIn) -> ConversationOut:
     """Open a conversation, or get the one `client_key` already opened (a retry). A `call`: the creator as its owner
     member, the front agent seated when asked and there is one. A `channel`: the creator and every agent, on
@@ -189,6 +195,7 @@ async def open_conversation(req: OpenIn) -> ConversationOut:
     (tenant, kind, client key). An id already taken by a deleted conversation, or another tenant's, is not found."""
     if fields := sorted(set(req.annotations) - PRODUCT_META_FIELDS):
         raise _problem(400, "not_product_field", fields=fields)
+    _tenant_person(req.tenant_id, req.creator)
     if req.kind == "dm":
         return await _open_dm(req)
     if not req.conversation_id:
@@ -481,6 +488,7 @@ async def start_task(req: StartIn) -> StartOut:
     """A task started with no Router model turn (a scripted `ref.start`), answered in `conversation_id`. The same
     `trigger_id` is the same task. `lane="auto"`: the requester's private lane in a DM, else shared. `ask`
     (`task_asks.open_ask`'s arguments): the task opens waiting on that Question instead of running first."""
+    _tenant_person(req.tenant_id, req.principal)
     meta = await _owned(req.tenant_id, req.conversation_id)
     requester = req.principal.id if req.principal else None
     lane = "shared"
@@ -527,6 +535,7 @@ async def start_task(req: StartIn) -> StartOut:
 async def submit_event(req: EventIn) -> EventOut:
     """A source event for the Router with no message behind it: `respond` (it answers) or `candidate` (it decides
     whether to act). The same `trigger_id` is the same event."""
+    _tenant_person(req.tenant_id, req.principal)
     if req.conversation_id:
         await _owned(req.tenant_id, req.conversation_id)
     now = utc_now_iso()
@@ -643,6 +652,7 @@ _STYLES = {"deny": "danger", "request_changes": "secondary"}
 
 async def answer(req: AnswerIn) -> dict:
     """`principal` answers Question `qid` of `task_id` (`_submit_answer`): the question's view and the task's summary."""
+    _tenant_person(req.tenant_id, req.principal)
     member = req.principal.kind == "member"
     return await _submit_answer(req.tenant_id, req.task_id, req.qid, req.principal.id, req, member=member)
 
@@ -827,6 +837,7 @@ _GATED = frozenset({"retry"})  # a new attempt: today's chat gate first (§14.10
 
 async def act(req: ActIn) -> dict:
     """Stop, resolve, reopen or retry a task as `principal`, at `version` when given: the task's summary after."""
+    _tenant_person(req.tenant_id, req.principal)
     member = req.principal.kind == "member"
     return await _act(req.tenant_id, req.task_id, req.action, req.principal.id, req.version, member=member)
 

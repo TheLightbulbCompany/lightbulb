@@ -296,7 +296,7 @@ async def dm(tables, monkeypatch):
 async def _base_member_line(key: str, text: str, answered: bool = False):
     """What `voice_owner.turn` and `voice_phone._owner_turn` post today."""
     return await messaging.create_human_message(
-        AuthContext(user_id=OWNER, org_id=WS),
+        AuthContext(user_id=WS),
         DM,
         messaging.CreateMessageRequest(
             client_message_id=uuid.uuid5(uuid.NAMESPACE_URL, key),
@@ -696,7 +696,7 @@ async def test_answer_route_errors_base(monkeypatch, code, status, case, body):
     option = _answer_world(monkeypatch, case)
     app = FastAPI()
     app.include_router(router_mod.router, prefix="/api/v1")
-    app.dependency_overrides[router_mod.person_only] = lambda: AuthContext(user_id=OWNER, org_id=WS)
+    app.dependency_overrides[router_mod.person_only] = lambda: AuthContext(user_id=WS)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
         r = await c.post(
             f"/api/v1/tasks/{TASK}/questions/q-1/answer", json={"optionId": option, "clientAnswerId": "c1"}
@@ -733,7 +733,7 @@ async def test_act_version_conflict_base(monkeypatch):
     update = _act_world(monkeypatch)
     app = FastAPI()
     app.include_router(router_mod.router, prefix="/api/v1")
-    app.dependency_overrides[router_mod.get_current_user] = lambda: AuthContext(user_id=OWNER, org_id=WS)
+    app.dependency_overrides[router_mod.get_current_user] = lambda: AuthContext(user_id=WS)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
         r = await c.post(f"/api/v1/tasks/{TASK}/resolve", json={"version": 2})
     assert (r.status_code, r.json()) == (409, {"detail": {"code": "version_conflict", "version": 3}})
@@ -1049,7 +1049,7 @@ async def test_a_call_room_cannot_be_deleted(tables, kind):
     room = CALL if kind == "call" else DM
     await _room(room, kind)
     with pytest.raises(messaging.ApiProblem) as e:
-        await messaging.delete_room(AuthContext(user_id=OWNER, org_id=WS, org_role="org:admin"), room)
+        await messaging.delete_room(AuthContext(user_id=WS), room)
     assert e.value.error.code == "ROOM_NOT_DELETABLE"
     assert not (await messaging_repo.get_room(room)).get("deletedAt")
 

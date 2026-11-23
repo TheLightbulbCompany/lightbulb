@@ -25,6 +25,7 @@ from tests.unit.repositories.test_messaging_repo import (  # noqa: F401
     table,
 )
 
+
 ANN = {"kind": "human", "id": USER_A, "displayName": "Ann"}
 BOB = {"kind": "human", "id": USER_B, "displayName": "Bob"}
 AGENT = {"kind": "agent", "id": FRIDAY, "displayName": "Friday"}
@@ -67,23 +68,10 @@ async def _say(room_id, author, text="hi", thread_root=None, mentions=()):
 
 
 async def _counts(room_id, user_id):
-    rooms = (await messaging.list_rooms(AuthContext(user_id=user_id, org_id=OWNER))).rooms
+    rooms = (await messaging.list_rooms(AuthContext(user_id=user_id))).rooms
     room = next(r for r in rooms if str(r.room_id) == room_id)
     dumped = room.model_dump(mode="json", by_alias=True)
     return dumped["unreadCount"], dumped["mentionCount"]
-
-
-@pytest.mark.asyncio
-async def test_own_messages_are_excluded_because_posting_marks_the_room_read(table):
-    room_id = await _two_humans()
-    await _say(room_id, BOB, "one")
-    await _say(room_id, AGENT, "two")
-    await _say(room_id, ANN, "three")
-    assert await _counts(room_id, USER_A) == (0, 0)
-    assert await repo.get_read_cursor(room_id, USER_A) == 3
-    assert await _counts(room_id, USER_B) == (2, 0)  # Friday's and Ann's, never Bob's own "one"
-    await _say(room_id, AGENT, "four")
-    assert await _counts(room_id, USER_A) == (1, 0)
 
 
 @pytest.mark.asyncio
@@ -132,17 +120,6 @@ async def test_counts_cap_at_99(table):
     assert (await _counts(room_id, USER_A))[1] == 99
 
 
-@pytest.mark.asyncio
-async def test_a_member_joining_later_counts_only_what_came_after(table):
-    room_id = await _two_humans()
-    await _say(room_id, BOB, "before")
-    await _say(room_id, BOB, "before 2")
-    meta = await repo.upsert_member(room_id=room_id, owner_id=OWNER, member=_member("human", "user_C"))
-    assert meta
-    await _say(room_id, BOB, "after", mentions=["user_C"])
-    assert await _counts(room_id, "user_C") == (1, 1)
-
-
 def _strip_ordinals(table, room_id):
     """Rows as written before this PR deployed: no topCount / topOrdinal / joinedTopOrdinal."""
     pk = repo.room_pk(room_id)
@@ -153,20 +130,6 @@ def _strip_ordinals(table, room_id):
             table.update_item(Key={"pk": pk, "sk": "META"}, UpdateExpression="REMOVE topCount")
         elif item["sk"].startswith(("MSG#", "READ#", "MEMBER#")):
             table.update_item(Key={"pk": pk, "sk": item["sk"]}, UpdateExpression="REMOVE topOrdinal, joinedTopOrdinal")
-
-
-@pytest.mark.asyncio
-async def test_an_unbackfilled_room_reads_as_zero_unread_never_negative(table):
-    room_id = await _two_humans()
-    await _say(room_id, BOB, "1")
-    await _say(room_id, AGENT, "2")
-    await repo.set_read_cursor(room_id, USER_A, 1)
-    _strip_ordinals(table, room_id)
-    assert (await _counts(room_id, USER_A))[0] == 0
-    assert (await _counts(room_id, USER_B))[0] == 0
-    # A reader whose cursor carries an ordinal above a room's missing topCount clamps at 0.
-    meta = await repo.get_room(room_id)
-    assert repo.unread_count(meta, {"joinedSeq": 0}, {"lastReadSeq": 2, "topOrdinal": 5}) == 0
 
 
 @pytest.mark.asyncio

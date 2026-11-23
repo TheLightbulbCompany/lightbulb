@@ -2,7 +2,7 @@
 
 Mirrors ``test_connections.py``'s org-admin-gate idiom (``async_client`` =
 personal owner user_test_123, ``async_client_org_admin`` / ``_org_member`` =
-org_test_456 admin/non-admin).
+user_test_123 admin/non-admin).
 """
 
 from unittest.mock import AsyncMock, patch
@@ -31,7 +31,7 @@ class TestFromIntegration:
         assert response.status_code == 200
         assert response.json()["guided"] is True
         mock_seed.assert_awaited_once_with(
-            "org_test_456",
+            "user_test_123",
             "stripe",
             ["invoice.payment_failed"],
             resource=None,
@@ -42,16 +42,6 @@ class TestFromIntegration:
             description=None,
             actor_user_id="user_test_123",
         )
-
-    @pytest.mark.asyncio
-    @patch("routers.automations.seed_trigger_routine", new_callable=AsyncMock)
-    async def test_non_admin_org_member_forbidden(self, mock_seed, async_client_org_member):
-        response = await async_client_org_member.post(
-            "/api/v1/automations/from-integration",
-            json={"provider": "stripe", "event_id": "invoice.payment_failed"},
-        )
-        assert response.status_code == 403
-        mock_seed.assert_not_awaited()
 
     @pytest.mark.asyncio
     @patch("routers.automations.seed_trigger_routine", new_callable=AsyncMock)
@@ -110,7 +100,7 @@ class TestFromIntegration:
         assert response.status_code == 200
         assert response.json()["resource"] == "acme/site"
         mock_seed.assert_awaited_once_with(
-            "org_test_456",
+            "user_test_123",
             "github",
             ["pull_request"],
             resource="acme/site",
@@ -152,7 +142,7 @@ class TestFromIntegration:
         assert response.status_code == 200
         assert response.json()["instructions"] == "one-time Pub/Sub setup"
         mock_seed.assert_awaited_once_with(
-            "org_test_456",
+            "user_test_123",
             "google",
             ["gmail.message"],
             resource="ada@example.com",
@@ -184,7 +174,7 @@ class TestFromIntegration:
         )
         assert response.status_code == 200
         mock_seed.assert_awaited_once_with(
-            "org_test_456",
+            "user_test_123",
             "stripe",
             ["invoice.payment_failed"],
             resource=None,
@@ -218,7 +208,7 @@ class TestFromIntegration:
         assert response.status_code == 200
         assert response.json()["routine_id"] == "rt_existing"
         mock_seed.assert_awaited_once_with(
-            "org_test_456",
+            "user_test_123",
             "stripe",
             ["charge.refunded"],
             resource=None,
@@ -253,18 +243,6 @@ class TestFromIntegration:
         assert mock_seed.await_args.kwargs["title"] == "Chase the failed invoice"
         assert mock_seed.await_args.kwargs["description"] == "Email the customer, then flag it to me."
 
-    @pytest.mark.asyncio
-    @patch("routers.automations.seed_trigger_routine", new_callable=AsyncMock)
-    async def test_attach_is_org_admin_gated_like_create(self, mock_seed, async_client_org_member):
-        """Attaching a trigger to an existing automation is the same admin
-        action as creating one — a non-admin member can't do it either."""
-        response = await async_client_org_member.post(
-            "/api/v1/automations/from-integration",
-            json={"provider": "stripe", "event_id": "charge.refunded", "routine_id": "rt_x"},
-        )
-        assert response.status_code == 403
-        mock_seed.assert_not_awaited()
-
 
 class TestSetWebhookSecret:
     """Arming a trigger stores the secret and arms its HOOK# row (``automation_hooks.arm``);
@@ -277,7 +255,7 @@ class TestSetWebhookSecret:
                 "/api/v1/automations/pubabc123456/webhook-secret", json={"webhook_secret": "whsec_abc123"}
             )
         assert response.status_code == 200 and response.json() == {"status": "stored"}
-        arm.assert_awaited_once_with("org_test_456", "pubabc123456", "whsec_abc123")
+        arm.assert_awaited_once_with("user_test_123", "pubabc123456", "whsec_abc123")
 
     @pytest.mark.asyncio
     async def test_no_hook_row_404s(self, async_client):
@@ -294,15 +272,6 @@ class TestSetWebhookSecret:
                 "/api/v1/automations/not-alnum!/webhook-secret", json={"webhook_secret": "whsec_abc123"}
             )
         assert response.status_code == 400
-        arm.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_non_admin_org_member_forbidden(self, async_client_org_member):
-        with patch("routers.automations.automation_hooks.arm", AsyncMock()) as arm:
-            response = await async_client_org_member.put(
-                "/api/v1/automations/pubabc123456/webhook-secret", json={"webhook_secret": "whsec_abc123"}
-            )
-        assert response.status_code == 403
         arm.assert_not_awaited()
 
 

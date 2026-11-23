@@ -2,7 +2,7 @@
 
 import hashlib
 
-from core.services import clerk_admin
+from core.services.workspace_name import saved_name
 
 TEXT_WAKES_PER_SENDER_PER_DAY = 100
 TEXT_WAKES_PER_OWNER_PER_DAY = 2000
@@ -37,4 +37,4 @@ def paused_autoreply(business: str, business_phone: str | None) -> str:
 
 
 async def business_name(owner_id: str) -> str:
-    return (await clerk_admin.get_organization(owner_id) or {}).get("name") or "the business"
+    return await saved_name(owner_id) or "the business"

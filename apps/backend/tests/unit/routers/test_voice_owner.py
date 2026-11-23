@@ -166,9 +166,8 @@ async def test_a_spoken_line_is_the_members_message_and_wakes_the_router(m):
         await voice_owner.turn(ROOM, _turn())  # a retry
     first, again = ch.await_args_list
     auth, room, req = first.args
-    assert (auth.user_id, auth.org_id, room, req.text) == (
+    assert (auth.user_id, room, req.text) == (
         "user_maya",
-        None,
         ROOM,
         "What have we shipped in the last week?",
     )

@@ -80,7 +80,7 @@ def _wire(monkeypatch, members: list[dict]) -> None:
 
 async def _send(text: str, mentions: list[dict] | None = None) -> messaging.CanonicalMessage:
     return await messaging.create_human_message(
-        AuthContext(user_id=USER, org_id=OWNER),
+        AuthContext(user_id=OWNER),
         ROOM,
         messaging.CreateMessageRequest(
             client_message_id=uuid.uuid4(),

@@ -11,6 +11,14 @@ H = {"Authorization": f"Bearer {TOKEN}"}
 
 
 @pytest.fixture(autouse=True)
+def _paid(monkeypatch):
+    """The paid-plan gate on widening the mailbox is `test_cross_account`'s; here the account is paid."""
+    monkeypatch.setattr(agent_mail, "has_always_on_entitlement", lambda row: True)
+    monkeypatch.setattr(agent_mail.billing_repo, "get_by_owner_id", AsyncMock(return_value={}))
+    monkeypatch.setattr(agent_mail, "team_address", AsyncMock(return_value=TEAM))
+
+
+@pytest.fixture(autouse=True)
 def _reset():
     agent_mail._RATE.clear()
     yield
@@ -224,17 +232,20 @@ def _mailbox(row=None, ensure=(TEAM, "ok"), owner_email="o@x.y"):
     return (
         patch.object(agent_mail, "_owner_email", lookup),
         patch.object(agent_mail, "ensure_team_address", AsyncMock(return_value=ensure)),
-        patch.object(agent_mail.agent_email_repo, "get_by_address", AsyncMock(return_value=row or {"address": TEAM})),
+        patch.object(
+            agent_mail.agent_email_repo,
+            "get_by_address",
+            AsyncMock(return_value=row or {"address": TEAM, "owner_id": "user_test_123"}),
+        ),
     )
 
 
 def test_get_address_returns_the_single_row(client):
-    row = {"address": TEAM, "owner_id": "org_test_456", "verified_senders": ["o@x.y"], "send_to_anyone": False}
+    row = {"address": TEAM, "owner_id": "user_test_123", "verified_senders": ["o@x.y"], "send_to_anyone": False}
     a, b, c = _mailbox(row)
-    with a, b as ensure, c:
+    with a, b, c:
         r = client.get("/api/v1/agent-mail/address")
     assert r.status_code == 200
-    assert ensure.call_args.args == ("org_test_456", "o@x.y")
     assert r.json() == {
         "address": TEAM,
         "invite_address": TEAM,
@@ -309,20 +320,6 @@ def test_patch_address_reenable_sends_null(client):
     assert upd.call_args.kwargs == {"outbound_disabled": None}
 
 
-@pytest.mark.parametrize(
-    "body",
-    [{"outbound_disabled": None}, {"send_to_anyone": True}, {"verified_senders": ["bob@x.y"]}],
-)
-async def test_patch_address_is_admin_only(async_client_org_member, body):
-    """A member could lift a spam-complaint pause, open the mailbox to anyone, or rewrite who
-    may wake the agents. Reading stays open to members; changing it is the admin's."""
-    a, b, c = _mailbox()
-    with a, b, c, patch.object(agent_mail.agent_email_repo, "update_settings", AsyncMock()) as upd:
-        r = await async_client_org_member.patch("/api/v1/agent-mail/address", json=body)
-    assert r.status_code == 403
-    upd.assert_not_called()
-
-
 def test_patch_address_nonnull_outbound_disabled_400(client):
     """outbound_disabled is read-only from the owner settings surface except
     for the explicit-null re-enable — any other value must be rejected, not
@@ -334,15 +331,6 @@ def test_patch_address_nonnull_outbound_disabled_400(client):
     upd.assert_not_called()
 
 
-def test_address_mint_failure_409(client):
-    a, b, c = _mailbox(ensure=(None, "slug_allocation_failed"))
-    with a, b, c:
-        r = client.patch("/api/v1/agent-mail/address", json={"send_to_anyone": True})
-        g = client.get("/api/v1/agent-mail/address")
-    assert r.status_code == 409 and r.json()["detail"]["status"] == "slug_allocation_failed"
-    assert g.status_code == 409
-
-
 # ---- the team inbox (any member) ---------------------------------------------
 
 M1, M2, FOREIGN = (
@@ -352,7 +340,7 @@ M1, M2, FOREIGN = (
 )
 _ROOMS = {
     M1: {
-        "ownerId": "org_test_456",
+        "ownerId": "user_test_123",
         "meeting": {
             "title": "Weekly sync",
             "organizer": "pat@acme.com",
@@ -368,7 +356,7 @@ _ROOMS = {
     },
     # Ended a moment ago with no transcript: listed (only one a day old is hidden).
     M2: {
-        "ownerId": "org_test_456",
+        "ownerId": "user_test_123",
         "meeting": {"title": "One-off", "status": "ended", "startAt": int(time.time()) - 600},
     },
     FOREIGN: {"ownerId": "org_other", "meeting": {"title": "Theirs", "status": "scheduled", "startAt": 400}},
@@ -503,7 +491,7 @@ async def test_a_member_reads_current_and_past_transcripts(async_client_org_memb
         r = await async_client_org_member.get(f"/api/v1/agent-mail/meetings/{M1}/transcript?start_at={start_at}")
     assert r.status_code == 200 and r.text == "[20:23] Pat: Hi\n"
     assert r.headers["content-type"] == "text/plain; charset=utf-8"
-    load.assert_called_once_with("org_test_456", room, att)
+    load.assert_called_once_with("user_test_123", room, att)
 
 
 async def test_a_gone_transcript_404s(async_client_org_member):
@@ -538,9 +526,9 @@ async def test_a_meeting_that_never_reached_a_call_drops_off_after_a_day(async_c
     transcript, or a call that happened with no transcript captured, always is, however old."""
     old = int(time.time()) - 2 * 86400
     rooms = {
-        M1: {"ownerId": "org_test_456", "meeting": {"title": "Junk", "status": "bot_failed", "startAt": old}},
+        M1: {"ownerId": "user_test_123", "meeting": {"title": "Junk", "status": "bot_failed", "startAt": old}},
         M2: {
-            "ownerId": "org_test_456",
+            "ownerId": "user_test_123",
             "meeting": {
                 "title": "Kept",
                 "status": "ended",
@@ -550,7 +538,7 @@ async def test_a_meeting_that_never_reached_a_call_drops_off_after_a_day(async_c
             },
         },
         FOREIGN: {
-            "ownerId": "org_test_456",
+            "ownerId": "user_test_123",
             "meeting": {"title": "Held", "status": "ended", "startAt": old - 10, "inCallAt": old},
         },
     }
@@ -580,7 +568,7 @@ def test_the_agents_see_the_public_address_but_reply_keys_stay_on_the_routing_on
 
 
 def test_the_card_shows_the_public_address(client):
-    a, b, c = _mailbox({"address": TEAM, "public_address": PUBLIC})
+    a, b, c = _mailbox({"address": TEAM, "public_address": PUBLIC, "owner_id": "user_test_123"})
     with a, b, c:
         assert client.get("/api/v1/agent-mail/address").json()["address"] == PUBLIC
 
@@ -588,7 +576,7 @@ def test_the_card_shows_the_public_address(client):
 def test_people_invite_the_routing_address_which_always_reaches_ses(client):
     """8 Nov prod Meet: the Agent page said to invite agents@thelightbulb.company; that domain's mail goes to
     Google, which bounced it. The routing address (MX on SES) received the same invite."""
-    a, b, c = _mailbox({"address": TEAM, "public_address": PUBLIC})
+    a, b, c = _mailbox({"address": TEAM, "public_address": PUBLIC, "owner_id": "user_test_123"})
     with a, b, c:
         assert client.get("/api/v1/agent-mail/address").json()["invite_address"] == TEAM
 
@@ -608,7 +596,7 @@ async def test_the_team_inbox_shows_the_public_address_and_reads_the_routing_one
 
 _FULL = {
     "received_key": "2026-10-03T00:00:00Z#<a@b>",
-    "owner_id": "org_test_456",
+    "owner_id": "user_test_123",
     "from_addr": "pat@acme.com",
     "subject": "hi",
     "received_at": "t1",
@@ -693,8 +681,8 @@ def test_reason_says_only_whether_the_host_kept_the_agents_out(meeting, want):
 
 async def test_the_inbox_reads_the_default_room_once_for_ended_calls(async_client_org_member):
     rooms = {
-        M1: {"ownerId": "org_test_456", "meeting": {"status": "ended", "startAt": 2, "inCallAt": 2}},
-        M2: {"ownerId": "org_test_456", "meeting": {"status": "ended", "startAt": 1, "inCallAt": 1}},
+        M1: {"ownerId": "user_test_123", "meeting": {"status": "ended", "startAt": 2, "inCallAt": 2}},
+        M2: {"ownerId": "user_test_123", "meeting": {"status": "ended", "startAt": 1, "inCallAt": 1}},
     }
     a, b, c, d, e = _inbox()
     with (
@@ -712,7 +700,7 @@ async def test_the_inbox_reads_the_default_room_once_for_ended_calls(async_clien
 
 
 async def test_the_inbox_still_loads_when_the_default_room_read_fails(async_client_org_member):
-    rooms = {M1: {"ownerId": "org_test_456", "meeting": {"status": "ended", "startAt": 2, "inCallAt": 2}}}
+    rooms = {M1: {"ownerId": "user_test_123", "meeting": {"status": "ended", "startAt": 2, "inCallAt": 2}}}
     a, b, c, d, e = _inbox()
     with (
         a,

@@ -55,7 +55,7 @@ def test_a_turn_reads_with_its_requesters_access(client, monkeypatch, path, read
     response = client.get(path, headers={"Authorization": f"Bearer {_grant('user_ana')}"})
     assert response.status_code == 200 and response.json() == {"ok": reader}
     auth = read.await_args.args[0]
-    assert (auth.user_id, auth.org_id) == ("user_ana", None)  # the room membership rules apply
+    assert auth.user_id == "user_ana"  # the room membership rules apply
 
 
 @pytest.mark.parametrize(("path", "reader"), ROUTES)
@@ -122,8 +122,7 @@ def test_a_meet_turn_reads_as_the_inviter_and_never_carries_their_other_rights(c
     read = AsyncMock(return_value={"rooms": []} if reader == "rooms_for" else {"ok": reader})
     monkeypatch.setattr(router, reader, read)
     monkeypatch.setattr(router.service, "get_room", AsyncMock(return_value=object()))
-    monkeypatch.setattr(router, "workspace_wide", lambda room, people: True)
-    monkeypatch.setattr(router, "workspace_people", AsyncMock(return_value=frozenset({"user_ana"})))
+    monkeypatch.setattr(router, "workspace_wide", lambda room, owner_id: True)
     grant = _grant(None, "user_ana")
     response = client.get(path, headers={"Authorization": f"Bearer {grant}"})
     assert response.status_code == 200 and read.await_args.args[0].user_id == "user_ana"
@@ -156,14 +155,12 @@ def test_a_meet_turn_reads_only_channels_the_whole_workspace_is_in(client, monke
             members=[NS(id=p, kind="human", display_name=p, mention_handle=None) for p in people],
         )
 
-    team = frozenset({"user_ana", "user_bo"})
     listed = [
         room("d", "dm", "launch dm", ["user_ana", "user_bo"]),  # everyone, but a DM
-        room("f", "channel", "launch-fundraise", ["user_ana"]),  # a narrower channel
+        room("f", "channel", "launch-fundraise", ["user_bo"]),  # a channel the person is not in
         room("c", "channel", "launch", ["user_ana", "user_bo"]),
     ]
     monkeypatch.setattr(router.service, "list_rooms", AsyncMock(return_value=NS(rooms=listed)))
-    monkeypatch.setattr(router, "workspace_people", AsyncMock(return_value=team))
     reader = {"Authorization": f"Bearer {_grant(None, 'user_ana')}"}
     found = client.get("/api/v1/messaging/agent-read/rooms?query=launch&limit=1", headers=reader).json()
     assert [r["roomId"] for r in found["rooms"]] == ["c"] and found["total"] == 1
@@ -178,5 +175,3 @@ def test_a_meet_turn_reads_only_channels_the_whole_workspace_is_in(client, monke
         got = client.get(f"/api/v1/messaging/agent-read/messages?room_id={ROOM}", headers=reader)
         assert got.status_code == status, r.room_id
     assert read.await_count == 1
-    monkeypatch.setattr(router, "workspace_people", AsyncMock(return_value=frozenset()))  # Clerk down
-    assert client.get("/api/v1/messaging/agent-read/rooms?query=launch", headers=reader).json()["total"] == 0

@@ -191,8 +191,7 @@ async def delete_account(auth: AuthContext = Depends(get_human_session)) -> Resp
                 ExpressionAttributeNames=spark,
                 ExpressionAttributeValues={":now": _now()},
             )
-        if not await clerk_admin.list_user_organizations(uid, limit=100, strict=True):
-            await clerk_admin.delete_user(uid)
+        await clerk_admin.delete_user(uid)
     except Exception:  # noqa: BLE001  Stripe, Clerk or DynamoDB: the app retries
         logger.warning("os account delete failed for %s", uid, exc_info=True)
         raise HTTPException(status_code=502, detail="delete_failed") from None

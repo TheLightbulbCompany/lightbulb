@@ -140,7 +140,7 @@ async def test_humans_are_never_added_or_removed_in_the_feed_by_hand(workspace):
     from core.auth import AuthContext
 
     await _feed()
-    owner = AuthContext(user_id="user_A", org_id=OWNER)
+    owner = AuthContext(user_id=OWNER)
     with pytest.raises(messaging.ApiProblem) as exc:
         await messaging.remove_member(owner, FEED, "human", "user_B")
     assert exc.value.error.code == "ROOM_FORBIDDEN"
@@ -253,7 +253,7 @@ async def test_any_member_edits_the_brief_but_nobody_renames_archives_or_leaves(
 
     await _feed()
     monkeypatch.setattr(messaging, "_publish_room_metadata", AsyncMock())
-    member, creator = AuthContext(user_id="user_B", org_id=OWNER), AuthContext(user_id="user_A", org_id=OWNER)
+    member, creator = AuthContext(user_id=OWNER), AuthContext(user_id=OWNER)
     detail = await messaging.patch_room(member, FEED, messaging.PatchRoomRequest(topic="Only money."))
     assert detail.topic == "Only money."
     for request in (messaging.PatchRoomRequest(name="x"), messaging.PatchRoomRequest(archived=True)):
@@ -354,7 +354,7 @@ async def test_a_human_top_level_post_in_the_feed_is_refused_but_a_discuss_reply
     from core.auth import AuthContext
 
     await _feed()
-    auth = AuthContext(user_id="user_A", org_id=OWNER)
+    auth = AuthContext(user_id=OWNER)
     welcome = (await repo.list_messages(FEED, 0, 10))[0][0]
 
     def request(root):
@@ -425,7 +425,7 @@ async def test_a_discuss_reply_that_mentions_an_agent_wakes_exactly_that_agent(c
 
     await _feed()
     root = uuid.UUID((await repo.list_messages(FEED, 0, 10))[0][0]["messageId"])
-    auth = AuthContext(user_id="user_A", org_id=OWNER)
+    auth = AuthContext(user_id=OWNER)
     await messaging.create_human_message(auth, FEED, _human_reply(root, [BIG_ROSTER["growth"]]))
     rows = await _work_rows(table)
     assert [row["sk"].rsplit("#", 1)[-1] for row in rows] == [BIG_ROSTER["growth"]]
@@ -438,7 +438,7 @@ async def test_plain_feed_posts_wake_nobody(crowded, table):  # noqa: F811
 
     await _feed()
     root = uuid.UUID((await repo.list_messages(FEED, 0, 10))[0][0]["messageId"])
-    await messaging.create_human_message(AuthContext(user_id="user_A", org_id=OWNER), FEED, _human_reply(root))
+    await messaging.create_human_message(AuthContext(user_id=OWNER), FEED, _human_reply(root))
     await messaging.post_agent_message(OWNER, _post(roomId=FEED, postReason="why", agentId=CEO, text="@growth look"))
     assert await _work_rows(table) == []
 
@@ -510,9 +510,7 @@ async def test_the_work_consumer_wakes_a_feed_author_it_never_seated(crowded):
     await _feed()
     root = uuid.UUID((await repo.list_messages(FEED, 0, 10))[0][0]["messageId"])
     growth = BIG_ROSTER["growth"]
-    await messaging.create_human_message(
-        AuthContext(user_id="user_A", org_id=OWNER), FEED, _human_reply(root, [growth])
-    )
+    await messaging.create_human_message(AuthContext(user_id=OWNER), FEED, _human_reply(root, [growth]))
     seq = int((await repo.get_room(FEED))["lastSeq"])
     worker = work.OpenClawWorkWorker(sqs_client=None)
     dispatched = AsyncMock(return_value=True)
@@ -570,7 +568,7 @@ async def test_nobody_changes_feed_membership_by_hand(crowded, kind):
     from core.auth import AuthContext
 
     await _feed()
-    auth = AuthContext(user_id="user_A", org_id=OWNER)  # the feed's owner
+    auth = AuthContext(user_id=OWNER)  # the feed's owner
     member_id = CEO if kind == "agent" else "user_05"
     listen = "active" if kind == "agent" else None
     with pytest.raises(messaging.ApiProblem) as exc:

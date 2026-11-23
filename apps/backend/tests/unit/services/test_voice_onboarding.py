@@ -10,7 +10,7 @@ from core.services import link_preview
 from core.voice.phone import voice_onboarding as vo
 from tests.unit.services.conftest import repos  # noqa: F401
 
-WS = "org_test_456"
+WS = "user_test_123"
 LINE = "+14842079294"
 HOME = """<html><body><script>x()</script><h1>Maya's Nails</h1><p>Open Mon-Fri 9-7</p>
 <a href="/services">Our services</a><a href="https://other.com/services">elsewhere</a><a href="/blog">Blog</a></body></html>"""
@@ -113,14 +113,6 @@ def test_bad_model_shapes_skip_the_field_or_item_not_the_draft():
     ]
     assert d["staff"] == ["Ana"] and d["toAdd"] == ["Parking?"]
     assert vo._clean(["not", "an", "object"])["services"] == []
-
-
-@pytest.mark.asyncio
-async def test_a_member_cannot_draft_or_take_a_number(repos, async_client_org_member):  # noqa: F811
-    r = await async_client_org_member.post("/api/v1/voice/onboarding/draft", json={"website": "nails.com"})
-    assert r.status_code == 403
-    assert (await async_client_org_member.post("/api/v1/voice/number")).status_code == 403
-    assert await messaging_repo._get(f"PHONE#{LINE}", "LINE") is None
 
 
 # --- Numbers at onboarding (Task 11): keep-and-forward or a new number, bought at Go live, gated on KYC ---

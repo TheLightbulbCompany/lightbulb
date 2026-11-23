@@ -20,7 +20,7 @@ from core.engine import api
 from temporalio.testing import ActivityEnvironment
 from tests.unit.repositories.test_messaging_repo import table  # noqa: F401 -- local moto store
 
-OWNER, HUMAN = "org_1", "user_sam"
+OWNER, HUMAN = "user_sam", "user_sam"
 A, B, C = (str(uuid.UUID(int=i)) for i in (101, 102, 103))
 
 
@@ -562,7 +562,7 @@ async def test_member_mode_update_preserves_conversation_front(world, monkeypatc
     monkeypatch.setattr(messaging, "_room_detail", AsyncMock(return_value=meta))
 
     await messaging.upsert_member(
-        AuthContext(user_id=HUMAN, org_id=OWNER),
+        AuthContext(user_id=OWNER),
         room_id,
         messaging.UpsertRoomMemberRequest(kind="agent", id=changed, role="member", listen_mode="active"),
     )
@@ -597,7 +597,7 @@ async def test_member_mode_update_cannot_erase_unavailable_legacy_front(world, m
     with pytest.raises(tc.NoFrontAgent):
         await tc.front_agent_id(OWNER, room_id=meta["roomId"])
     await messaging.upsert_member(
-        AuthContext(user_id=HUMAN, org_id=OWNER),
+        AuthContext(user_id=OWNER),
         meta["roomId"],
         messaging.UpsertRoomMemberRequest(kind="agent", id=C, role="member", listen_mode="active"),
     )

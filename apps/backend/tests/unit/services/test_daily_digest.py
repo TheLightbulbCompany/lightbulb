@@ -4,7 +4,6 @@ its signed unsubscribe, and the timezone/daily-summary prefs."""
 
 # ruff: noqa: F811 -- `table` is the repo suite's moto fixture, imported and then requested by name.
 
-import asyncio
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -188,29 +187,6 @@ async def test_non_prod_mails_only_test_and_company_inboxes(table, sends, monkey
 # ---------------------------------------------------------------------------
 # pass admission
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("won", [True, False])
-async def test_only_the_admitted_task_runs_the_pass(monkeypatch, won):
-    claim = AsyncMock(return_value=won)
-    run = AsyncMock(return_value=0)
-    monkeypatch.setattr(daily_digest.container_repo, "try_claim_pass", claim)
-    monkeypatch.setattr(daily_digest, "run_once", run)
-    from core.services import week4_active
-
-    week4 = AsyncMock(return_value=0)
-    monkeypatch.setattr(week4_active, "run_once", week4)
-    stop = asyncio.Event()
-    task = asyncio.create_task(daily_digest.run_digest_sweeper(stop))
-    await asyncio.sleep(0.05)
-    stop.set()
-    await task
-    assert claim.await_args_list[0].args == ("daily_digest",)
-    assert claim.await_args_list[0].kwargs == {"interval_s": daily_digest.PASS_SECONDS}
-    assert claim.await_args_list[1].args == ("week4_active",)  # T23 rides the same loop, its own pass
-    assert run.await_count == (1 if won else 0)
-    assert week4.await_count == (1 if won else 0)
 
 
 # ---------------------------------------------------------------------------

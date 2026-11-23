@@ -52,7 +52,7 @@ def world(table, monkeypatch):
     who = {"user": SAM}
     app = FastAPI()
     app.include_router(router_mod.router, prefix="/api/v1")
-    app.dependency_overrides[router_mod.person_only] = lambda: AuthContext(user_id=who["user"], org_id=WS)
+    app.dependency_overrides[router_mod.person_only] = lambda: AuthContext(user_id=WS)
     client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t")
     return {"client": client, "who": who, "updates": updates, "roster": roster, "app": app}
 
@@ -197,7 +197,7 @@ async def test_concurrent_presses_one_winner(world, monkeypatch):
 
     async def as_user(user, cid):
         app = world["app"]
-        app.dependency_overrides[router_mod.person_only] = lambda: AuthContext(user_id=user, org_id=WS)
+        app.dependency_overrides[router_mod.person_only] = lambda: AuthContext(user_id=WS)
         return await world["client"].post(_url("q-two"), json={"optionId": "allow_once", "clientAnswerId": cid})
 
     results = await asyncio.gather(as_user(ADA, "c-a"), as_user("user_bo", "c-b"))

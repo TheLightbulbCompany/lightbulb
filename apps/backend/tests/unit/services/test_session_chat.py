@@ -10,8 +10,8 @@ from core.services import messaging, session_chat
 from core.services.messaging import ApiProblem
 
 OWNER = "org_o"
-ALICE = AuthContext(user_id="user_alice", org_id=OWNER)
-BOB = AuthContext(user_id="user_bob", org_id=OWNER)
+ALICE = AuthContext(user_id=OWNER)
+BOB = AuthContext(user_id=OWNER)
 SID = "11111111-1111-4111-8111-111111111111"
 CEO_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 ENG_ID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
@@ -127,23 +127,6 @@ async def test_an_agents_unbound_post_stays_in_the_session_chat(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_silence_removes_every_human_but_the_kept_one_with_rotation(monkeypatch):
-    members = [
-        {"kind": "human", "id": ALICE.user_id},
-        {"kind": "human", "id": BOB.user_id},
-        {"kind": "agent", "id": CEO_ID},
-    ]
-    monkeypatch.setattr(session_chat.messaging_repo, "list_members", AsyncMock(return_value=members))
-    monkeypatch.setattr(session_chat.messaging_repo, "get_room", AsyncMock(return_value=META))
-    remove = AsyncMock(return_value=META)
-    monkeypatch.setattr(messaging, "_remove_member_with_notices", remove)
-    assert await session_chat.silence(OWNER, SID, keep=ALICE.user_id) == 1
-    remove.assert_awaited_once_with(META, "human", BOB.user_id)
-    remove.reset_mock()
-    assert await session_chat.silence(OWNER, SID, keep=None) == 2
-
-
-@pytest.mark.asyncio
 async def test_an_agents_unbound_post_in_a_meet_room_still_goes_to_its_output_room(monkeypatch):
     """The redirect narrowed to rooms with a meeting record: a Google Meet's hidden room keeps it."""
     from core.voice.meetings import meeting_invites
@@ -219,22 +202,6 @@ async def test_a_lifecycle_write_that_loses_the_revision_race_is_tried_again(env
     env["get_room"].side_effect = [META, {**META, "archivedAt": "t"}]
     await session_chat.follow_session(OWNER, SID)
     assert env["patch_room_meta"].await_count == 1
-
-
-@pytest.mark.asyncio
-async def test_silence_counts_a_member_someone_else_already_removed_as_done(monkeypatch):
-    """A pause's silence can race the door's own cleanup of the same seat: gone is the goal, not a 500."""
-    from botocore.exceptions import ClientError
-
-    lost = ClientError({"Error": {"Code": "TransactionCanceledException"}}, "TransactWriteItems")
-    members = [{"kind": "human", "id": ALICE.user_id}, {"kind": "human", "id": BOB.user_id}]
-    monkeypatch.setattr(session_chat.messaging_repo, "list_members", AsyncMock(return_value=members))
-    monkeypatch.setattr(session_chat.messaging_repo, "get_room", AsyncMock(return_value=META))
-    monkeypatch.setattr(session_chat.messaging_repo, "get_member", AsyncMock(return_value=None))
-    remove = AsyncMock(side_effect=lost)
-    monkeypatch.setattr(messaging, "_remove_member_with_notices", remove)
-    assert await session_chat.silence(OWNER, SID, keep=ALICE.user_id) == 0
-    remove.assert_awaited_once()
 
 
 @pytest.mark.asyncio

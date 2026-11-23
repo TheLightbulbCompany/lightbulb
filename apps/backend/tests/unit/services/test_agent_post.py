@@ -88,7 +88,7 @@ async def test_step2_user_dm_is_created_when_missing_through_create_room(created
     await messaging.post_agent_message(OWNER, _post(userId=USER))
     assert _room_of(created) == DM
     auth, request = create_room.call_args.args
-    assert (auth.user_id, auth.org_id) == (OWNER, None)
+    assert auth.user_id == OWNER
     assert request.kind == "dm" and request.name is None
     assert [(m.kind, m.id, m.listen_mode) for m in request.members] == [("agent", AGENT, "active")]
     # Deterministic, so two racing posts converge on ONE DM.
@@ -126,28 +126,6 @@ async def test_step2_a_dm_the_human_left_is_not_reused(created, dms, monkeypatch
     await messaging.post_agent_message(OWNER, _post(userId=USER))
     assert _room_of(created) == DM
     create_room.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-async def test_step2_handle_resolves_a_workspace_member(created, dms, monkeypatch):  # noqa: F811
-    import core.services.clerk_admin as clerk_admin
-
-    monkeypatch.setattr(
-        clerk_admin,
-        "list_organization_members",
-        AsyncMock(
-            return_value=[
-                {"user_id": "user_bob", "first_name": "Bob", "email": "bob@x.com"},
-                {"user_id": USER, "first_name": "Ann", "email": "ann.lee@x.com"},
-            ]
-        ),
-    )
-    await messaging.post_agent_message(OWNER, _post(handle="@ann-lee"))
-    assert _room_of(created) == DM
-    assert dms[0].call_args.args == (OWNER, "human", USER)
-    with pytest.raises(messaging.ApiProblem) as exc:
-        await messaging.post_agent_message(OWNER, _post(handle="nobody"))
-    assert exc.value.error.code == "MEMBER_NOT_FOUND"
 
 
 @pytest.mark.asyncio

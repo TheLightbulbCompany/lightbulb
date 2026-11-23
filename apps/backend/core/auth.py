@@ -1,5 +1,5 @@
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 import httpx
@@ -56,18 +56,10 @@ async def _get_cached_jwks(jwks_url: str) -> dict:
 
 @dataclass
 class AuthContext:
-    """Structured auth context from JWT claims.
-
-    Provides convenient properties for checking user context:
-    - is_org_context: True when user has active organization selected
-    - is_org_admin: True when user has admin role in current org, or is a signed-in person with no org
-    """
+    """Structured auth context from JWT claims. The tenant is `user_id` (see `resolve_owner_id`): no claim in a
+    token names another tenant."""
 
     user_id: str
-    org_id: str | None = None
-    org_role: str | None = None
-    org_slug: str | None = None
-    org_permissions: list[str] = field(default_factory=list)
     # Caller's primary email, populated from the Clerk JWT `email` claim.
     # Requires the Clerk JWT template to include
     # `"email": "{{user.primary_email_address}}"`. Optional — older tokens
@@ -78,55 +70,13 @@ class AuthContext:
     email: str | None = None
     # Immutable JWT provenance; display/email and tenant ownership are separate.
     verified_issuer: str | None = None
-    # A first-party Clerk session token (`_session_token`). Only such a caller with no org is its own tenant;
-    # any other context with no org (an OAuth or template token, a signed computer) has no tenant.
+    # A first-party Clerk session token (`_session_token`); `get_human_session` refuses any other.
     human_session: bool = False
-
-    @property
-    def is_org_context(self) -> bool:
-        """True when user has active organization selected."""
-        return self.org_id is not None
-
-    @property
-    def is_org_admin(self) -> bool:
-        """True for an admin of the current org, and for a signed-in person with no org: their own tenant's owner."""
-        return (not self.org_id and self.human_session) or self.org_role == "org:admin"
-
-
-def _workspace_required() -> HTTPException:
-    return HTTPException(
-        status_code=409,
-        detail={"code": "workspace_required", "message": "Choose or create a workspace to continue."},
-    )
 
 
 def resolve_owner_id(auth: AuthContext) -> str:
-    """The tenant: the active org, else a signed-in person."""
-    if auth.org_id:
-        return auth.org_id
-    if not auth.human_session:
-        raise _workspace_required()
+    """The tenant is the person: the token's `sub`."""
     return auth.user_id
-
-
-def is_org_owner_id(owner_id: str) -> bool:
-    """Whether an owner_id names a Clerk organization.
-
-    Clerk org IDs are prefixed 'org_'; user IDs are 'user_'. Stable
-    convention from Clerk; if either prefix changes upstream, update
-    this and the tests together. Use this instead of inlining the
-    prefix check so a convention change has one edit point.
-    """
-    return owner_id.startswith("org_")
-
-
-def require_org_admin(auth: AuthContext) -> AuthContext:
-    """Require the tenant's admin: an org admin, or a signed-in person with no org (their own)."""
-    resolve_owner_id(auth)
-    if not auth.is_org_admin:
-        put_metric("auth.org_admin.denied")
-        raise HTTPException(status_code=403, detail="Organization admin access required")
-    return auth
 
 
 def _find_rsa_key(jwks: dict, kid: str) -> dict | None:
@@ -190,37 +140,16 @@ async def _decode_token(token: str) -> dict:
     return payload
 
 
-def _extract_org_claims(payload: dict) -> dict:
-    """Extract Clerk v2 organization claims from JWT payload."""
-    org_claims = payload.get("o", {})
-    org_id = org_claims.get("id")
-    org_role_raw = org_claims.get("rol")
-    org_slug = org_claims.get("slg")
-    org_perms_raw = org_claims.get("per", "")
-
-    return {
-        "org_id": org_id,
-        "org_role": f"org:{org_role_raw}" if org_role_raw else None,
-        "org_slug": org_slug,
-        "org_permissions": [p for p in org_perms_raw.split(",") if p] if org_perms_raw else [],
-    }
-
-
 async def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(security),
 ) -> AuthContext:
-    """Validate JWT and return AuthContext with user and org claims."""
+    """Validate JWT and return the AuthContext of its person."""
     try:
         token = credentials.credentials
         payload = await _decode_token(token)
-        org = _extract_org_claims(payload)
 
         ctx = AuthContext(
             user_id=payload["sub"],
-            org_id=org["org_id"],
-            org_role=org["org_role"],
-            org_slug=org["org_slug"],
-            org_permissions=org["org_permissions"],
             email=payload.get("email"),
             verified_issuer=payload.get("iss"),
             human_session=_session_token(jwt.get_unverified_header(token), payload),

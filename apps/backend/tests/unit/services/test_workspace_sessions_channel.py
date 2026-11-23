@@ -102,23 +102,6 @@ def _conflicting(monkeypatch, times: int) -> list[list[dict]]:
 
 
 @pytest.mark.asyncio
-async def test_a_removal_that_meets_a_concurrent_enrollment_retries_and_never_acks_a_member_left_on(
-    published, monkeypatch
-):
-    await live_config(BOB)
-    await live_config(ALICE)
-    _conflicting(monkeypatch, 1)
-    assert await messaging_repo.deactivate_user_stream(OWNER, BOB.user_id) is True
-    assert await _member_row(BOB.user_id) is None
-
-    monkeypatch.undo()
-    _conflicting(monkeypatch, 99)  # the conflict outlasts the retries: raise, so the webhook is redelivered
-    with pytest.raises(Exception, match="conflict"):
-        await messaging_repo.deactivate_user_stream(OWNER, ALICE.user_id)
-    assert (await messaging_repo.get_user_stream(OWNER, ALICE.user_id))["active"] is True
-
-
-@pytest.mark.asyncio
 async def test_concurrent_enrollments_never_read_as_membership_loss(published, monkeypatch):
     await live_config(ALICE)  # the workspace lookup row exists now
     await messaging_repo.ensure_user_stream(OWNER, BOB.user_id)

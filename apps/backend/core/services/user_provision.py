@@ -15,7 +15,7 @@ import uuid
 
 from fastapi import HTTPException
 
-from core.auth import AuthContext, is_org_owner_id, resolve_owner_id
+from core.auth import AuthContext, resolve_owner_id
 from core.observability.metrics import put_metric
 from core.observability.product_analytics import (
     capture_once_per_owner_per_day,
@@ -66,11 +66,8 @@ async def _ensure_trial_row(workspace_id: str, actor_user_id: str | None = None)
     capture_once_per_owner_per_day(
         owner_id=workspace_id, event="trial_start_requested", properties={}, distinct_id=actor_user_id
     )
-    owner_type = "org" if is_org_owner_id(workspace_id) else "personal"
     try:
-        created = await billing_repo.create_trial_local_if_absent(
-            owner_id=workspace_id, owner_type=owner_type, trial_end=None
-        )
+        created = await billing_repo.create_trial_local_if_absent(owner_id=workspace_id, trial_end=None)
     except Exception as exc:
         capture_once_per_owner_per_day(
             owner_id=workspace_id,
@@ -87,7 +84,7 @@ async def _ensure_trial_row(workspace_id: str, actor_user_id: str | None = None)
         capture_product_event(
             distinct_id=actor_user_id or workspace_id,
             event="trial_started",
-            properties={**source, "owner_type": owner_type, "workspace_id": workspace_id},
+            properties={**source, "workspace_id": workspace_id},
             event_uuid=str(uuid.uuid5(_TRIAL_STARTED_NAMESPACE, f"{workspace_id}:{utc_today()}")),
         )
 
@@ -118,25 +115,9 @@ def ceo_agent_id(row) -> str | None:
     return (row.starter_agent_ids or {}).get("ceo") or (row.seeded_agent_ids or [None])[0]
 
 
-async def _ensure_workspace_for_org(*, org_id: str, user_id: str, is_admin: bool) -> None:
-    """Join the org's active workspace, or (an admin only) provision it. Idempotent.
-
-    CALLERS: ``scripts.provision_runner._seed_owner_workspace`` (step 0 of the provisioning
-    executor, with the Clerk org CREATOR and ``is_admin=True``) and ``_reconcile_owner_seed``
-    for a workspace whose container is already running. A member never provisions: an admin
-    does, and the member joins on a later request.
-    """
-    if await workspace_provisioning._repo().resolve_owner_row(org_id) is not None:
-        await _ensure_workspace_member(org_id=org_id, member_user_id=user_id)
-    elif is_admin:
-        await _ensure_owner_workspace(owner_id=org_id, owner_user_id=user_id)
-    else:
-        logger.info("ensure_user_ready (org member): org=%s not active yet — waiting for an admin", org_id)
-
-
 async def _ensure_owner_workspace(*, owner_id: str, owner_user_id: str) -> None:
     """Provision the workspace with ``owner_user_id`` as provisioner, then, the first time it
-    goes active, create ``#general`` and send the owner's welcome."""
+    goes active, create ``#general``."""
     before = await workspace_provisioning._repo().get_workspace(owner_id, consistent_read=True)
     await workspace_provisioning.provision_org(owner_id, provisioner=owner_user_id)
     if before is not None and before.status == "active":
@@ -144,31 +125,6 @@ async def _ensure_owner_workspace(*, owner_id: str, owner_user_id: str) -> None:
     from core.services.messaging import ensure_default_room
 
     try:
-        room_id = await ensure_default_room(owner_id, owner_user_id)
+        await ensure_default_room(owner_id, owner_user_id)
     except Exception:  # noqa: BLE001 — partial retries reconcile again
-        room_id = None
         logger.exception("ensure_user_ready: default room creation failed for owner=%s", owner_id)
-    if room_id and is_org_owner_id(owner_id):
-        # The owner's welcome, from the CEO, now that #general exists (an org's: it is sent from the
-        # team mailbox, which a person's tenant does not have yet). Once-only via
-        # send_to_owner's first-contact claim, so a re-run here sends nothing.
-        from core.services.welcome_email import send_owner_welcome
-
-        try:
-            await send_owner_welcome(owner_id, owner_user_id)
-        except Exception:  # noqa: BLE001 — a welcome must never fail provisioning
-            logger.exception("ensure_user_ready: owner welcome failed for owner=%s", owner_id)
-
-
-async def _ensure_workspace_member(*, org_id: str, member_user_id: str) -> None:
-    """Record the org member on the org's active workspace. JOIN-ONLY (never creates one), so
-    no provision gate may swallow it; a workspace not active yet is retried by the next request."""
-    if await workspace_provisioning.provision_member(org_id, member_user_id) is None:
-        logger.info(
-            "ensure_user_ready (member): org=%s not active yet — membership-add for user=%s retried later",
-            org_id,
-            member_user_id,
-        )
-        put_metric("workspace.member_add", dimensions={"outcome": "no_company"})
-        return
-    put_metric("workspace.member_add", dimensions={"outcome": "ok"})

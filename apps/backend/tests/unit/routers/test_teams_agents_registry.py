@@ -39,7 +39,7 @@ def client(monkeypatch):
     )
     app = FastAPI()
     app.include_router(agents_mod.router, prefix="/api/v1/teams")
-    app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id="user_sam", org_id=WS)
+    app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id=WS)
     return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t")
 
 
@@ -54,12 +54,3 @@ async def test_agents_come_from_the_registry_with_paperclip_down(client):
     assert ceo["status"] == "idle" and growth["status"] == "paused"  # registry `active` reads as idle
     assert ceo["seeded"] is True and growth["seeded"] is False
     assert growth["mentionHandle"] == "growth" and ceo["mentionHandle"] == "lightbulb"
-
-
-async def test_members_need_no_paperclip_context(client):
-    r = await client.get("/api/v1/teams/members")
-
-    assert r.status_code == 200
-    assert r.json()["members"] == [
-        {"userId": "user_sam", "name": "Sam", "email": "s@x.test", "imageUrl": None, "paperclipUserId": "pcu_sam"}
-    ]

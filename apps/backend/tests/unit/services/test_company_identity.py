@@ -37,57 +37,6 @@ def test_slugify(raw, expected):
     assert company_identity.slugify(raw) == expected
 
 
-@pytest.mark.parametrize(
-    "email,expected",
-    [
-        ("jane.doe@gmail.com", "Jane Doe"),
-        ("jane.doe+tag@gmail.com", "Jane Doe"),
-        ("jane_doe-smith@x.io", "Jane Doe Smith"),
-        ("j@x.io", "J"),
-    ],
-)
-def test_prettify_email_local_part(email, expected):
-    assert company_identity.prettify_email_local_part(email) == expected
-
-
-@pytest.mark.asyncio
-async def test_generate_name_uses_clerk_org_name_for_orgs(monkeypatch):
-    async def fake_get_org(org_id):
-        return {"id": org_id, "name": "Acme Robotics", "slug": "acme-robotics"}
-
-    monkeypatch.setattr(company_identity.clerk_admin, "get_organization", fake_get_org)
-
-    name = await company_identity.generate_company_name(org_id="org_123", owner_email="owner@example.com")
-    assert name == "Acme Robotics"
-
-
-@pytest.mark.asyncio
-async def test_generate_name_falls_back_to_email_when_clerk_returns_nothing(monkeypatch):
-    async def fake_get_org(org_id):
-        return None
-
-    monkeypatch.setattr(company_identity.clerk_admin, "get_organization", fake_get_org)
-
-    name = await company_identity.generate_company_name(org_id="org_123", owner_email="jane.doe@example.com")
-    assert name == "Jane Doe"
-
-
-@pytest.mark.asyncio
-async def test_generate_name_for_personal_owner_uses_email(monkeypatch):
-    """A personal owner has no org, so Clerk is never consulted."""
-    called = []
-
-    async def fake_get_org(org_id):
-        called.append(org_id)
-        return {"name": "should not be used"}
-
-    monkeypatch.setattr(company_identity.clerk_admin, "get_organization", fake_get_org)
-
-    name = await company_identity.generate_company_name(org_id=None, owner_email="jane.doe@example.com")
-    assert name == "Jane Doe"
-    assert called == []
-
-
 @pytest.mark.asyncio
 async def test_allocate_slug_claims_the_plain_slug_when_free(monkeypatch):
     attempts = []
@@ -170,15 +119,6 @@ async def test_allocate_slug_returns_none_instead_of_raising_for_non_string_name
 
 
 @pytest.mark.asyncio
-async def test_generate_name_falls_back_instead_of_raising_for_non_string_owner_email(monkeypatch):
-    """`prettify_email_local_part(owner_email)` sat outside any guard — a
-    non-string `owner_email` (personal-owner path, no org_id) must not raise,
-    per the "Never raises" docstring contract."""
-    name = await company_identity.generate_company_name(org_id=None, owner_email=None)
-    assert name == "My Company"
-
-
-@pytest.mark.asyncio
 async def test_allocate_slug_returns_existing_reservation_without_reserving_again(monkeypatch):
     """`provision_org` re-entry after a partial failure must not mint a
     second, never-released slug row for the same owner."""
@@ -197,47 +137,6 @@ async def test_allocate_slug_returns_existing_reservation_without_reserving_agai
     slug = await company_identity.allocate_company_slug(owner_id="user_1", name="A Totally Different Name")
     assert slug == "acme-existing"
     assert reserve_calls == []
-
-
-@pytest.mark.asyncio
-async def test_generate_name_falls_back_to_default_when_email_local_part_is_empty(monkeypatch):
-    """A pathological `owner_email` like `"@example.com"` prettifies to an
-    empty string (`prettify_email_local_part` has nothing to work with) —
-    `generate_company_name` must never return "". A downstream
-    `create_company(name="")` call sits OUTSIDE the naming try/except and
-    would 400, failing a net-new owner's provision."""
-    name = await company_identity.generate_company_name(org_id=None, owner_email="@example.com")
-    assert name
-    assert name.strip()
-
-
-@pytest.mark.asyncio
-async def test_generate_name_falls_back_to_default_for_org_with_empty_name_and_pathological_email(monkeypatch):
-    """Same emptiness bug, reached via the Clerk-org path: Clerk returns an
-    org with a blank name, so the function falls through to the email
-    fallback — which must still not surface an empty string."""
-
-    async def fake_get_org(org_id):
-        return {"id": org_id, "name": "  "}
-
-    monkeypatch.setattr(company_identity.clerk_admin, "get_organization", fake_get_org)
-
-    name = await company_identity.generate_company_name(org_id="org_123", owner_email="@example.com")
-    assert name
-    assert name.strip()
-
-
-@pytest.mark.asyncio
-async def test_generate_name_falls_back_when_clerk_name_is_not_a_string(monkeypatch):
-    """A malformed Clerk payload (non-string `name`) must fall back, not raise."""
-
-    async def fake_get_org(org_id):
-        return {"id": org_id, "name": ["not", "a", "string"]}
-
-    monkeypatch.setattr(company_identity.clerk_admin, "get_organization", fake_get_org)
-
-    name = await company_identity.generate_company_name(org_id="org_123", owner_email="jane.doe@example.com")
-    assert name == "Jane Doe"
 
 
 # -- the slug a new workspace picks at "Create your workspace" -------------------------

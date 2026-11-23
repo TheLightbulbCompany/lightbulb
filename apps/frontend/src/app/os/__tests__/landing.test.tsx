@@ -87,7 +87,8 @@ describe("/os landing page (dev only)", () => {
   it("drops every number when the config fails", async () => {
     stub(302, null);
     const { container } = await page();
-    const text = container.textContent ?? "";
+    // The transcript retention (90 days) is a fixed fact, not a price: only prices and trial days must drop.
+    const text = (container.textContent ?? "").replace("We keep a text transcript for 90 days", "");
     expect(text).not.toMatch(/\$|\d+ days/);
     expect(screen.getByRole("heading", { name: "Try Spark." })).toBeInTheDocument();
     expect(text).toContain("See the price when you download.");

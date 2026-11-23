@@ -1,3 +1,5 @@
+import Link from "next/link";
+
 import { Footer } from "@/components/landing/Footer";
 import { Navbar } from "@/components/landing/Navbar";
 import {
@@ -9,6 +11,7 @@ import {
   voicePlanLine,
   type Pricing,
 } from "@/lib/pricing";
+import { getSparkPrice, sparkPriceLine, type SparkPrice } from "@/lib/sparkPrice";
 import { JsonLd, absoluteUrl, breadcrumbJsonLd, faqJsonLd, pageMetadata } from "@/lib/seo";
 
 import { PricingCta } from "./PricingCta";
@@ -48,8 +51,32 @@ function jsonLd(p: Pricing | null) {
   ];
 }
 
+// The three products and what each costs, each linking to its page. Every number comes from the backend.
+function AllProducts({ p, spark }: { p: Pricing | null; spark: SparkPrice }) {
+  const sparkLine = sparkPriceLine(spark);
+  const rows: [string, string, string][] = [
+    ["/phone", "Lightbulb Phone", voicePlanLine(p) ?? VOICE_PLAN_NEUTRAL],
+    ["/os", "Spark for Mac", sparkLine ? `${sparkLine}.` : "See the price on the Spark page."],
+    ["/meetings", "Lightbulb Meetings", "Waitlist. Not on sale yet."],
+  ];
+  return (
+    <nav aria-label="Pricing for each product" className="mb-14">
+      <ul className="grid gap-3 md:grid-cols-3">
+        {rows.map(([href, name, line]) => (
+          <li key={href} className="editorial-card p-5">
+            <Link href={href} className="font-medium text-[var(--midnight)] underline underline-offset-[3px]">
+              {name}
+            </Link>
+            <p className="mt-2 text-sm leading-6 text-[var(--midnight-soft)]">{line}</p>
+          </li>
+        ))}
+      </ul>
+    </nav>
+  );
+}
+
 export default async function PricingPage() {
-  const p = await getPricing();
+  const [p, spark] = await Promise.all([getPricing(), getSparkPrice()]);
   return (
     <main className="ld-page min-h-screen">
       {jsonLd(p).map((data, i) => (
@@ -63,6 +90,7 @@ export default async function PricingPage() {
       />
       <Navbar />
       <section className="mx-auto max-w-5xl px-6 py-20 md:py-28">
+        <AllProducts p={p} spark={spark} />
         <h1 className="font-editorial-serif text-5xl leading-[0.98] text-[var(--midnight)] md:text-7xl">
           One plan. Your phone answered and booked.
         </h1>

@@ -1,0 +1,6 @@
+/* Spark on a phone: the line and the two link actions that replace the download (SparkDownload.tsx). */
+.ld-page .os-phone { display: grid; gap: .9rem; justify-items: start; max-width: 28rem; }
+.ld-page .os-phone-line { margin: 0; font-size: 1.05rem; line-height: 1.55; color: var(--lb-ink); }
+.ld-page .os-phone-acts { display: flex; flex-wrap: wrap; gap: .6rem; }
+.ld-page .os-cta .os-phone .lb-btn { margin-bottom: 0; }
+.ld-page #get { scroll-margin-top: 6rem; } /* the menu button on a phone jumps here */

@@ -2,7 +2,7 @@
 
 import { useEffect, useRef } from "react";
 
-import { CODE } from "./OsInvite";
+import { CODE } from "./SparkDownload";
 import { SPARK } from "./sparkStageBrand";
 
 /* Spark's stage bulb, ported from the Mac app's FirstRun/Stage.swift (StageArt.render) cell for cell:

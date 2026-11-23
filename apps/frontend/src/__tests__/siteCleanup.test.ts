@@ -5,8 +5,9 @@ import nextConfig from "../../next.config";
 describe("retired public pages", () => {
   it("retired pages are gone, not redirected", async () => {
     const redirects = await nextConfig.redirects!();
-    // The only unconditional redirects: the engine installer and Spark's download and update feed.
-    const allowed = ["/install", "/install.sh", "/download/spark", "/spark/appcast.xml"];
+    // The only unconditional redirects: the engine installer, Spark's download and update feed, and /spark,
+    // the natural address for Spark's page (it forwards to /os; it is a new alias, not a retired page).
+    const allowed = ["/install", "/install.sh", "/download/spark", "/spark/appcast.xml", "/spark"];
     for (const r of redirects) {
       expect(r.has !== undefined || allowed.includes(r.source)).toBe(true);
     }

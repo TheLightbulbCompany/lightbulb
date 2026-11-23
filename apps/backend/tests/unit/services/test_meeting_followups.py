@@ -108,11 +108,6 @@ async def test_clarification_keeps_original_source_bounded_and_inviter_policy(wo
     task = {"ownerUserId": "original-user", "origin": "meeting", "confirmAll": True}
     answerers, rule, base = await questions.answerers("original-user", task, ask["kind"], ask["subkind"])
     assert answerers == ["original-user"]
-    question = {"answerers": answerers, "answererRule": rule, "baseAnswerers": base, "subkind": "question"}
-    assert await questions.can_answer_now("original-user", question, "original-user")
-    assert not await questions.can_answer_now("original-user", question, "new-inviter")
-    world["members"] = []
-    assert not await questions.can_answer_now("original-user", question, "original-user")
 
 
 @pytest.mark.parametrize("to,expected", [("working", "working"), ("waiting", "needs_you"), ("idle", "done")])

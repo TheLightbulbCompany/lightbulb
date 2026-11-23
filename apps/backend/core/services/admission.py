@@ -56,7 +56,7 @@ VOICE_HINT = (
 
 async def router_room(meta: dict, owner_id: str) -> bool:
     """A room people chat with Lightbulb in: Lightbulb (the front agent) seated, and not an
-    app/feed/vendor/session room or one shared with another organization. A task's own room is a Router room, and so
+    app/feed/vendor/session room or one shared with another tenant. A task's own room is a Router room, and so
     is a Google Meet's: the meeting's voice posts the lines addressed to the assistant there (voice_meet `/ask`). A
     room without Lightbulb's seat (a specialist's DM) keeps today's path: Lightbulb could not answer there."""
     if not meta:

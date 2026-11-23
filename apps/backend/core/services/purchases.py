@@ -190,7 +190,7 @@ def _policy(limits: dict, cents: int, project_id: str, site: str, rows: list[dic
     """Hard refusals only. Fail-closed: an unset limit refuses rather than allows."""
     per, monthly = min(limits["perPurchaseCents"], MAX_AMOUNT_CENTS), limits["projectMonthlyCents"]
     if per <= 0 or monthly <= 0:
-        raise PurchaseRefused("no_limits", "Purchases are off until an admin sets purchase limits in Budgets.")
+        raise PurchaseRefused("no_limits", "Purchases are off until you set purchase limits in Budgets.")
     if cents > per:
         raise PurchaseRefused("over_purchase_cap", "That is over the per-purchase limit.")
     if spent_cents(rows, project_id, exclude=exclude) + cents > monthly:
@@ -284,7 +284,7 @@ async def request_purchase(
     if existing := await get(owner_id, request_id):  # a retry: the same ask, not a second one
         return {"requestId": request_id, "status": existing["status"]}
     if not await link_wallet.connection(owner_id):
-        raise PurchaseRefused("wallet_disconnected", "The Link wallet isn't connected. Ask an admin to connect it.")
+        raise PurchaseRefused("wallet_disconnected", "The Link wallet isn't connected. Connect it first.")
     project_id, project_name = await _task_project(owner_id, issue_id)
     if not approved and await needs_person(owner_id, merchant_url):
         raise PurchaseRefused("needs_approval", "This purchase needs a person's yes first: ask through the task.")

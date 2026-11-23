@@ -320,13 +320,13 @@ async def test_delete_tenant_over_http(world, wire, monkeypatch):
     monkeypatch.setattr(automations_repo, "list_schedules", AsyncMock(return_value=[]))
     temporal_client.set_client(_FakeTemporal(running=set(), schedules=set()))
     try:
-        assert transport.dump(await client.delete_tenant("org_gone")) == transport.dump(
-            await api.delete_tenant("org_gone")
+        assert transport.dump(await client.delete_tenant("user_gone")) == transport.dump(
+            await api.delete_tenant("user_gone")
         )
         failing = _FirstFails(wire._transport, "refused")
         monkeypatch.setattr(wire, "_transport", failing)
         with pytest.raises(httpx.ConnectError):
-            await client.delete_tenant("org_gone")
+            await client.delete_tenant("user_gone")
         assert failing.calls == 1
     finally:
         temporal_client.set_client(None)
@@ -439,7 +439,19 @@ async def test_a_path_that_names_another_id_is_refused(world, wire):
     assert await messaging_repo.list_messages_before(DM, 10**19, 10) == []
 
 
-BAD_TENANTS = ["", "org_", "user_", "org_a\nb", "org_a\x00", "org_a'b", "org_1/../org_2", "org_a:b", "team_abc", "org"]
+BAD_TENANTS = [
+    "",
+    "org_2abcDEF9",
+    "org_",
+    "user_",
+    "org_a\nb",
+    "org_a\x00",
+    "org_a'b",
+    "org_1/../org_2",
+    "org_a:b",
+    "team_abc",
+    "org",
+]
 
 
 @pytest.mark.parametrize("tenant", BAD_TENANTS, ids=repr)
@@ -471,8 +483,8 @@ async def test_delete_tenant_refuses_an_id_that_is_not_a_tenant(world, monkeypat
     assert fake.queries == [] and schedules.await_count == 0 and delete.await_count == 0
 
 
-@pytest.mark.parametrize("tenant", ["org_2abcDEF9", "user_2abcDEF9"])
-async def test_delete_tenant_takes_org_and_user_ids(world, monkeypatch, tenant):
+async def test_delete_tenant_takes_a_user_id(world, monkeypatch):
+    tenant = "user_2abcDEF9"
     from core.repositories import automations_repo
     from core.temporal import client as temporal_client
     from tests.unit.services.test_wipe_engine_state import _FakeTemporal

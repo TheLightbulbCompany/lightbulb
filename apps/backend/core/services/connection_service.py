@@ -3,7 +3,7 @@ Connection Service - manages WebSocket connection state in DynamoDB.
 
 This service stores the mapping between API Gateway WebSocket connectionIds
 and authenticated user identities. The API Gateway Management API only knows
-connectionId, so we need to track user_id and org_id separately.
+connectionId, so we need to track user_id.
 
 Architecture:
 - INBOUND: Client WebSocket -> API Gateway -> HTTP POST -> VPC Link -> ALB -> EC2
@@ -12,7 +12,6 @@ Architecture:
 DynamoDB Table Schema:
 - connectionId (S) - partition key
 - userId (S) - the authenticated user's ID
-- orgId (S) - organization ID (empty string if None)
 - connectedAt (S) - ISO timestamp of connection
 - ttl (N) - epoch seconds; DynamoDB native TTL sweep attribute
   (timeToLiveAttribute, api-stack.ts:277) for missed disconnect cleanup.

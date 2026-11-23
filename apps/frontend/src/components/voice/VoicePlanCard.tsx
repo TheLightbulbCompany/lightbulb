@@ -47,8 +47,8 @@ export function VoicePlanCard() {
     setProblem("");
   }, [consentKey]);
 
-  // The plan is the caller's own tenant as the server resolves it from the token (a person, or an organization a
-  // session still has), so its `ownerId` is what checkout and cancel bind to, never a client-side guess.
+  // The plan is the caller's own tenant as the server resolves it from the token (the person's own id), so its
+  // `ownerId` is what checkout and cancel bind to, never a client-side guess.
   const current = !!plan;
   const enabled = current && !busy && !error;
 

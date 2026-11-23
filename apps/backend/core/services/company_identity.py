@@ -155,8 +155,7 @@ async def slug_unavailable_reason(slug: str, *, user_id: str) -> str | None:
 
 
 async def allocate_company_slug(*, owner_id: str, name: str) -> str | None:
-    """The owner's email slug: the one they chose at "Create your workspace" (handed over
-    by the ``organization.created`` webhook), else -- only for workspaces created before
+    """The owner's email slug: the one they chose at "Set up your business", else -- only for accounts created before
     that choice existed -- ``slugify(name)`` if it is free.
 
     There are NO numeric suffixes (owner ruling 2026-09-24): a derived slug that is taken

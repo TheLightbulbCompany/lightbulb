@@ -170,8 +170,7 @@ async def delete_account(auth: AuthContext = Depends(get_human_session)) -> Resp
     """Delete the signed-in person's Spark account. Every step is idempotent, so a retry finishes a partial one:
     cancel their Spark subscription, close their open voice session at OpenAI, remove every `os_*` attribute from their
     users row except the `os_deleted_at` tombstone (a later account starts with no trial), then delete the
-    Clerk user. A person in any Clerk organization keeps their Clerk user, since their other Lightbulb product
-    still uses it; the answer is 204 all the same. Referrers keep what they earned. Ended voice-session rows
+    Clerk user. Referrers keep what they earned. Ended voice-session rows
     are keyed by session id and expire by TTL. A Stripe or Clerk failure is 502 `delete_failed`."""
     from core.services import clerk_admin
 

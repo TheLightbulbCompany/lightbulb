@@ -66,7 +66,7 @@ async def _paperclip_purge_pass() -> None:
             await repo.delete(ws.org_id)
             purged += 1
         except Exception:
-            logger.exception("paperclip_purge_pass: failed for org_id=%s", ws.org_id)
+            logger.exception("paperclip_purge_pass: failed for owner=%s", ws.org_id)
             failed += 1
     put_metric("paperclip.purge_pass.purged", value=purged)
     if failed:

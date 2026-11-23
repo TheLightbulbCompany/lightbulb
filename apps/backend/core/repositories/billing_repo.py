@@ -1084,7 +1084,7 @@ async def set_provider_choice(
     """Persist the provider choice on a billing row.
 
     Args:
-        owner_id: org_id or personal user_id (the billing row's PK).
+        owner_id: the person's user id (the billing row's PK).
         provider_choice: one of ``byo_key``, ``chatgpt_oauth``,
             ``openrouter_managed``.
         byo_provider: optional even when ``provider_choice == "byo_key"`` —

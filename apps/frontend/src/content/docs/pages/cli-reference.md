@@ -52,7 +52,7 @@ Prints a four-word code (it works once, for 10 minutes), a `https://thelightbulb
 |---|---|
 | `--new` | A new invite; every earlier one from this computer stops working. |
 | `--once` | An invite for one join, valid 24 hours. |
-| `--agents` | Add your Lightbulb workspace's agents to this network. You must be a workspace admin, signed in here with `lightbulb login`: confirm in the browser, and the workspace joins. |
+| `--agents` | Add your Lightbulb workspace's agents to this network. Sign in here first with `lightbulb login`: confirm in the browser, and the workspace joins. |
 
 ### join
 

@@ -1,7 +1,7 @@
 """Workspace readiness helpers.
 
-``provision_new_workspace`` is the ONE door that starts a new workspace's first
-provision: the Clerk ``organization.created`` webhook calls it, and it raises on a
+``provision_new_workspace`` is the ONE door that starts a new person's first
+provision: the Clerk ``user.created`` path calls it, and it raises on a
 failure so Svix redelivers the event (redelivery is also the retry for a provision that failed
 later). ``GET /container/status`` does not call it -- it is a cold read.
 
@@ -50,10 +50,9 @@ async def ensure_workspace_trial_default(auth: AuthContext, workspace_id: str) -
 async def _ensure_trial_row(workspace_id: str, actor_user_id: str | None = None) -> None:
     """The trial-row body of ``ensure_workspace_trial_default``, after its auth check.
 
-    ``actor_user_id`` is the human behind this door (the org's creator on the
-    webhook, the caller on a status poll): the trial events are captured on
-    THEIR PostHog person, with ``workspace_id`` as a property, so a user's
-    timeline shows their trial instead of an ``org_…`` ghost owning it.
+    ``actor_user_id`` is the human behind this door (the person on the ``user.created``
+    path, the caller on a status poll): the trial events are captured on THEIR
+    PostHog person, with ``workspace_id`` as a property.
     """
     row = await billing_repo.get_by_owner_id(workspace_id)
     if row:
@@ -89,8 +88,8 @@ async def _ensure_trial_row(workspace_id: str, actor_user_id: str | None = None)
         )
 
 
-async def provision_new_workspace(org_id: str, created_by: str | None = None) -> None:
-    """Start a new tenant's first provision (the Clerk ``organization.created`` webhook for an org).
+async def provision_new_workspace(owner_id: str, created_by: str | None = None) -> None:
+    """Start a new tenant's first provision (the person's own id; the Clerk ``user.created`` path).
 
     Creates the trial row and dispatches. No billing gate: a workspace on the shared pool costs
     nothing until it runs, and every door that spends (chat, orb, phone) has its own gate. A
@@ -99,12 +98,12 @@ async def provision_new_workspace(org_id: str, created_by: str | None = None) ->
     that starts a first provision, so a failure must make Svix redeliver the event.
     """
     try:
-        await _ensure_trial_row(org_id, actor_user_id=created_by)
-        row = await container_repo.get_by_owner_id(org_id, consistent=True) or {}
+        await _ensure_trial_row(owner_id, actor_user_id=created_by)
+        row = await container_repo.get_by_owner_id(owner_id, consistent=True) or {}
         if row.get("status") == "running":
             return
-        if not await dispatch_provision(org_id):
-            raise RuntimeError(f"provision dispatch did not start for {org_id}")
+        if not await dispatch_provision(owner_id):
+            raise RuntimeError(f"provision dispatch did not start for {owner_id}")
     except Exception:
         put_metric("provision.org_created.error")
         raise

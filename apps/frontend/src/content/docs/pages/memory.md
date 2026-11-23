@@ -21,7 +21,7 @@ Agents save a fact with the `remember` tool and read it back with `recall`. Each
 
 ## When your team adds the workspace
 
-A workspace admin adds the workspace's agents to the network:
+You add your Lightbulb workspace's agents to the network:
 
 ```sh
 lightbulb login            # sign this computer in to the workspace

@@ -118,8 +118,7 @@ async def compute_status(owner_id: str, *, container: Any = _NOT_GIVEN, onboardi
     """Compose the four readiness inputs into one ``StatusContract`` dict.
 
     Args:
-        owner_id: the container/company owner (org_id for org members,
-            else the user_id).
+        owner_id: the container/company owner (the person's user id).
         container: an already-fetched (and possibly locally mutated, e.g.
             by the caller) containers row, OR an explicit
             ``None``. Pass this when the caller already read/mutated the

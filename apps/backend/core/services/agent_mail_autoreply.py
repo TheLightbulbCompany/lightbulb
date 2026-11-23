@@ -51,7 +51,7 @@ _DAILY_CAP_BODY = (
 # present payment as required.
 _TRIAL_EXPIRED_BODY = (
     "This workspace's trial has ended, so I can't work on this.\n\n"
-    f"When an admin continues the plan I'll pick it straight back up: {SETTINGS_URL}\n"
+    f"When you continue the plan I'll pick it straight back up: {SETTINGS_URL}\n"
 )
 
 # A paying capped owner: nothing to upgrade out of a free tier, just wait for the reset.

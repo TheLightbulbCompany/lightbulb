@@ -2,10 +2,9 @@
 hear about us?" plus the browser's stored first- and last-touch (UTM, referrer, landing
 path, ``/s`` included).
 
-The person has no workspace yet when they answer, so the page stashes it under their user
-id BEFORE creating the Clerk org (``POST /company/source``, the slug-hold pattern). The
-``organization.created`` webhook copies it onto the workspace and stamps it on
-``workspace_created``; ``trial_started`` reads the same record.
+The person has no account row yet when they answer, so the page stashes it under their user
+id (``POST /company/source``, the slug-hold pattern). The account's creation adopts it and stamps
+it on ``workspace_created``; ``trial_started`` reads the same record.
 
 The door that led there rides along as ``source`` (``sign_up``, or ``session_link`` from
 the session page's "Start your own workspace", T16);
@@ -113,11 +112,11 @@ def as_properties(record: dict | None) -> dict:
     return {k: v for k, v in props.items() if v}
 
 
-async def adopt_for_workspace(org_id: str, user_id: str) -> dict:
-    """Copy the creator's stash onto the workspace (kept) and return it as properties.
-    Idempotent: a workspace that already has a record keeps it. Never raises."""
+async def adopt_for_workspace(owner_id: str, user_id: str) -> dict:
+    """Copy the person's stash onto their account (kept) and return it as properties.
+    Idempotent: an account that already has a record keeps it. Never raises."""
     try:
-        existing = await webhook_dedup._read_event(f"ws-source:{org_id}")
+        existing = await webhook_dedup._read_event(f"ws-source:{owner_id}")
         # A person's tenant id is their user id, so their stash is this same item: adopted means kept (no ttl).
         if existing.get("record") and not existing.get("ttl"):
             return as_properties(existing["record"])
@@ -128,7 +127,7 @@ async def adopt_for_workspace(org_id: str, user_id: str) -> dict:
         await run_in_thread(
             webhook_dedup._table().put_item,
             Item={
-                "event_id": f"ws-source:{org_id}",
+                "event_id": f"ws-source:{owner_id}",
                 "source": "workspace_source",
                 "record": record,
                 "recorded_at": int(time.time()),
@@ -136,5 +135,5 @@ async def adopt_for_workspace(org_id: str, user_id: str) -> dict:
         )
         return as_properties(record)
     except Exception:
-        logger.warning("workspace_source: adopt failed org=%s", org_id, exc_info=True)
+        logger.warning("workspace_source: adopt failed owner=%s", owner_id, exc_info=True)
         return {}

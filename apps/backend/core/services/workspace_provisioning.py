@@ -107,8 +107,8 @@ def _repo() -> WorkspaceRepo:
     return WorkspaceRepo()
 
 
-def starter_agent_id(org_id: str, starter_key: str) -> str:
-    return str(uuid.uuid5(_STARTER_NAMESPACE, f"{org_id}:{starter_key}"))
+def starter_agent_id(owner_id: str, starter_key: str) -> str:
+    return str(uuid.uuid5(_STARTER_NAMESPACE, f"{owner_id}:{starter_key}"))
 
 
 async def provision_org(owner_id: str, *, provisioner: str) -> Workspace:
@@ -187,9 +187,9 @@ async def disable_workspace(org_id: str, *, grace_days: int = 30) -> None:
     logger.info("workspace_provisioning.disable_workspace: %s scheduled for purge at %s", org_id, purge_at.isoformat())
 
 
-async def _mark_failed(repo: WorkspaceRepo, org_id: str, reason: str) -> None:
+async def _mark_failed(repo: WorkspaceRepo, owner_id: str, reason: str) -> None:
     """Leave the failure visible (``/teams`` answers 503, not an endless 202), never over ``active``."""
-    if await repo.get_workspace(org_id, consistent_read=True) is not None:
-        await repo.update_status(org_id, status="failed", last_error=reason, not_if_status="active")
+    if await repo.get_workspace(owner_id, consistent_read=True) is not None:
+        await repo.update_status(owner_id, status="failed", last_error=reason, not_if_status="active")
     else:
-        await repo.put_failed_marker_if_absent(org_id=org_id, reason=reason)
+        await repo.put_failed_marker_if_absent(org_id=owner_id, reason=reason)

@@ -28,8 +28,8 @@ const SLUG_PROBLEM: Record<NonNullable<SlugCheck["reason"]>, string> = {
 
 /** "Set up your business": its name, plus the address its assistant gets Meet invites at. The slug is HELD, then
  *  claimed with the name for the signed-in person's own account; the name also opens the assistant's setup
- *  (the voice document's `business`), so /voice knows a business is saved. No organization call: Clerk is read only
- *  for the signed-in user's id. */
+ *  (the voice document's `business`), so /voice knows a business is saved. Clerk is read only for the signed-in
+ *  user's id. */
 function BusinessForm() {
   const api = useApi();
   const router = useRouter();

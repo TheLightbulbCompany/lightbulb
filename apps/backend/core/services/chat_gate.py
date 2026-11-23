@@ -72,8 +72,7 @@ async def gate_chat(*, user_id: str, owner_id: str, session_key: str) -> dict:
        + 2 don't draw from prepaid credits, so they're not gated
        on balance.
 
-    All layers key on ``owner_id`` (org_id for org context, user_id
-    for personal). ``user_id`` is the chatting member, retained on
+    All layers key on ``owner_id`` (the person's own user id). ``user_id`` is the chatting person, retained on
     the signature for logging / future per-user telemetry.
     ``session_key`` is retained for logging / future per-turn telemetry.
 

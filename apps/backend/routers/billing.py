@@ -445,9 +445,7 @@ async def get_credits_balance(
     request_id: UUID | None = None,
     ctx: AuthContext = Depends(get_current_user),
 ):
-    # Credits pool at the owner level (org_id for org context, user_id for
-    # personal). Keying on ctx.user_id meant org members couldn't see the
-    # admin-funded balance and got blocked at chat with out_of_credits.
+    # Credits pool at the owner level: the person's own id.
     owner_id = resolve_owner_id(ctx)
     from core.services.webhook_dedup import get_active_top_up, get_top_up_intent
 

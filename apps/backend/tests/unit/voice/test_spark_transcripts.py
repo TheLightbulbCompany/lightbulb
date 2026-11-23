@@ -49,33 +49,40 @@ def state(user="user_a", sid=SID):
     return {"sessionId": sid, "userId": user, "startedAt": 1_800_000_000, "usageSeconds": 0}
 
 
-def delta(role, text):
+def delta(role, text, start_ms=0):
     kind = "session.input_transcript.delta" if role == "user" else "session.output_transcript.delta"
-    return json.dumps({"type": kind, "delta": text, "start_ms": 0, "end_ms": 1})
+    return json.dumps({"type": kind, "delta": text, "start_ms": start_ms, "end_ms": start_ms + 1})
 
 
 async def hear(s, *events):
-    for role, text in events:
-        assert await os_voice._event(s, delta(role, text)) is False
+    for role, text, *start in events:
+        assert await os_voice._event(s, delta(role, text, *start)) is False
 
 
 def rows(table):
     return sorted(table.scan()["Items"], key=lambda i: i["sk"])
 
 
-async def test_deltas_become_one_item_per_turn(table, on):
+async def test_interleaved_deltas_become_one_item_per_side_in_spoken_order(table, on):
+    """Dev, 2026-11-23: Spark started replying before the person's last word arrived."""
     s = state()
-    await hear(s, ("user", "open "), ("user", "my calendar"), ("spark", "Opening "), ("spark", "it now."))
-    await hear(s, ("user", "thanks"))  # the person speaking again ends Spark's turn
-    assert [(r["role"], r["text"]) for r in rows(table)] == [("user", "open my calendar"), ("spark", "Opening it now.")]
-    await os_voice._flush(s)  # the session closing saves the turn still held
+    await hear(
+        s,
+        ("user", "Text Sam the beach photos from ", 1000),
+        ("spark", "Sure, I'll ", 3200),
+        ("user", "today.", 2900),
+        ("spark", "send today's beach photos to Sam.", 3600),
+    )
+    await os_voice._flush(s, idle=60)  # neither side silent long enough: nothing saved yet
+    assert rows(table) == []
+    await os_voice._flush(s)  # the session closing saves what is held
     items = rows(table)
     assert [(r["role"], r["text"]) for r in items] == [
-        ("user", "open my calendar"), ("spark", "Opening it now."), ("user", "thanks"),
+        ("user", "Text Sam the beach photos from today."), ("spark", "Sure, I'll send today's beach photos to Sam."),
     ]  # fmt: skip
     first = items[0]
     assert first["user_id"] == "user_a" and first["sessionId"] == SID
-    assert first["sk"].startswith(f"1800000000#{SID}#")
+    assert first["sk"] == f"1800000000#{SID}#000000001000#user"
     assert first["ttl"] == first["at"] + 90 * 86400
 
 

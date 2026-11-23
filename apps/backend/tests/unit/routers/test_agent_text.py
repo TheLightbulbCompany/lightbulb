@@ -361,16 +361,9 @@ def test_line_read_has_my_phone(client, monkeypatch):
     assert client.get("/api/v1/agent-text/line").json()["myPhone"] is None
 
 
-@pytest.mark.parametrize(("again", "status"), [("pending", "pending"), ("absent", "absent")])
-def test_line_read_after_a_failed_operation_rechecks_the_subscription(client, monkeypatch, again, status):
+def test_line_read_after_a_failed_operation_is_absent(client, monkeypatch):
     monkeypatch.setattr(agent_text, "resolve_owner_id", lambda auth: OWNER)
     monkeypatch.setattr(agent_text, "text_line_for_owner", AsyncMock(return_value=None))
     monkeypatch.setattr(agent_text.text_lines, "complete_pending", AsyncMock(return_value="failed"))
-    monkeypatch.setattr(
-        agent_text.billing_repo, "get_by_owner_id", AsyncMock(return_value={"stripe_subscription_id": "sub_1"})
-    )
-    sync = AsyncMock(return_value=again)
-    monkeypatch.setattr(agent_text.text_lines, "sync_front_desk", sync)
     r = client.get("/api/v1/agent-text/line")
-    assert r.status_code == 404 and r.json() == {"status": status}
-    sync.assert_awaited_once_with(OWNER, subscription_id="sub_1")
+    assert r.status_code == 404 and r.json() == {"status": "absent"}

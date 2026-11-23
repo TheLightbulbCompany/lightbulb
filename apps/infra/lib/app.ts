@@ -184,29 +184,13 @@ const pipeline = new GitHubWorkflow(app, "isol8-pipeline", {
       "rm -rf cdk.out",
       "npx cdk synth",
     ],
-    // Stripe flat-fee Price IDs are baked into the per-env ECS task env at
-    // synth time by service-stack.ts. Empty string is tolerated (the backend
-    // surfaces "STRIPE_WORKSPACE_PRICE_ID not configured" at the billing
-    // checkout endpoint) but onboarding will fail until both secrets are populated.
+    // Stripe flat-fee Price IDs (voice plan, Spark) are baked into the per-env ECS task env at
+    // synth time by service-stack.ts. Empty string is tolerated: that plan cannot be bought.
     env: {
-      STRIPE_WORKSPACE_PRICE_ID_DEV: "${{ secrets.STRIPE_WORKSPACE_PRICE_ID_DEV }}",
-      STRIPE_WORKSPACE_PRICE_ID_PROD: "${{ secrets.STRIPE_WORKSPACE_PRICE_ID_PROD }}",
       STRIPE_VOICE_PLAN_PRICE_ID_DEV: "${{ secrets.STRIPE_VOICE_PLAN_PRICE_ID_DEV }}",
       STRIPE_VOICE_PLAN_PRICE_ID_PROD: "${{ secrets.STRIPE_VOICE_PLAN_PRICE_ID_PROD }}",
       STRIPE_SPARK_PRICE_ID_DEV: "${{ secrets.STRIPE_SPARK_PRICE_ID_DEV }}",
       STRIPE_SPARK_PRICE_ID_PROD: "${{ secrets.STRIPE_SPARK_PRICE_ID_PROD }}",
-      STRIPE_BASE_PRICE_ID_DEV: "${{ secrets.STRIPE_BASE_PRICE_ID_DEV }}",
-      STRIPE_BASE_PRICE_ID_PROD: "${{ secrets.STRIPE_BASE_PRICE_ID_PROD }}",
-      // Stripe Ultra Price IDs — same synth-time bake + per-env live/test
-      // split as the Workspace price above. Empty string is tolerated (the
-      // backend surfaces "STRIPE_ULTRA_PRICE_ID not configured" at the billing
-      // checkout endpoint) but the Ultra tier cannot be purchased until
-      // both secrets are populated.
-      STRIPE_ULTRA_PRICE_ID_DEV: "${{ secrets.STRIPE_ULTRA_PRICE_ID_DEV }}",
-      STRIPE_ULTRA_PRICE_ID_PROD: "${{ secrets.STRIPE_ULTRA_PRICE_ID_PROD }}",
-      // $100/month Front desk add-on. Empty = the add-on cannot be bought.
-      STRIPE_FRONT_DESK_PRICE_ID_DEV: "${{ secrets.STRIPE_FRONT_DESK_PRICE_ID_DEV }}",
-      STRIPE_FRONT_DESK_PRICE_ID_PROD: "${{ secrets.STRIPE_FRONT_DESK_PRICE_ID_PROD }}",
       OPENROUTER_WORKSPACE_ID_DEV: "${{ vars.OPENROUTER_WORKSPACE_ID_DEV }}",
       OPENROUTER_WORKSPACE_ID_PROD: "${{ vars.OPENROUTER_WORKSPACE_ID_PROD }}",
       OPENROUTER_MANAGED_MODEL_ID_DEV: "${{ vars.OPENROUTER_MANAGED_MODEL_ID_DEV }}",

@@ -21,7 +21,6 @@ from pydantic import BaseModel
 from core.auth import AuthContext, get_current_user, resolve_owner_id
 from core.observability.metrics import put_metric
 from core.services import effect_doors, text_lines
-from core.repositories import billing_repo
 from core.repositories.agent_email_repo import (
     drop_member_phones,
     pending_line_for_owner,
@@ -190,20 +189,6 @@ class Thread(BaseModel):
     mode: Literal["human", "agent"]
 
 
-async def _recheck(owner_id: str) -> str:
-    """A failed or cancelled operation found on a read: ask Stripe, through the subscription, whether a line is
-    still owed. Never ``ensure_line`` directly, so a line cancelled on purpose is not bought back."""
-    try:
-        sub_id = (await billing_repo.get_by_owner_id(owner_id) or {}).get("stripe_subscription_id")
-        if not sub_id:
-            return "absent"
-        again = await text_lines.sync_front_desk(owner_id, subscription_id=sub_id)
-    except Exception:
-        logger.warning("Re-checking the line failed for owner %s", owner_id, exc_info=True)
-        return "absent"
-    return again if again in ("provisioned", "pending") else "absent"
-
-
 @router.get("/line")
 async def get_line(auth: AuthContext = Depends(get_current_user)):
     owner_id = resolve_owner_id(auth)
@@ -213,7 +198,7 @@ async def get_line(auth: AuthContext = Depends(get_current_user)):
         try:
             outcome = await text_lines.complete_pending(owner_id)
             if outcome == "failed":
-                outcome = await _recheck(owner_id)
+                outcome = "absent"
             if outcome == "provisioned":
                 line = await text_line_for_owner(owner_id)
         except (photon.PhotonError, httpx.HTTPError):

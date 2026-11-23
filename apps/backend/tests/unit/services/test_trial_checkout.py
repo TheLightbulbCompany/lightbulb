@@ -29,55 +29,6 @@ def test_price_lock_is_two_years():
     assert billing_service.price_lock_until(NOW) == "2029-01-14"
 
 
-@pytest.fixture
-def checkout(monkeypatch):
-    monkeypatch.setattr(billing_service.settings, "STRIPE_WORKSPACE_PRICE_ID", "price_workspace")
-    monkeypatch.setattr(billing_service.billing_repo, "try_claim_checkout_slot", AsyncMock(return_value="claim"))
-    monkeypatch.setattr(billing_service.billing_repo, "release_checkout_slot", AsyncMock())
-    monkeypatch.setattr(billing_service.billing_repo, "set_pending_checkout", AsyncMock())
-    monkeypatch.setattr(billing_service.time, "time", lambda: NOW + 10)
-    monkeypatch.setattr(
-        billing_service.stripe.Subscription,
-        "list",
-        MagicMock(return_value=MagicMock(auto_paging_iter=lambda: iter([]))),
-    )
-    create = MagicMock(return_value={"id": "cs_1", "url": "https://checkout.test/cs_1"})
-    monkeypatch.setattr(billing_service.stripe.checkout.Session, "create", create)
-    return create
-
-
-@pytest.mark.asyncio
-async def test_founding_trial_checkout_collects_a_card_and_charges_on_day_31(monkeypatch, checkout):
-    row = {
-        "owner_id": "org_1",
-        "stripe_customer_id": "cus_1",
-        "subscription_status": "trial_local",
-        "trial_end": NOW + 29 * DAY,
-        "founding_team": True,
-    }
-    monkeypatch.setattr(billing_service.billing_repo, "get_by_owner_id", AsyncMock(return_value=row))
-
-    await billing_service.create_workspace_checkout(owner_id="org_1", clerk_user_id="user_1", plan="workspace")
-
-    kwargs = checkout.call_args.kwargs
-    assert kwargs["payment_method_collection"] == "always"
-    assert kwargs["allow_promotion_codes"] is False
-    assert kwargs["subscription_data"]["trial_end"] == NOW + 29 * DAY
-    assert kwargs["subscription_data"]["metadata"]["price_lock_until"] == "2029-01-14"
-
-
-@pytest.mark.asyncio
-async def test_non_founding_paid_checkout_has_no_trial_and_no_lock(monkeypatch, checkout):
-    row = {"owner_id": "org_1", "stripe_customer_id": "cus_1", "subscription_status": "canceled"}
-    monkeypatch.setattr(billing_service.billing_repo, "get_by_owner_id", AsyncMock(return_value=row))
-
-    await billing_service.create_workspace_checkout(owner_id="org_1", clerk_user_id="user_1", plan="workspace")
-
-    kwargs = checkout.call_args.kwargs
-    assert "trial_end" not in kwargs["subscription_data"]
-    assert "price_lock_until" not in kwargs["metadata"]
-
-
 @pytest.mark.asyncio
 async def test_marking_a_live_subscription_founding_stamps_the_lock_once(monkeypatch):
     monkeypatch.setattr(
@@ -102,80 +53,6 @@ async def test_marking_a_live_subscription_founding_stamps_the_lock_once(monkeyp
     modify.assert_not_called()
 
 
-@pytest.mark.asyncio
-async def test_checkout_with_front_desk_adds_the_item_and_no_trial(monkeypatch, checkout):
-    monkeypatch.setattr(billing_service.settings, "STRIPE_FRONT_DESK_PRICE_ID", "price_fd")
-    row = {
-        "owner_id": "org_1",
-        "stripe_customer_id": "cus_1",
-        "subscription_status": "trial_local",
-        "trial_end": NOW + 20 * DAY,
-    }
-    monkeypatch.setattr(billing_service.billing_repo, "get_by_owner_id", AsyncMock(return_value=row))
-
-    await billing_service.create_workspace_checkout(
-        owner_id="org_1", clerk_user_id="user_1", plan="workspace", front_desk=True
-    )
-
-    kwargs = checkout.call_args.kwargs
-    assert kwargs["line_items"] == [
-        {"price": "price_workspace", "quantity": 1},
-        {"price": "price_fd", "quantity": 1},
-    ]
-    assert "trial_end" not in kwargs["subscription_data"]
-    assert kwargs["idempotency_key"].endswith(":fd1")
-
-
-@pytest.mark.asyncio
-async def test_checkout_without_front_desk_is_unchanged(monkeypatch, checkout):
-    row = {"owner_id": "org_1", "stripe_customer_id": "cus_1", "subscription_status": "canceled"}
-    monkeypatch.setattr(billing_service.billing_repo, "get_by_owner_id", AsyncMock(return_value=row))
-
-    await billing_service.create_workspace_checkout(owner_id="org_1", clerk_user_id="user_1", plan="workspace")
-
-    kwargs = checkout.call_args.kwargs
-    assert kwargs["line_items"] == [{"price": "price_workspace", "quantity": 1}]
-    assert kwargs["idempotency_key"].endswith(":fd0")
-
-
-@pytest.mark.asyncio
-async def test_front_desk_checkout_refuses_a_live_subscription(monkeypatch, checkout):
-    monkeypatch.setattr(billing_service.settings, "STRIPE_FRONT_DESK_PRICE_ID", "price_fd")
-    row = {"owner_id": "org_1", "stripe_customer_id": "cus_1"}
-    monkeypatch.setattr(billing_service.billing_repo, "get_by_owner_id", AsyncMock(return_value=row))
-    live = {
-        "id": "sub_1",
-        "status": "active",
-        "customer": "cus_1",
-        "metadata": {"workspace_id": "org_1", "owner_id": "org_1"},
-        "items": {"data": [{"id": "si_1", "price": {"id": "price_workspace"}}]},
-    }
-    monkeypatch.setattr(
-        billing_service.stripe.Subscription,
-        "list",
-        MagicMock(return_value=MagicMock(auto_paging_iter=lambda: iter([live]))),
-    )
-    modify = MagicMock()
-    monkeypatch.setattr(billing_service.stripe.Subscription, "modify", modify)
-
-    with pytest.raises(billing_service.BillingServiceError, match="already_subscribed"):
-        await billing_service.create_workspace_checkout(
-            owner_id="org_1", clerk_user_id="user_1", plan="workspace", front_desk=True
-        )
-    modify.assert_not_called()
-    checkout.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_front_desk_checkout_refuses_without_a_price(monkeypatch, checkout):
-    monkeypatch.setattr(billing_service.settings, "STRIPE_FRONT_DESK_PRICE_ID", "")
-    with pytest.raises(billing_service.BillingServiceError, match="front_desk_price_unconfigured"):
-        await billing_service.create_workspace_checkout(
-            owner_id="org_1", clerk_user_id="user_1", plan="workspace", front_desk=True
-        )
-    checkout.assert_not_called()
-
-
 def test_billing_has_no_seat_item():
     """One flat plan: no seat price, no seat count, no seat fields on the account."""
     from core.config import settings
@@ -184,3 +61,24 @@ def test_billing_has_no_seat_item():
     assert not hasattr(settings, "STRIPE_SEAT_PRICE_ID") and not hasattr(settings, "SEAT_PRICE_USD")
     assert not hasattr(billing_service, "seats_for_workspace") and not hasattr(billing_service, "sync_seat_quantity")
     assert not {"seat_price_usd", "included_members"} & set(BillingAccountResponse.model_fields)
+
+
+def test_the_retired_workspace_prices_and_checkout_are_gone():
+    from core.config import settings
+    from schemas.billing import BillingAccountResponse
+
+    for name in (
+        "STRIPE_WORKSPACE_PRICE_ID",
+        "STRIPE_BASE_PRICE_ID",
+        "STRIPE_ULTRA_PRICE_ID",
+        "STRIPE_FRONT_DESK_PRICE_ID",
+        "WORKSPACE_PRICE_USD",
+        "BASE_PRICE_USD",
+        "ULTRA_PRICE_USD",
+        "FRONT_DESK_PRICE_USD",
+    ):
+        assert not hasattr(settings, name), name
+    assert not hasattr(billing_service, "create_workspace_checkout")
+    assert not {"workspace_price_usd", "base_price_usd", "ultra_price_usd", "front_desk", "front_desk_price_usd"} & set(
+        BillingAccountResponse.model_fields
+    )

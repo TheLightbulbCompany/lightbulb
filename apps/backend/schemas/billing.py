@@ -29,18 +29,6 @@ class BillingAccountResponse(BaseModel):
     # row created before the plan field existed reads "standard"; a trial_local
     # row or no row at all has no plan and reads null.
     plan: str | None = None
-    # Server-owned workspace price display. Clients must not bake this into a
-    # binary because a catalog update would otherwise leave stale checkout
-    # copy in the field.
-    workspace_price_usd: int
-    # Default keeps pre-Base billing rows/API callers backward compatible;
-    # legacy callers may omit this field safely.
-    # the router still supplies the server-owned configured value when present.
-    base_price_usd: int = 20
-    ultra_price_usd: int
-    # The Front desk add-on (a texting number): whether this workspace has it, and its monthly price.
-    front_desk: bool = False
-    front_desk_price_usd: int | None = None
     # Managed-credit markup (provider price x this), from openrouter-pricing.json via CDK.
     managed_markup: str | None = None
     # Which channel the live subscription was bought through: "apple_iap", or

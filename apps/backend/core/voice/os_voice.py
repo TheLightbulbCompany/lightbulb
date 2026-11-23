@@ -533,8 +533,13 @@ async def run_sideband(sid: str) -> None:
 
 async def forget(user_id: str, sessions) -> None:
     """Close the person's open sessions, then delete their saved transcripts. A closed session's sideband can
-    save no more turns (`_save_turn` writes only while the session is active)."""
-    for sid in sessions or ():
+    save no more turns (`_save_turn` writes only while the session is active). `sessions` is their users row's
+    active set; a replaced session left it but stays active until its sideband closes it, so every active
+    session of theirs on the status index is closed too (the index can lag a new one, hence the union)."""
+    rows = await container_repo.get_by_status(ACTIVE)
+    for sid in set(sessions or ()) | {
+        r["sessionId"] for r in rows if r.get("userId") == user_id and r.get("sessionId")
+    }:
         await close_and_wait(sid, "signed_out")  # OpenAI gets session.close before the cleanup
     await delete_transcripts(user_id)
 

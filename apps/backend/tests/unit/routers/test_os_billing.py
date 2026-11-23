@@ -807,14 +807,14 @@ async def test_a_referral_during_checkout_is_applied_by_the_first_webhook(ddb, c
     assert [c[1]["trial_end"] for c in fake.calls if c[0] == "modify"] == [START + 4 * DAY]
 
 
-async def test_deleting_an_account_expires_its_open_checkout_session(ddb, clock, fake):
+async def test_deleting_an_account_expires_its_open_checkout_session(ddb, clock, fake, gone):
     await open_link((await account())["checkoutUrl"])
     assert fake.sessions["cs_1"]["status"] == "open"
     await os_billing.cancel_for_deleted_user("user_a")
     assert fake.sessions["cs_1"]["status"] == "expired" and "cancel" not in fake.kinds()
 
 
-async def test_deleting_an_account_with_a_completed_checkout_session_goes_on(ddb, clock, fake):
+async def test_deleting_an_account_with_a_completed_checkout_session_goes_on(ddb, clock, fake, gone):
     await open_link((await account())["checkoutUrl"])
     fake.sessions["cs_1"] |= {"status": "complete", "subscription": {"id": "sub_1", "status": "active"}}
     await os_billing.cancel_for_deleted_user("user_a")  # no raise
@@ -878,7 +878,17 @@ def gone(ddb, monkeypatch):
     dynamodb._dynamodb_resource.create_table(
         TableName=dynamodb.table_name("containers"),
         KeySchema=[{"AttributeName": "owner_id", "KeyType": "HASH"}],
-        AttributeDefinitions=[{"AttributeName": "owner_id", "AttributeType": "S"}],
+        AttributeDefinitions=[
+            {"AttributeName": "owner_id", "AttributeType": "S"},
+            {"AttributeName": "status", "AttributeType": "S"},
+        ],
+        GlobalSecondaryIndexes=[
+            {
+                "IndexName": "status-index",
+                "KeySchema": [{"AttributeName": "status", "KeyType": "HASH"}],
+                "Projection": {"ProjectionType": "ALL"},
+            }
+        ],
         BillingMode="PAY_PER_REQUEST",
     )
     out = SimpleNamespace(deleted=[], events=[])
@@ -930,6 +940,15 @@ async def test_every_account_deletion_path_deletes_the_transcripts(ddb, clock, f
     await os_billing.cancel_for_deleted_user("user_a")
     assert (await os_voice.get(SID))["endedReason"] == "signed_out"
     assert [i["user_id"] for i in t.scan()["Items"]] == ["user_b"]
+
+
+async def test_deletion_also_ends_a_replaced_session_so_it_saves_nothing_after(ddb, clock, fake, gone):
+    from core.voice import os_voice
+
+    await a_spark_account(ddb, fake)
+    await os_voice.reserve("user_a", "vs_newer", "hold", {}, START)  # SID is replaced, still active
+    await os_billing.cancel_for_deleted_user("user_a")
+    assert (await os_voice.get(SID))["endedReason"] == "signed_out"
 
 
 async def test_delete_twice_is_204_both_times(ddb, clock, fake, gone):

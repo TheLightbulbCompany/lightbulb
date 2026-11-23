@@ -3,7 +3,6 @@ import { auth } from "@clerk/nextjs/server";
 import { Card } from "@/components/admin/Card";
 import { DefRow } from "@/components/admin/DefRow";
 import { ErrorBanner } from "@/components/admin/ErrorBanner";
-import { OrgBanner } from "@/components/admin/OrgBanner";
 import { StatusChip } from "@/components/admin/StatusChip";
 import { getOverview } from "@/app/admin/_lib/api";
 import { formatRelativeTime } from "@/app/admin/_lib/time";
@@ -111,7 +110,6 @@ export default async function UserOverviewPage({ params }: UserOverviewPageProps
 
   return (
     <div className="space-y-4">
-      {overview.org ? <OrgBanner org={overview.org} /> : null}
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
         <IdentityCard identity={overview.identity} />
         <BillingCard billing={overview.billing} />

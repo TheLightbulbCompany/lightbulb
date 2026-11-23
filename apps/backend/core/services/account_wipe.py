@@ -22,28 +22,17 @@ Two entry points:
   collaborator's timeout must not block the Clerk delete (step 12, always last, so a
   killed account can never regrow on the next ``/container/status`` poll).
 
-Refuses org owner ids (``OrgWipeUnsupportedError``) — the target is always a
+Refuses a malformed user id (``MalformedUserIdError``) — the target is always a
 Clerk USER. Two callers: the admin wipe, and the Clerk ``user.deleted`` webhook
-(``clerk_user_deleted=True``: no Clerk read or delete, no workspace touched, a
-held phone line kept for an admin wipe). Wiping a whole workspace (its rows and every member) is
-``core.services.workspace_wipe`` — the workspace-keyed
-orchestrator that snapshots by ORG id; see its module docstring and the design
-spec's "Out of scope: Org accounts" follow-up note. When a user-keyed wipe
-finds no containers row but the member belongs to a workspace,
-``_org_hint_for_missing_container`` names the org and points at it.
-
-A human's wipe NEVER deletes a workspace: for every workspace the human
-belongs to (Clerk memberships, read strict before any step) only this human is
-dropped from the workspace row's members (``"paperclip_membership"``). The
-wipe calls neither the Paperclip server nor its Aurora database (Paperclip
-exit, task 8b.7).
+(``clerk_user_deleted=True``: no Clerk delete, a held phone line kept for an
+admin wipe). The wipe calls neither the Paperclip server nor its Aurora
+database (Paperclip exit, task 8b.7).
 
 Step-to-spec-row mapping. The design spec's teardown map lists 12 rows;
 this orchestrator emits one ``WipeStep`` per row EXCEPT rows 5 and 11,
 which fold into sibling steps because no standalone collaborator exists
 for them (see the inline notes at those call sites):
 
-  spec #1  -> "paperclip_membership" (WorkspaceRepo.remove_member, per workspace)
   spec #2  -> gone (the Better Auth user lived in Paperclip's Aurora)
   (no spec row) -> "bedrock_gate_tokens" (bedrock_gate_tokens.delete_gate_token_rows)
   (no spec row) -> "engine"           (wipe_engine_state: meeting bots, workflows, Schedules, tasks rows)
@@ -84,7 +73,7 @@ from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Awaitable, Callable, Literal
 
 import boto3
@@ -117,7 +106,7 @@ from core.services import clerk_admin, company_stripe, connection_service, text_
 from core.voice.meetings import records as meeting_records
 from core.voice.phone import voice_onboarding
 from core.services.billing_service import delete_stripe_customer
-from core.services.oauth_service import bound_owner_of, revoke_user_oauth
+from core.services.oauth_service import revoke_user_oauth
 from core.services.owner_secret_sweep import (
     _list_names_with_prefix,
     delete_owner_secrets,
@@ -265,31 +254,12 @@ async def resolve_account_emails(owner_id: str) -> list[str]:
     return emails
 
 
-class OrgWipeUnsupportedError(Exception):
-    """Raised by preview_wipe/wipe_account when ``owner_id`` names a Clerk
-    organization.
-
-    The wipe targets one Clerk user — an org is wiped by
-    ``core.services.workspace_wipe``. A user who is a MEMBER of an org is
-    accepted; no workspace is ever deleted by a human's wipe. The
-    router (Task 4) turns this into a 400.
-    """
-
-    def __init__(self, owner_id: str):
-        super().__init__(
-            f"Account wipe does not support org owners (v1 is personal-only): "
-            f"{owner_id!r} is a Clerk organization id, not a user id."
-        )
-        self.owner_id = owner_id
-
-
-class MalformedUserIdError(OrgWipeUnsupportedError):
+class MalformedUserIdError(Exception):
     """``owner_id`` is not a well-formed Clerk user id (``user_`` and alphanumerics): refused before any read
-    or delete, since every step deletes by this id or a prefix built from it. Callers map it as they map
-    ``OrgWipeUnsupportedError``."""
+    or delete, since every step deletes by this id or a prefix built from it."""
 
     def __init__(self, owner_id: str):
-        Exception.__init__(self, f"Account wipe needs a Clerk user id: {owner_id!r} is not one.")
+        super().__init__(f"Account wipe needs a Clerk user id: {owner_id!r} is not one.")
         self.owner_id = owner_id
 
 
@@ -311,17 +281,11 @@ class WipeReport:
     owner_id: str
     steps: list[WipeStep]
     dry_run: bool
-    workspaces: list[dict] = field(default_factory=list)
-    """``_workspace_memberships``: every workspace the human belongs to (whose
-    companies the wipe keeps). The UI asks for the first one's name before
-    executing.
-    (the UI asks for the workspace name before executing), else None."""
 
     def to_dict(self) -> dict:
         return {
             "owner_id": self.owner_id,
             "dry_run": self.dry_run,
-            "workspaces": self.workspaces,
             "steps": [
                 {
                     "system": s.system,
@@ -365,9 +329,6 @@ class _Identifiers:
     container: dict | None
     paperclip: Identity | None
     """The human's identity row in paperclip-companies."""
-    workspaces: list[str]
-    """Every workspace (Clerk org id) the human belongs to — read strict, so a
-    Clerk blip stops the wipe before its first step."""
     billing: dict | None
     pending_brief: dict | None
     """The owner's ``__pending_brief__:`` item, if any. Read independently of
@@ -377,120 +338,30 @@ class _Identifiers:
     has a pending brief and no company row at all."""
 
 
-async def _read_identifiers(owner_id: str, *, read_clerk: bool = True) -> _Identifiers:
+async def _read_identifiers(owner_id: str) -> _Identifiers:
     user_row = await user_repo.get(owner_id)
     container = await container_repo.get_by_owner_id(owner_id)
     workspace_repo = WorkspaceRepo()
     paperclip = await workspace_repo.get_identity(owner_id)
     pending_brief = await workspace_repo.get_pending_brief(owner_id)
     billing = await billing_repo.get_by_owner_id(owner_id)
-    workspaces = await _workspaces_of(owner_id) if read_clerk else []
     return _Identifiers(
         user_row=user_row,
         container=container,
         paperclip=paperclip,
-        workspaces=workspaces,
         billing=billing,
         pending_brief=pending_brief,
     )
 
 
-def _refuse_org_owners(owner_id: str) -> None:
-    if owner_id.startswith("org_"):  # a Clerk organization id: `workspace_wipe` is its door
-        raise OrgWipeUnsupportedError(owner_id)
+def _refuse_malformed_id(owner_id: str) -> None:
     if not _USER_ID.fullmatch(owner_id or ""):
         raise MalformedUserIdError(owner_id)
-
-
-async def _workspaces_of(user_id: str) -> list[str]:
-    """The human's workspaces from Clerk. Strict: a read failure raises, and
-    the wipe stops before its first step instead of guessing "none"."""
-    orgs = await clerk_admin.list_user_organizations(user_id, strict=True)
-    return sorted({o["id"] for o in orgs if o.get("id") and o["id"].startswith("org_")})
-
-
-def _org_hint_for_missing_container(workspaces: list[str]) -> str:
-    """Loud skip detail when a user-keyed wipe finds no containers row.
-
-    Incident 2026-09-21: a user-keyed wipe of a workspace member misses the
-    containers row (it lives under the ORG id) while every other user-keyed
-    row is still destroyed — a half-wipe that reads as a clean skip. When the
-    human belongs to a workspace, say so and point at the workspace wipe
-    (``core.services.workspace_wipe``) instead of reporting a bare absence.
-    Never deletes anything; detail text only.
-    """
-    if workspaces:
-        org_id = workspaces[0]
-        return (
-            "no containers row under this USER id — but this account belongs to "
-            f"workspace {org_id}, whose runtime lives under the ORG id. A user-keyed "
-            "wipe cannot reach it; use the workspace wipe "
-            f"(POST /admin/workspaces/{org_id}/wipe) instead."
-        )
-    return "no containers row"
-
-
-#: What removing a workspace's LAST member sets off: Clerk keeps the empty org, and the
-#: ``organizationMembership.deleted`` webhook's last-member teardown (#3115,
-#: ``routers/webhooks._teardown_if_no_members_left``) runs the org-deletion path. The wipe
-#: itself deletes none of this -- which is exactly why the preview has to say so.
-LAST_MEMBER_TEARDOWN = (
-    "cancels the workspace's Stripe subscription",
-    "deletes the workspace's agent runtime",
-    "disables its Teams workspace, which stops every routine including the nightly CEO run",
-    "retires its managed AI key and revokes its join link",
-)
-
-
-async def _workspace_memberships(workspaces: list[str], owner_id: str) -> list[dict]:
-    """The facts of EVERY workspace the human belongs to, for the report and
-    the admin's workspace-name confirm. Each workspace's company is kept: a
-    human's wipe never deletes a company -- but when ``owner_id`` is a workspace's
-    LAST member, removing them tears that workspace down (``LAST_MEMBER_TEARDOWN``).
-
-    "Last" is Clerk's roster, read STRICT (the same read that decides the teardown):
-    a Clerk blip raises and stops the preview or wipe, rather than hiding a teardown."""
-    repo = WorkspaceRepo()
-    out: list[dict] = []
-    for org_id in workspaces:
-        ws = await repo.get_workspace(org_id)
-        provisioner = ws.provisioner_user_id if ws is not None else ""
-        identity = await repo.get_identity(provisioner) if provisioner else None
-        org = await clerk_admin.get_organization(org_id)
-        # No Clerk key (tests, local dev): the webhook cannot read a roster either, so it tears
-        # nothing down -- unknown is not "empty", on both sides.
-        roster = await clerk_admin.list_organization_members(org_id, strict=True) if settings.CLERK_SECRET_KEY else None
-        last_member = roster is not None and all(m.get("user_id") == owner_id for m in roster)
-        out.append(
-            {
-                "company_id": ws.company_id if ws is not None else "",
-                "org_id": org_id,
-                "workspace_name": (org or {}).get("name") or None,
-                "owner_user_id": provisioner or None,
-                "owner_email": (identity.paperclip_email or None) if identity is not None else None,
-                "member_count": len(ws.member_user_ids) if ws is not None else 0,
-                "last_member": last_member,
-                "teardown": list(LAST_MEMBER_TEARDOWN) if last_member else [],
-            }
-        )
-    return out
-
-
-async def resolve_workspace_memberships(owner_id: str) -> list[dict]:
-    """``_workspace_memberships`` for ``owner_id`` — the admin router's input
-    for its workspace-name confirm."""
-    return await _workspace_memberships(await _workspaces_of(owner_id), owner_id)
 
 
 # ---------------------------------------------------------------------------
 # Compound collaborators — wrapped so each is a single mockable async unit.
 # ---------------------------------------------------------------------------
-
-
-async def _archive_paperclip_member_call(user_id: str, org_id: str) -> None:
-    """The same removal ``organizationMembership.deleted`` uses: drops only this member from
-    THIS workspace's members (``remove_member``, a no-op once the row is gone)."""
-    await WorkspaceRepo().remove_member(org_id, user_id)
 
 
 async def _archive_metronome_customer(customer_id: str) -> None:
@@ -598,21 +469,11 @@ async def preview_wipe(owner_id: str) -> WipeReport:
     """Read-only enumeration of what a wipe would delete. Calls NO delete
     method — every read here is a GetItem/Query (or, for the EFS workspace
     directory, a filesystem existence check)."""
-    _refuse_org_owners(owner_id)
+    _refuse_malformed_id(owner_id)
 
     ids = await _read_identifiers(owner_id)
-    memberships = await _workspace_memberships(ids.workspaces, owner_id)
     steps: list[WipeStep] = []
 
-    if memberships:
-        steps.append(
-            WipeStep(
-                "paperclip_membership",
-                "archive_member",
-                "would_delete",
-                f"only this member is removed from {', '.join(ids.workspaces)}; every workspace is kept",
-            )
-        )
     gate_token_hashes = owner_gate_token_hashes(ids.container)
     _preview_step(
         steps,
@@ -634,7 +495,7 @@ async def preview_wipe(owner_id: str) -> WipeReport:
             "(+ boot secret, S3 profiles, containers row, "
             "and the Bedrock footprint: gate-token rows, AIPs, IAM role)"
         ),
-        detail_if_absent=_org_hint_for_missing_container(ids.workspaces),
+        detail_if_absent="no containers row",
     )
 
     # No standalone bedrock_aips / bedrock_role preview steps: the executed wipe
@@ -808,7 +669,7 @@ async def preview_wipe(owner_id: str) -> WipeReport:
 
     steps.append(WipeStep(system="clerk_user", action="delete_user", status="would_delete", detail=owner_id))
 
-    return WipeReport(owner_id=owner_id, steps=steps, dry_run=True, workspaces=memberships)
+    return WipeReport(owner_id=owner_id, steps=steps, dry_run=True)
 
 
 # ---------------------------------------------------------------------------
@@ -820,8 +681,7 @@ async def wipe_account(owner_id: str, *, actor_admin_id: str, clerk_user_deleted
     """Execute the ordered teardown (design spec steps 1-12).
 
     ``clerk_user_deleted``: Clerk already deleted the person (the ``user.deleted`` webhook). Then the wipe
-    reads nothing from Clerk and deletes no Clerk user, removes the person from no workspace (each org's
-    ``organizationMembership.deleted`` does that), and releases no phone line: a tenant holding one keeps
+    deletes no Clerk user and releases no phone line: a tenant holding one keeps
     its messaging rows so an admin wipe can release the line.
 
     ``actor_admin_id`` is not used for a delete decision here — it exists so
@@ -830,11 +690,9 @@ async def wipe_account(owner_id: str, *, actor_admin_id: str, clerk_user_deleted
     that writes the admin-actions audit row with this id + the returned
     report.
     """
-    _refuse_org_owners(owner_id)
+    _refuse_malformed_id(owner_id)
 
-    ids = await _read_identifiers(owner_id, read_clerk=not clerk_user_deleted)
-    # Before any step runs: a raise here stops the wipe with nothing deleted.
-    memberships = await _workspace_memberships(ids.workspaces, owner_id)
+    ids = await _read_identifiers(owner_id)
     steps: list[WipeStep] = []
 
     logger.info(
@@ -842,18 +700,6 @@ async def wipe_account(owner_id: str, *, actor_admin_id: str, clerk_user_deleted
         owner_id,
         actor_admin_id,
     )
-
-    # --- Step 1 (spec #1): workspace memberships ---------------------------
-    # A human's wipe never deletes a workspace: it only drops this human from
-    # each workspace's members.
-    if memberships:
-
-        async def _s1m() -> str:
-            for org_id in ids.workspaces:
-                await _archive_paperclip_member_call(owner_id, org_id)
-            return f"removed from {', '.join(ids.workspaces)}; workspaces kept"
-
-        await _step(steps, system="paperclip_membership", action="archive_member", fn=_s1m)
 
     # --- Step 2b: bedrock-gate token rows ----------------------------------
     # The gate-tokens table is keyed on the token hash with NO owner index, so
@@ -867,7 +713,7 @@ async def wipe_account(owner_id: str, *, actor_admin_id: str, clerk_user_deleted
     #
     # THE SNAPSHOT IS NOT AUTHORITATIVE HERE, and ordering alone does not make
     # it so. ``_read_identifiers`` reads the containers row eventually
-    # consistently, and reads it before the membership step above runs — so a
+    # consistently, and reads it before any step runs — so a
     # ``mint_gate_token`` that landed just before the wipe, or concurrently with
     # those steps, can leave its ``denied=False`` hash off ``ids.container``
     # entirely. Re-read STRONGLY CONSISTENT at the moment of use and delete the
@@ -911,9 +757,9 @@ async def wipe_account(owner_id: str, *, actor_admin_id: str, clerk_user_deleted
             await wipe_owner_voice(owner_id)
         except Exception:  # noqa: BLE001
             logger.warning("voice wipe failed owner=%s", owner_id, exc_info=True)
-        # M6-R42: this is one of exactly THREE terminal callers that pass
+        # M6-R42: this is one of exactly TWO terminal callers that pass
         # ``delete_profiles=True`` -- this wipe (an admin's, or Clerk ``user.deleted``'s),
-        # ``workspace_wipe`` (org-keyed), and ``routers/debug.py``'s ``DELETE /debug/user-data`` (the e2e
+        # and ``routers/debug.py``'s ``DELETE /debug/user-data`` (the e2e
         # empty-slate reset; debug is 403 in prod).
         # Every other caller (entitlement_teardown on a lapsed card, debug's routine
         # reprovision) leaves it False and keeps the owner's memory/skills/SOUL.md/
@@ -921,10 +767,9 @@ async def wipe_account(owner_id: str, *, actor_admin_id: str, clerk_user_deleted
         report: dict = {}
         row_at_death = await delete_workspace_runtime(owner_id, delete_profiles=True, report=report)
         if ids.container is None and row_at_death is None:
-            hint = f" {_org_hint_for_missing_container(ids.workspaces)}" if ids.workspaces else ""
             return (
                 "no containers row; owner-keyed cleanup done (S3 profiles, browser state, Bedrock footprint, "
-                f"workspace memory).{hint}"
+                "workspace memory)."
             )
         detail = _runtime_detail(report)
         # FINAL SWEEP — the last moment any gate-token hash is reachable.
@@ -1134,9 +979,6 @@ async def wipe_account(owner_id: str, *, actor_admin_id: str, clerk_user_deleted
     # this codebase, so the grant stays live on their side until it expires
     # or the human revokes it in their OpenAI account settings.
     async def _s9h() -> str:
-        # A sign-in the person made for an org is that org's credential: its own lifecycle owns it.
-        if clerk_user_deleted and await bound_owner_of(owner_id) not in (None, owner_id):
-            return "kept: the stored ChatGPT sign-in is bound to an organization"
         await revoke_user_oauth(user_id=owner_id)
         return "stored chatgpt oauth tokens deleted (grant NOT revoked upstream at OpenAI)"
 
@@ -1188,4 +1030,4 @@ async def wipe_account(owner_id: str, *, actor_admin_id: str, clerk_user_deleted
         sum(1 for s in steps if s.status == "refused"),
     )
 
-    return WipeReport(owner_id=owner_id, steps=steps, dry_run=False, workspaces=memberships)
+    return WipeReport(owner_id=owner_id, steps=steps, dry_run=False)

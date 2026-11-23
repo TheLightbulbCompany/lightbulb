@@ -265,10 +265,6 @@ async def test_get_provisioning_narrows_and_excludes_secrets():
 
     with (
         patch(
-            "core.services.admin_service.resolve_admin_owner_id",
-            new=AsyncMock(return_value=("owner_1", None)),
-        ),
-        patch(
             "core.services.admin_service.container_repo.get_by_owner_id",
             new=AsyncMock(return_value=container_row),
         ),
@@ -283,7 +279,7 @@ async def test_get_provisioning_narrows_and_excludes_secrets():
         patch("core.services.admin_service.probe_provision_gate", new=AsyncMock(return_value=None)),
         patch("core.services.admin_service.running_execution", new=AsyncMock(return_value=None)),
     ):
-        result = await admin_service.get_provisioning("user_1")
+        result = await admin_service.get_provisioning("owner_1")
 
     flat = json.dumps(result)
     assert "SECRET-GW" not in flat
@@ -302,14 +298,14 @@ async def test_get_provisioning_narrows_and_excludes_secrets():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("status", ["failed", "provisioning"])
-async def test_get_provisioning_includes_inactive_authoritative_org_row(status):
-    """Diagnostics retain failure details while the org row is not active."""
+async def test_get_provisioning_includes_inactive_authoritative_row(status):
+    """Diagnostics retain failure details while the workspace row is not active."""
     from core.repositories.workspace_repo import Workspace
     from core.services import admin_service
 
     now = datetime.now(timezone.utc)
     paperclip_company = Workspace(
-        org_id="org_acme",
+        org_id="user_acme",
         company_id="company_1",
         provisioner_user_id="owner_user",
         status=status,
@@ -327,10 +323,6 @@ async def test_get_provisioning_includes_inactive_authoritative_org_row(status):
 
     with (
         patch(
-            "core.services.admin_service.resolve_admin_owner_id",
-            new=AsyncMock(return_value=("org_acme", {"id": "org_acme"})),
-        ),
-        patch(
             "core.services.admin_service.container_repo.get_by_owner_id",
             new=AsyncMock(return_value=None),
         ),
@@ -342,7 +334,7 @@ async def test_get_provisioning_includes_inactive_authoritative_org_row(status):
         patch("core.services.admin_service.probe_provision_gate", new=AsyncMock(return_value=None)),
         patch("core.services.admin_service.running_execution", new=AsyncMock(return_value=None)),
     ):
-        result = await admin_service.get_provisioning("admin_user")
+        result = await admin_service.get_provisioning("user_acme")
 
     assert result["paperclip"]["status"] == status
     assert result["paperclip"]["last_error"] == "starter seed incomplete"
@@ -358,10 +350,6 @@ async def test_get_provisioning_no_rows_degrades_to_nones():
 
     with (
         patch(
-            "core.services.admin_service.resolve_admin_owner_id",
-            new=AsyncMock(return_value=("owner_1", None)),
-        ),
-        patch(
             "core.services.admin_service.container_repo.get_by_owner_id",
             new=AsyncMock(return_value=None),
         ),
@@ -376,7 +364,7 @@ async def test_get_provisioning_no_rows_degrades_to_nones():
         patch("core.services.admin_service.probe_provision_gate", new=AsyncMock(return_value=None)),
         patch("core.services.admin_service.running_execution", new=AsyncMock(return_value=None)),
     ):
-        result = await admin_service.get_provisioning("user_1")
+        result = await admin_service.get_provisioning("owner_1")
 
     assert result["container"] is None
     assert result["paperclip"] is None
@@ -403,10 +391,6 @@ async def test_get_provisioning_container_read_failure_isolated_from_compute_sta
 
     with (
         patch(
-            "core.services.admin_service.resolve_admin_owner_id",
-            new=AsyncMock(return_value=("owner_1", None)),
-        ),
-        patch(
             "core.services.admin_service.container_repo.get_by_owner_id",
             new=AsyncMock(side_effect=RuntimeError("ddb_blip")),
         ),
@@ -418,7 +402,7 @@ async def test_get_provisioning_container_read_failure_isolated_from_compute_sta
         patch("core.services.admin_service.probe_provision_gate", new=AsyncMock(return_value=None)),
         patch("core.services.admin_service.running_execution", new=AsyncMock(return_value=None)),
     ):
-        result = await admin_service.get_provisioning("user_1")  # must not raise
+        result = await admin_service.get_provisioning("owner_1")  # must not raise
 
     compute_status_mock.assert_awaited_once_with("owner_1", container=None)
     assert result["container"] == {"error": "ddb_blip", "source": "ddb_containers"}
@@ -445,10 +429,6 @@ async def test_get_provisioning_paperclip_read_failure_not_mistaken_for_empty_ro
 
     with (
         patch(
-            "core.services.admin_service.resolve_admin_owner_id",
-            new=AsyncMock(return_value=("owner_1", None)),
-        ),
-        patch(
             "core.services.admin_service.container_repo.get_by_owner_id",
             new=AsyncMock(return_value=None),
         ),
@@ -463,7 +443,7 @@ async def test_get_provisioning_paperclip_read_failure_not_mistaken_for_empty_ro
         patch("core.services.admin_service.probe_provision_gate", new=AsyncMock(return_value=None)),
         patch("core.services.admin_service.running_execution", new=AsyncMock(return_value=None)),
     ):
-        result = await admin_service.get_provisioning("user_1")  # must not raise
+        result = await admin_service.get_provisioning("owner_1")  # must not raise
 
     assert result["paperclip"] == {"error": "ddb_blip", "source": "ddb_paperclip"}
     # Distinguishable from the genuinely-no-row case, which is bare None —
@@ -489,10 +469,6 @@ async def test_get_provisioning_sfn_read_failure_not_mistaken_for_no_execution()
 
     with (
         patch(
-            "core.services.admin_service.resolve_admin_owner_id",
-            new=AsyncMock(return_value=("owner_1", None)),
-        ),
-        patch(
             "core.services.admin_service.container_repo.get_by_owner_id",
             new=AsyncMock(return_value=container_row),
         ),
@@ -510,7 +486,7 @@ async def test_get_provisioning_sfn_read_failure_not_mistaken_for_no_execution()
             new=AsyncMock(side_effect=RuntimeError("sfn_blip")),
         ),
     ):
-        result = await admin_service.get_provisioning("user_1")  # must not raise
+        result = await admin_service.get_provisioning("owner_1")  # must not raise
 
     assert result["sfn_execution"] == {"error": "sfn_blip", "source": "sfn_execution"}
     # Distinguishable from the genuinely-no-execution case, which is bare
@@ -542,10 +518,6 @@ async def test_get_provisioning_narrows_sfn_response():
 
     with (
         patch(
-            "core.services.admin_service.resolve_admin_owner_id",
-            new=AsyncMock(return_value=("owner_1", None)),
-        ),
-        patch(
             "core.services.admin_service.container_repo.get_by_owner_id",
             new=AsyncMock(return_value=container_row),
         ),
@@ -560,7 +532,7 @@ async def test_get_provisioning_narrows_sfn_response():
         patch("core.services.admin_service.probe_provision_gate", new=AsyncMock(return_value=None)),
         patch("core.services.admin_service.running_execution", new=describe_mock),
     ):
-        result = await admin_service.get_provisioning("user_1")
+        result = await admin_service.get_provisioning("owner_1")
 
     describe_mock.assert_awaited_once_with("owner_1")
     assert set(result["sfn_execution"]) == {"name", "status", "start_date", "stop_date"}
@@ -590,10 +562,6 @@ async def test_get_provisioning_gate_payload_shape():
 
     with (
         patch(
-            "core.services.admin_service.resolve_admin_owner_id",
-            new=AsyncMock(return_value=("owner_1", None)),
-        ),
-        patch(
             "core.services.admin_service.container_repo.get_by_owner_id",
             new=AsyncMock(return_value=None),
         ),
@@ -608,7 +576,7 @@ async def test_get_provisioning_gate_payload_shape():
         patch("core.services.admin_service.probe_provision_gate", new=AsyncMock(return_value=gate)),
         patch("core.services.admin_service.running_execution", new=AsyncMock(return_value=None)),
     ):
-        result = await admin_service.get_provisioning("user_1")
+        result = await admin_service.get_provisioning("owner_1")
 
     assert result["gate"]["code"] == "subscription_required"
     assert result["gate"] == gate.to_payload()["blocked"]
@@ -624,10 +592,6 @@ async def test_get_provisioning_gate_probe_failure_degrades_to_none_not_crash():
     from core.services import admin_service
 
     with (
-        patch(
-            "core.services.admin_service.resolve_admin_owner_id",
-            new=AsyncMock(return_value=("owner_1", None)),
-        ),
         patch(
             "core.services.admin_service.container_repo.get_by_owner_id",
             new=AsyncMock(return_value=None),
@@ -646,7 +610,7 @@ async def test_get_provisioning_gate_probe_failure_degrades_to_none_not_crash():
         ),
         patch("core.services.admin_service.running_execution", new=AsyncMock(return_value=None)),
     ):
-        result = await admin_service.get_provisioning("user_1")  # must not raise
+        result = await admin_service.get_provisioning("owner_1")  # must not raise
 
     assert result["gate"] is None
 

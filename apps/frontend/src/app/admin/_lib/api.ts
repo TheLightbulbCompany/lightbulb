@@ -57,14 +57,6 @@ export interface UserDirectoryRow {
   banned: boolean;
   container_status: string;
   subscription_status: string | null;
-  /**
-   * Populated when the user belongs to a Clerk org. The list-view
-   * container_status is now resolved via owner_id (== org_id for org members)
-   * so org rows surface the real container state; this field lets the table
-   * render an inline `[org:slug]` hint next to the email so admins can tell
-   * at a glance which rows are organizational.
-   */
-  org?: AdminOrgContext | null;
 }
 
 export interface UsersPage {
@@ -73,25 +65,11 @@ export interface UsersPage {
   stubbed: boolean;
 }
 
-export interface AdminOrgContext {
-  id: string;
-  slug: string;
-  name: string;
-  role: string;
-}
-
 export interface UserOverview {
   identity: unknown;
   container: unknown;
   billing: unknown;
   usage: unknown;
-  /**
-   * Populated when the target user belongs to a Clerk org. The DDB rows in
-   * container/billing/usage are keyed by ``owner_id == org_id`` in that case,
-   * so the dashboard surfaces this as an indigo banner making the provenance
-   * explicit to the admin.
-   */
-  org?: AdminOrgContext | null;
 }
 
 export interface AgentSummary {
@@ -106,7 +84,6 @@ export interface AgentsPage {
   cursor: string | null;
   container_status: string;
   error?: string;
-  org?: AdminOrgContext | null;
 }
 
 export interface AgentDetail {
@@ -433,7 +410,6 @@ export async function getOverview(
 
 export interface AdminProvisioning {
   owner_id: string;
-  org: unknown;
   status_contract:
     | ({
         runtime_phase?: string;

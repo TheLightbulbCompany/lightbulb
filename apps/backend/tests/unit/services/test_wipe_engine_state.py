@@ -178,10 +178,8 @@ async def test_a_bot_recall_refuses_fails_the_step_after_the_rest_ran(world):
 
 
 @pytest.mark.asyncio
-async def test_both_wipes_run_engine_step(wipe_mocks):  # noqa: F811 -- the imported fixture
-    """Both terminal wipes run the step before the runtime goes, and both previews list it."""
-    from core.services import workspace_wipe
-
+async def test_the_wipe_runs_engine_step(wipe_mocks):  # noqa: F811 -- the imported fixture
+    """The wipe runs the step before the runtime goes, and the preview lists it."""
     preview = await account_wipe.preview_wipe(OWNER_ID)
     report = await account_wipe.wipe_account(OWNER_ID, actor_admin_id="admin_1")
     for steps in (preview.steps, report.steps):
@@ -189,21 +187,6 @@ async def test_both_wipes_run_engine_step(wipe_mocks):  # noqa: F811 -- the impo
         assert systems.index("engine") < systems.index("runtime")
     assert next(s for s in preview.steps if s.system == "engine").detail == account_wipe.ENGINE_PREVIEW
     wipe_mocks.engine_wipe.assert_awaited_once_with(OWNER_ID)
-
-    order = workspace_wipe.WORKSPACE_STEP_ORDER
-    assert order.index(("engine", "wipe_engine_state")) < order.index(("runtime", "delete_workspace_runtime"))
-    engine = next(d for d in workspace_wipe.WORKSPACE_STEP_REGISTRY if d.system == "engine")
-    assert engine.preview(None) == (True, account_wipe.ENGINE_PREVIEW)
-
-    snap = SimpleNamespace(org_id="org_x", members=[{"user_id": "user_m", "in_clerk": True, "other_orgs": []}])
-    with (
-        patch.object(workspace_wipe, "wipe_engine_state", AsyncMock(return_value="done")) as step,
-        patch.object(workspace_wipe, "deletable_member_ids", lambda s: ["user_m"]),
-        patch.object(workspace_wipe.connection_service, "delete_all_for_user", AsyncMock()) as conns,
-    ):
-        assert await engine.run(snap) == "done"
-    step.assert_awaited_once_with("org_x")
-    conns.assert_awaited_once_with("user_m")
 
 
 @pytest.mark.asyncio

@@ -92,8 +92,8 @@ def test_a_session_room_projects_its_session_and_nothing_else_does():
 @pytest.mark.asyncio
 async def test_people_in_a_session_chat_follow_the_session_never_a_hand(monkeypatch):
     with pytest.raises(ApiProblem):
-        messaging._deny_vendor_human_change(META, "human")
-    messaging._deny_vendor_human_change(META, "agent")  # the owner may add agents
+        messaging._deny_managed_human_change(META, "human")
+    messaging._deny_managed_human_change(META, "agent")  # the owner may add agents
     monkeypatch.setattr(messaging, "require_room_member", AsyncMock(return_value=(META, {"role": "owner"})))
     for archived in (True, False):
         with pytest.raises(ApiProblem) as refused:

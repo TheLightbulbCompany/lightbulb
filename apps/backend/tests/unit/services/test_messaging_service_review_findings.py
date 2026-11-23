@@ -900,7 +900,7 @@ async def test_patch_room_refuses_to_archive_a_dm(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_patch_room_refuses_to_archive_general_and_the_shared_vendor_channel(monkeypatch):
+async def test_patch_room_refuses_to_archive_general(monkeypatch):
     auth = AuthContext(user_id="admin", human_session=True)
     general = {"roomId": messaging.default_room_id("org_1"), "ownerId": "org_1", "kind": "channel", "revision": 1}
     patch_meta, _ = _archive_fixture(monkeypatch, general)
@@ -908,12 +908,6 @@ async def test_patch_room_refuses_to_archive_general_and_the_shared_vendor_chann
         await messaging.patch_room(auth, general["roomId"], messaging.PatchRoomRequest(archived=True))
     assert exc.value.error.code == "ROOM_NOT_ARCHIVABLE"
 
-    monkeypatch.setattr(messaging.settings, "VENDOR_ORG_ID", "org_vendor")
-    vendor = {"roomId": messaging.messaging_repo.vendor_room_id("org_1"), "ownerId": "org_1", "kind": "channel"}
-    _archive_fixture(monkeypatch, {**vendor, "revision": 1})
-    with pytest.raises(ApiProblem) as exc:
-        await messaging.patch_room(auth, vendor["roomId"], messaging.PatchRoomRequest(archived=True))
-    assert exc.value.error.code == "ROOM_NOT_ARCHIVABLE"
     patch_meta.assert_not_awaited()
 
 

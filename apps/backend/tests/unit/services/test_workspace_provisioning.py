@@ -115,7 +115,7 @@ async def test_a_full_provision_run_seeds_the_voice_workspace_with_no_outbound_h
     import httpx
 
     from core.repositories import billing_repo, container_repo
-    from core.services import clerk_admin, hermes_provisioning, messaging, onboarding_brief
+    from core.services import hermes_provisioning, messaging, onboarding_brief
     from scripts import provision_runner
 
     async def no_http(*_a, **_k):
@@ -125,8 +125,6 @@ async def test_a_full_provision_run_seeds_the_voice_workspace_with_no_outbound_h
     monkeypatch.setattr(container_repo, "get_by_owner_id", AsyncMock(return_value={}))
     for name in ("prepare_hermes_workspace", "provision_hermes_runtime", "reconcile_runtime"):
         monkeypatch.setattr(hermes_provisioning, name, AsyncMock())
-    monkeypatch.setattr(clerk_admin, "get_organization", AsyncMock(return_value={"created_by": "user_1"}))
-    monkeypatch.setattr(clerk_admin, "list_organization_members", AsyncMock(return_value=[{"user_id": "user_1"}]))
     for name in ("ensure_default_room", "join_default_room"):
         monkeypatch.setattr(messaging, name, AsyncMock(return_value="room_1"))
     monkeypatch.setattr(onboarding_brief, "reconcile_pending_brief", AsyncMock())

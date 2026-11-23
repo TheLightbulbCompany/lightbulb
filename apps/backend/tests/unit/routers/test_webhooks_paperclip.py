@@ -75,8 +75,6 @@ async def test_user_deleted_tears_down_tenant(async_client, monkeypatch, wipe_mo
     wipe_mocks.owner_secrets_delete.assert_awaited_once_with(OWNER_ID)
     wipe_mocks.user_delete.assert_awaited_once_with(OWNER_ID)
     # Clerk already deleted the person: nothing reads or deletes there, and orgs they belonged to are kept.
-    wipe_mocks.clerk_list_user_orgs.assert_not_awaited()
-    wipe_mocks.paperclip_archive_member.assert_not_awaited()
     wipe_mocks.clerk_delete.assert_not_awaited()
     wipe_mocks.phone_release.assert_not_awaited()
 
@@ -411,19 +409,6 @@ def no_evaluator_wipe(monkeypatch):
         mocks[name] = AsyncMock(return_value=value)
         monkeypatch.setattr(mod, name, mocks[name])
     return mocks
-
-
-@pytest.mark.asyncio
-async def test_user_deleted_keeps_a_sign_in_bound_to_an_org(async_client, monkeypatch, wipe_mocks):  # noqa: F811
-    """A ChatGPT sign-in the person made for an org is the org's credential: deleting the person leaves it."""
-    _bypass_svix(monkeypatch)
-    wipe_mocks.oauth_bound.return_value = "org_x"
-
-    resp = await _user_deleted(async_client)
-
-    assert resp.status_code == 200, resp.text
-    wipe_mocks.oauth_revoke.assert_not_awaited()
-    wipe_mocks.fast_gate_delete.assert_awaited_once_with(OWNER_ID)
 
 
 @pytest.mark.asyncio

@@ -338,9 +338,7 @@ class RoomSummary(ContractModel):
     # workspace, so a foreign member's client must subscribe with this, not its
     # own. None only on rows written before the segment was stamped.
     workspace_id: str | None = None
-    # The platform-managed channel shared with the Lightbulb workspace.
-    shared: bool = False
-    # The viewer belongs to another workspace than the room's owner (a vendor shared-channel guest).
+    # The viewer belongs to another tenant than the room's owner (a foreign member of this room).
     guest: bool = False
     # The seeded starter channel, where the onboarding setup band renders.
     is_default: bool = False
@@ -1971,7 +1969,6 @@ def _room_summary_fields(meta: dict, member: dict, read: dict | None, mention_co
         "section_id": member.get("sectionId"),
         "topic": meta.get("topic"),
         "workspace_id": meta.get("workspaceId"),
-        "shared": is_vendor_room(meta),
         "guest": messaging_repo.member_home(member, meta["ownerId"]) != meta["ownerId"],
         "is_default": is_default_room(meta),
         "first_run": bool(meta.get("firstRun")),
@@ -1993,8 +1990,7 @@ async def _room_detail(meta: dict, user_id: str, member: dict | None = None) -> 
     members, read, open_runs, cursors, deliveries = await asyncio.gather(
         messaging_repo.list_members(meta["roomId"]),
         messaging_repo.get_read_row(meta["roomId"], user_id),
-        # The run ledger is partitioned by the ROOM's owner — the customer org
-        # even on a room shared with the vendor workspace.
+        # The run ledger is partitioned by the ROOM's owner, not the viewer.
         messaging_repo.list_open_runs_for_room(meta["ownerId"], meta["roomId"]),
         messaging_repo.list_read_cursors(meta["roomId"]),
         messaging_repo.list_agent_deliveries(meta["roomId"]),
@@ -2141,13 +2137,6 @@ def default_room_id(owner_id: str) -> str:
     return str(uuid.uuid5(uuid.NAMESPACE_URL, f"lightbulb-default-room|{owner_id}"))
 
 
-def is_vendor_room(meta: dict) -> bool:
-    """The one channel a customer shares with the vendor org — by id, never by a stored flag."""
-    return bool(settings.VENDOR_ORG_ID) and meta.get("roomId") == messaging_repo.vendor_room_id(
-        meta.get("ownerId") or ""
-    )
-
-
 def is_default_room(meta: dict) -> bool:
     """The seeded starter channel — by id, never by name.
 
@@ -2171,11 +2160,11 @@ def is_session_room(meta: dict) -> bool:
     return bool(meta.get("session"))
 
 
-def _deny_vendor_human_change(meta: dict, kind: str) -> None:
+def _deny_managed_human_change(meta: dict, kind: str) -> None:
     # A session chat's people follow session read access (spec 2026-10-07 decision 2).
     # The feed's people are the workspace's: only a workspace join/removal changes them.
     # The feed's membership (people only; agents are its authors) is Lightbulb's alone, every kind.
-    if is_feed_room(meta) or (kind == "human" and (is_vendor_room(meta) or is_session_room(meta))):
+    if is_feed_room(meta) or (kind == "human" and is_session_room(meta)):
         raise ApiProblem("ROOM_FORBIDDEN", "Membership of this channel is managed by Lightbulb.")
 
 
@@ -2580,8 +2569,6 @@ async def patch_room(auth: AuthContext, room_id: str, request: PatchRoomRequest)
     # merged to main — this generalizes the same guard to updates-scoping.)
     if "name" in updates and meta.get("kind") == "dm":
         raise ApiProblem("ROOM_FORBIDDEN", "Direct messages cannot be renamed.")
-    if "name" in updates and is_vendor_room(meta):
-        raise ApiProblem("ROOM_FORBIDDEN", "This channel's name is managed by Lightbulb.")
     if "name" in updates and is_session_room(meta):
         raise ApiProblem("ROOM_FORBIDDEN", "This chat is named after its session.")
     if "name" in updates and is_feed_room(meta):
@@ -2598,12 +2585,7 @@ async def patch_room(auth: AuthContext, room_id: str, request: PatchRoomRequest)
         raise ApiProblem("ROOM_FORBIDDEN", "Only a channel or a chat with Lightbulb has an icon and colour.")
     paused = None
     if request.paused is not None and request.paused != bool(meta.get("pausedAt")):
-        if (
-            (kind != "channel" and not chat_project)
-            or is_feed_room(meta)
-            or is_vendor_room(meta)
-            or is_session_room(meta)
-        ):
+        if (kind != "channel" and not chat_project) or is_feed_room(meta) or is_session_room(meta):
             raise ApiProblem("ROOM_NOT_PAUSABLE", "Only a channel or a chat with Lightbulb can be paused.")
         paused = request.paused
         updates |= (
@@ -2646,14 +2628,8 @@ async def _tell_products(e: EngineEvent) -> None:
 
 def _require_archivable(meta: dict) -> None:
     """A plain channel or a group DM archives; a 1:1 DM does not. #general is where
-    join_default_room seats every new teammate and onboarding renders; the shared vendor
-    channel is the customer's support line."""
-    if (
-        meta.get("kind") not in {"channel", "group-dm"}
-        or is_default_room(meta)
-        or is_vendor_room(meta)
-        or is_feed_room(meta)
-    ):
+    join_default_room seats every new teammate and onboarding renders."""
+    if meta.get("kind") not in {"channel", "group-dm"} or is_default_room(meta) or is_feed_room(meta):
         name = "#general" if is_default_room(meta) else "This room"
         raise ApiProblem("ROOM_NOT_ARCHIVABLE", f"{name} can't be archived.")
 
@@ -2688,7 +2664,7 @@ async def patch_room_me(auth: AuthContext, room_id: str, request: MemberPrefsReq
 async def upsert_member(auth: AuthContext, room_id: str, request: UpsertRoomMemberRequest) -> RoomDetail:
     meta, actor = await require_room_member(resolve_owner_id(auth), auth.user_id, room_id)
     owner_id = meta["ownerId"]  # room-scoped writes are keyed on the ROOM owner, never the caller's workspace
-    _deny_vendor_human_change(meta, request.kind)
+    _deny_managed_human_change(meta, request.kind)
     if meta.get("kind") in {"dm", "group-dm"} and request.role != "member":
         raise ApiProblem("INVALID_REQUEST", "Group chat members must use the member role.")
     existing = await messaging_repo.get_member(room_id, request.kind, request.id)
@@ -2696,8 +2672,7 @@ async def upsert_member(auth: AuthContext, room_id: str, request: UpsertRoomMemb
     # Channels keep owner/admin membership management. A direct or group chat
     # has no privileged administrator, so any participant may add another
     # workspace member (always at the ordinary member role).
-    # Only the room-owning workspace's own members: in the shared vendor room a
-    # Lightbulb-side member would be spending the customer's inference.
+    # Only the room-owning tenant's own members may change an agent's mode.
     mode_change = (
         request.kind == "agent"
         and existing is not None
@@ -2802,7 +2777,7 @@ async def remove_member(auth: AuthContext, room_id: str, kind: str, member_id: s
         raise ApiProblem("INVALID_REQUEST", "Invalid member kind.")
     owner_id = resolve_owner_id(auth)
     meta, _ = await require_room_admin(owner_id, auth.user_id, room_id)
-    _deny_vendor_human_change(meta, kind)
+    _deny_managed_human_change(meta, kind)
     target = await messaging_repo.get_member(room_id, kind, member_id)
     if target is None:
         raise ApiProblem("MEMBER_NOT_FOUND", "Room member not found.")
@@ -2818,7 +2793,7 @@ async def leave_room(auth: AuthContext, room_id: str) -> None:
     powers there, so they simply leave. A DM's starter cannot leave it."""
     owner_id = resolve_owner_id(auth)
     meta, member = await require_room_member(owner_id, auth.user_id, room_id)
-    _deny_vendor_human_change(meta, "human")
+    _deny_managed_human_change(meta, "human")
     if member.get("role") == "owner" and meta.get("kind") == "dm":
         raise ApiProblem("INVALID_REQUEST", "A direct message cannot be left.")
     if (
@@ -2944,20 +2919,14 @@ async def delete_room(auth: AuthContext, room_id: str) -> None:
     """Owner-only channel delete, as a TOMBSTONE: META gains deletedAt/deletedBy and the
     deliveryKey rotates with a ``room.access.removed`` notice to every human in the same
     transaction -- the revocation contract of a human removal, applied to the whole room.
-    Messages and members stay. #general, the shared vendor channel and DMs refuse, like
+    Messages and members stay. #general and DMs refuse, like
     archive; a room already deleted is a 404 from require_room_member."""
     owner_id = resolve_owner_id(auth)
     for attempt in range(3):
         meta, member = await require_room_member(owner_id, auth.user_id, room_id)
         if member.get("role") != "owner":
             raise ApiProblem("ROOM_FORBIDDEN", "Only the channel's owner can delete it.")
-        if (
-            meta.get("kind") != "channel"
-            or is_default_room(meta)
-            or is_vendor_room(meta)
-            or is_session_room(meta)
-            or is_feed_room(meta)
-        ):
+        if meta.get("kind") != "channel" or is_default_room(meta) or is_session_room(meta) or is_feed_room(meta):
             name = "#general" if is_default_room(meta) else "This room"
             raise ApiProblem("ROOM_NOT_DELETABLE", f"{name} can't be deleted.")
         new_key = str(uuid.uuid4())

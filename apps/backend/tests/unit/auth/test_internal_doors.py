@@ -5,7 +5,6 @@ Real DynamoDB (moto) and the product's own writers; the only stubs are the outsi
 signature, the wake of an agent). A refusal is judged on stored state: every row naming A or B is the same after."""
 
 import uuid
-from unittest.mock import AsyncMock
 
 import pytest
 
@@ -28,7 +27,6 @@ URL = "https://acme.example"
 @pytest.fixture
 def env(ddb, monkeypatch):  # noqa: F811
     """A and B each a provisioned account; the stubs the photon door needs."""
-    monkeypatch.setattr("core.services.clerk_admin.list_organization_members", AsyncMock(return_value=[]))
     return ddb
 
 

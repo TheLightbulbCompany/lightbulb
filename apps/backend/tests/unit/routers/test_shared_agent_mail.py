@@ -27,9 +27,7 @@ def shared(monkeypatch):
             "email_addresses": [{"email_address": fixtures.SENDER, "verification": {"status": "verified"}}],
         }
     )
-    orgs = AsyncMock(return_value=[{"id": "org_business"}])
     monkeypatch.setattr(inbound.clerk_admin, "find_user_by_email", lookup)
-    monkeypatch.setattr(inbound.clerk_admin, "list_user_organizations", orgs)
     monkeypatch.setattr(
         inbound, "ensure_team_address", AsyncMock(return_value=("agents@business.thelightbulb.company", "ok"))
     )
@@ -43,7 +41,7 @@ def shared(monkeypatch):
     handler = AsyncMock(return_value="meeting_scheduled")
     monkeypatch.setattr(inbound.meeting_invites, "handle_team_mail", handler)
     monkeypatch.setattr(inbound, "delete_event", AsyncMock())
-    return lookup, orgs, handler
+    return lookup, handler
 
 
 def payload(**extra):
@@ -51,11 +49,10 @@ def payload(**extra):
 
 
 @pytest.mark.parametrize("verdicts", [{"dmarc": "FAIL"}, {"spf": "PASS", "spf_domain": "unrelated.example"}, {}])
-def test_unproven_sender_never_queries_membership(client, shared, verdicts):
-    lookup, orgs, handler = shared
+def test_unproven_sender_never_queries_the_directory(client, shared, verdicts):
+    lookup, handler = shared
     assert fixtures._post(client, payload(verdicts=verdicts)).json()["status"] == "dropped_failed_authentication"
     lookup.assert_not_awaited()
-    orgs.assert_not_awaited()
     handler.assert_not_awaited()
 
 
@@ -70,15 +67,14 @@ def test_unproven_sender_never_queries_membership(client, shared, verdicts):
     ],
 )
 def test_unknown_or_unverified_sender_never_selects_workspace(client, shared, user):
-    lookup, orgs, handler = shared
+    lookup, handler = shared
     lookup.return_value = user
     assert fixtures._post(client, payload()).json()["status"] == "dropped_unregistered_sender"
-    orgs.assert_not_awaited()
     handler.assert_not_awaited()
 
 
 def test_workspace_specific_address_does_not_use_shared_lookup(client, shared, monkeypatch):
-    lookup, _, handler = shared
+    lookup, handler = shared
     monkeypatch.setattr(inbound, "is_team_address", AsyncMock(return_value=("org_business", "business")))
     assert (
         fixtures._post(client, fixtures._body(to=["agents@business.thelightbulb.company"], calendar="original")).json()[
@@ -89,15 +85,8 @@ def test_workspace_specific_address_does_not_use_shared_lookup(client, shared, m
     lookup.assert_not_awaited()
 
 
-def test_shared_routes_no_workspace_instead_of_personal_fallback(client, shared):
-    _, orgs, handler = shared
-    orgs.return_value = []
-    assert fixtures._post(client, payload()).json()["status"] == "dropped_unregistered_sender"
-    handler.assert_not_awaited()
-
-
 def test_workspace_path_does_not_pass_payload_identity(client, shared, monkeypatch):
-    _, _, handler = shared
+    _, handler = shared
     monkeypatch.setattr(inbound, "is_team_address", AsyncMock(return_value=("org_business", "business")))
     body = fixtures._body(
         to=["agents@business.thelightbulb.company"], calendar="original", verified_sender_user_id="user_attacker"
@@ -107,8 +96,8 @@ def test_workspace_path_does_not_pass_payload_identity(client, shared, monkeypat
 
 
 def test_shared_address_routes_to_sender_tenant(client, shared, monkeypatch):
-    """A person who claimed a team address gets the shared mail they send in their own tenant; no org is read."""
-    _, orgs, handler = shared
+    """A person who claimed a team address gets the shared mail they send in their own tenant."""
+    _, handler = shared
     own = {"user_a": "agents@alice.thelightbulb.company", "user_sender": "agents@bob.thelightbulb.company"}
     monkeypatch.setattr(inbound, "team_address", AsyncMock(side_effect=own.get))
     inbound.ensure_team_address.return_value = (own["user_sender"], "ok")
@@ -117,13 +106,11 @@ def test_shared_address_routes_to_sender_tenant(client, shared, monkeypatch):
     inbound.ensure_team_address.assert_awaited_once_with("user_sender", None)
     assert handler.await_args.args[0] == "user_sender"
     assert handler.await_args.kwargs == {"verified_sender_user_id": "user_sender"}
-    orgs.assert_not_awaited()
 
 
 def test_shared_address_never_routes_to_other_tenant(client, shared, monkeypatch):
-    """B, with no address of their own and no org, mails the shared address: nothing reaches A's tenant."""
-    _, orgs, handler = shared
-    orgs.return_value = []
+    """B, with no address of their own, mails the shared address: nothing reaches A's tenant."""
+    _, handler = shared
     monkeypatch.setattr(
         inbound, "team_address", AsyncMock(side_effect={"user_a": "agents@alice.thelightbulb.company"}.get)
     )
@@ -144,14 +131,14 @@ def own_address(monkeypatch, shared):
 
 
 def test_payload_cannot_forge_verified_sender_identity(client, shared, own_address):
-    _, _, handler = shared
+    _, handler = shared
     response = fixtures._post(client, payload(verified_sender_user_id="user_attacker"))
     assert response.json()["status"] == "meeting_scheduled"
     assert handler.await_args.kwargs == {"verified_sender_user_id": "user_sender"}
 
 
 def test_wrong_mailbox_owner_is_retryable_and_never_delivered(client, shared, own_address):
-    _, _, handler = shared
+    _, handler = shared
     inbound.get_by_address.return_value = {"owner_id": "user_wrong"}
     response = fixtures._post(client, payload())
     assert response.status_code == 503

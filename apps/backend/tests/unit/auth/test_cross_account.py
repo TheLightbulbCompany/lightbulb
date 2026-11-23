@@ -297,15 +297,6 @@ async def seed_memory(a, b, mp, calls) -> dict:
     return {"draft": "d-a"}
 
 
-def clerk(mp, a: Tenant, b: Tenant) -> None:
-    """Clerk with no organisations: every person is only their own tenant."""
-
-    async def no_orgs(*args, **kwargs):
-        return []
-
-    mp.setattr("core.services.clerk_admin.list_user_organizations", no_orgs)
-
-
 async def _mail(t: Tenant, slug: str) -> str:
     assert await company_slug_repo.hold(slug=slug, user_id=t.user_id)
     assert await company_slug_repo.claim(slug=slug, user_id=t.user_id, owner_id=t.tenant)
@@ -390,7 +381,6 @@ class _NoWorkflows:
 
 async def seed_users(a, b, mp, calls) -> dict:
     await workspaces(a, b)
-    clerk(mp, a, b)
     mp.setattr(temporal_client, "_client", _NoWorkflows())
     await user_repo.put(a.user_id, f"{MARKER}@example.com")
     await user_repo.put(b.user_id, f"{b.user_id}@example.com")  # the self-delete's typed confirmation
@@ -404,7 +394,6 @@ async def seed_os(a, b, mp, calls) -> dict:
     mp.setattr(settings, "OPENAI_API_KEY", "sk-test-not-real")
     fake(mp, calls, "core.voice.os_voice._create_live", ("live_fake", "v=0\r\nanswer"))  # OpenAI
     mp.setattr(os_voice, "start_sideband", lambda sid: None)
-    clerk(mp, a, b)
     fake(mp, calls, "core.services.clerk_admin.delete_user")
     voice = await ok(a, "POST", "/api/v1/os/voice-session", {"sdp": f"v=0\r\n{MARKER}", "kind": "hold", "dcid": 4})
     return {"a_voice": voice["sessionId"], "_needles": [voice["sessionId"]]}
@@ -1229,14 +1218,8 @@ async def test_person_provisions_posts_and_dispatches_only_on_their_own_tenant(d
     assert snapshot(ddb, person.user_id, room["roomId"]) == before
 
 
-async def test_person_workspace_checkout_bills_no_seats_and_never_reads_an_org_roster(ddb, calls, jwks, monkeypatch):
-    """A person's tenant is one human: the Team checkout carries no seat item and never asks Clerk for an org roster."""
-    from core.services import clerk_admin
-
-    async def no_roster(*args, **kwargs):
-        raise AssertionError("a person's seats read an org roster")
-
-    monkeypatch.setattr(clerk_admin, "list_organization_members", no_roster)
+async def test_person_workspace_checkout_bills_no_seats(ddb, calls, jwks, monkeypatch):
+    """A person's tenant is one human: the Team checkout carries no seat item."""
     await seed_billing(Tenant("user_a", None), Tenant("user_b", None), monkeypatch, calls)
     person = Tenant("user_solo", None)
     calls.clear()

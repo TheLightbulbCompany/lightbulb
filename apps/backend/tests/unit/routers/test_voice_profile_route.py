@@ -80,7 +80,6 @@ def world(monkeypatch):
     )
     send_frames = AsyncMock()
     monkeypatch.setattr(livekit_huddles, "send_frames", send_frames)
-    monkeypatch.setattr("core.services.clerk_admin.list_organization_members", AsyncMock(return_value=[]))
 
     async def _update(ws, agent_id, fields):
         row = next(r for r in roster if r["id"] == agent_id)

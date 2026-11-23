@@ -434,11 +434,6 @@ def dm_pair_sk(*members: tuple[str, str]) -> str:
     return "DMPAIR#" + _sha256("|".join(sorted(f"{kind}#{member_id}" for kind, member_id in members)))
 
 
-def vendor_room_id(owner_id: str) -> str:
-    """The one platform-managed channel a customer workspace shares with the vendor org."""
-    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"lightbulb-vendor-room|{owner_id}"))
-
-
 def feed_room_id(owner_id: str) -> str:
     """The workspace's one feed channel (Activity). Mirrored by the messaging projector
     (apps/infra/lambda/messaging-projector/index.py ``_is_feed_room``): edit both together."""

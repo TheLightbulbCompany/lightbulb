@@ -28,7 +28,7 @@ export function UserSearchInput({
   defaultValue = "",
   onSearch,
   isLoading = false,
-  placeholder = "Search by email, user ID, or org\u2026",
+  placeholder = "Search by email or user ID\u2026",
   className,
 }: UserSearchInputProps) {
   const [value, setValue] = React.useState(defaultValue);

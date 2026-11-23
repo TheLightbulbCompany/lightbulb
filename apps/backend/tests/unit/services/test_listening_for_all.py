@@ -124,15 +124,15 @@ async def test_any_member_of_a_trial_workspace_changes_an_agents_mode(monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_a_vendor_side_member_cannot_change_the_customers_agents_mode(monkeypatch):
+async def test_a_foreign_member_cannot_change_the_owners_agents_mode(monkeypatch):
     upsert = _upsert_fixture(monkeypatch, room_kind="channel", role="member", existing=IN_ROOM)
     monkeypatch.setattr(
         messaging,
         "require_room_member",
         AsyncMock(
             return_value=(
-                {"kind": "channel", "roomId": ROOM, "ownerId": OWNER, "shared": True},
-                {"kind": "human", "id": USER, "role": "member", "homeOwnerId": "org_lightbulb"},
+                {"kind": "channel", "roomId": ROOM, "ownerId": OWNER},
+                {"kind": "human", "id": USER, "role": "member", "homeOwnerId": "user_foreign"},
             )
         ),
     )

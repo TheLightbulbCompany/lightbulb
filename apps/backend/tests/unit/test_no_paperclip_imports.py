@@ -85,7 +85,6 @@ MENTIONS = {
     "core/services/stripe_webhook_handlers.py",
     "core/services/trigger_fire_url.py",
     "core/services/update_service.py",
-    "core/services/workspace_wipe.py",
     "core/tasks_schema.py",
     "core/temporal/activities.py",
     "routers/automations.py",

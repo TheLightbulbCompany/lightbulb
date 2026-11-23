@@ -36,7 +36,6 @@ export default function sitemap(): MetadataRoute.Sitemap {
       changeFrequency: "monthly" as const,
       priority: 0.6,
     })),
-    { url: `${SITE_URL}/security`, changeFrequency: "monthly", priority: 0.5 },
     { url: `${SITE_URL}/support`, changeFrequency: "monthly", priority: 0.4 },
   ];
 

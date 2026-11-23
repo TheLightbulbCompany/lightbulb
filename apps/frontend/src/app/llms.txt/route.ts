@@ -37,7 +37,6 @@ export function GET() {
     line("Lightbulb Meetings", "/meetings", "The Google Meet assistant; waitlist."),
     line("Spark", "/os", "A voice app for the Mac; download."),
     line("Pricing", "/pricing", "The monthly Lightbulb Phone plan for one business."),
-    line("What happens to your data", "/security", "Where data is kept, which providers see it, and what we don't claim."),
     "",
     "## Comparisons",
     "",

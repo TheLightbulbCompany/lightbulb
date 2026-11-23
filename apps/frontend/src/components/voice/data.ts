@@ -70,8 +70,9 @@ export function textChats(rooms: RoomSummary[], me: string): TextChat[] {
 const CHATS_KEY = "/messaging/rooms#voice-chats";
 export function useTextChats() {
   const api = useApi();
-  const key = useAccountKey(CHATS_KEY);
-  return useSWR(key, async () => textChats(((await api.get("/messaging/rooms")) as { rooms: RoomSummary[] }).rooms, key![1]));
+  // The user id comes from SWR's argument, never `key![1]` from the closure: the React Compiler reads a closure's
+  // `key[1]` in render to memoize it, which threw on every cold load while Clerk was still loading (2026-11-23).
+  return useSWR(useAccountKey(CHATS_KEY), async ([, me]) => textChats(((await api.get("/messaging/rooms")) as { rooms: RoomSummary[] }).rooms, me));
 }
 
 /** "New chat": a group chat with only the member in the request; the backend seats Lightbulb in every new Router

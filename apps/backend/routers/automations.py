@@ -192,7 +192,7 @@ class AutomationIn(_In):
     match: RuleMatchIn | None = None
     speculative: bool = False
     time_limit_s: int | None = Field(default=None, ge=60, le=7200)
-    daily_cap_usd: float = Field(default=10.0, gt=0, le=100)
+    daily_cap_usd: float = Field(default=10.0, ge=0.01, le=100)
     builtin: RuleBuiltin | None = None
 
 
@@ -206,7 +206,7 @@ class AutomationPatch(_In):
     match: RuleMatchIn | None = None
     speculative: bool | None = None
     time_limit_s: int | None = Field(default=None, ge=60, le=7200)
-    daily_cap_usd: float | None = Field(default=None, gt=0, le=100)
+    daily_cap_usd: float | None = Field(default=None, ge=0.01, le=100)
     version: int
 
 

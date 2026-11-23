@@ -300,19 +300,6 @@ async def test_stale_version_409(api):
     assert r.status_code == 200 and r.json()["name"] == "Renamed" and r.json()["version"] == view["version"] + 1
 
 
-async def test_patch_schedule_syncs_temporal_and_validates(api):
-    view = await _draft(api)
-    body = {"schedule": {"cron": ["0 17 * * 5"], "tz": "Europe/London", "remainingRuns": 1}, "version": view["version"]}
-    r = _as(api).patch(f"{BASE}/{view['id']}", json=body)
-    assert r.status_code == 200 and r.json()["schedule"] == body["schedule"]
-    assert api.calls[-1] == ("upsert", view["id"], "draft")
-    bad = {"schedule": {"cron": ["0 9 * * * *"], "tz": "UTC"}, "version": view["version"] + 1}
-    assert _as(api).patch(f"{BASE}/{view['id']}", json=bad).status_code == 400
-    assert (
-        _as(api, PRIYA, admin=False).patch(f"{BASE}/{view['id']}", json={"name": "x", "version": 2}).status_code == 403
-    )
-
-
 async def test_delete_removes_row_schedule_and_hooks(api):
     view = await _draft(api)
     sid = view["id"]

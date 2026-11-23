@@ -190,9 +190,8 @@ class SesInboundBody(BaseModel):
 
 async def _shared_team_mailbox(body: SesInboundBody) -> tuple[dict | None, str | None, str | None]:
     """Resolve the shared address only from an authenticated, verified sender: their own tenant when
-    they have claimed a team address, else their one current org membership.
+    they have claimed a team address.
 
-    Several businesses is not an implicit workspace selection.
     Failures from Clerk/DynamoDB remain retryable through the ingest's existing 503 path.
     """
     verdicts = body.verdicts or {}

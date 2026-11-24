@@ -37,6 +37,30 @@ def _seconds(v: object) -> bool:
 
 _METHOD = _enum("apple", "google", "email")
 _PROVIDER = _enum("chatgpt", "claude")
+_PROBLEM_KIND = _enum(
+    "permission.accessibility",
+    "permission.screenRecording",
+    "permission.microphone",
+    "permission.fullDiskAccess",
+    "permission.other",
+    "brain.unavailable",
+    "voice.limit",
+    "voice.connection",
+    "hands.helper",
+    "disk.low",
+    "dock",
+    "daemon",
+    "crash",
+    "other",
+    "automation.missed",
+    "automation.blocked",
+    "automation.budget",
+    "automation.notifications",
+    "automation.watch",
+    "automation.failed",
+    "app.version",
+    "account",
+)  # keep equal to ProblemKind in the Spark engine's protocol package
 
 APP_EVENTS: dict[str, dict[str, Callable[[object], bool]]] = {
     "app_first_launch": {},
@@ -52,6 +76,7 @@ APP_EVENTS: dict[str, dict[str, Callable[[object], bool]]] = {
     "first_tidy": {"outcome": _enum("done", "already_tidy", "declined", "stopped", "failed")},
     "task_completed": {},
     "task_failed": {"reason": _enum("auth", "quota", "rate", "unreachable", "signed_out", "other")},
+    "problem_raised": {"kind": _PROBLEM_KIND},
     "upgrade_clicked": {},
     "manage_subscription_clicked": {},
     "referral_link_copied": {},

@@ -35,6 +35,7 @@ VALID = {
     "task_completed": {},
     "first_tidy": {"outcome": "already_tidy"},
     "task_failed": {"reason": "unreachable"},
+    "problem_raised": {"kind": "permission.screenRecording"},
     "upgrade_clicked": {},
     "manage_subscription_clicked": {},
     "referral_link_copied": {},

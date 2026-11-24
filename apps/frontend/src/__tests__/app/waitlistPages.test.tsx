@@ -4,13 +4,21 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("@/components/landing/Navbar", () => ({ Navbar: () => null }));
 vi.mock("@/components/landing/Footer", () => ({ Footer: () => null }));
 vi.mock("@/components/landing/PricingThreeCard", () => ({ PricingThreeCard: () => null }));
-vi.mock("@/lib/pricing", () => ({ getPricing: async () => null }));
+const pricing = vi.hoisted(() => ({ value: null as null | { voiceMonthlyUsd: number; voiceIncludedMinutes: number } }));
+vi.mock("@/lib/pricing", async (orig) => ({
+  ...(await orig<typeof import("@/lib/pricing")>()),
+  getPricing: async () => pricing.value,
+  voicePlanLine: (p: unknown) => (p ? "PLAN LINE FROM THE BACKEND." : null),
+}));
+// The Spark (/os), Phone and Meetings pages load their own fonts; jsdom has no next/font.
+vi.mock("next/font/google", () => {
+  const font = () => ({ variable: "" });
+  return { Bricolage_Grotesque: font, Silkscreen: font, Schibsted_Grotesk: font, Kalam: font, Atkinson_Hyperlegible: font };
+});
 // jsdom has no canvas or media playback: the Spark bulb is canvas art, and the home demos drive a <video>.
 vi.mock("@/components/landing/SparkStage", () => ({ SparkStage: () => null }));
 Object.defineProperty(HTMLMediaElement.prototype, "pause", { configurable: true, value: () => {} });
 Object.defineProperty(HTMLMediaElement.prototype, "play", { configurable: true, value: () => Promise.resolve() });
-// The Spark page (/os) loads its own fonts; jsdom has no next/font.
-vi.mock("next/font/google", () => ({ Bricolage_Grotesque: () => ({ variable: "" }), Silkscreen: () => ({ variable: "" }) }));
 const captureSignupCta = vi.fn();
 vi.mock("@/lib/signupFlow", () => ({ captureSignupCta: (o: unknown) => captureSignupCta(o) }));
 
@@ -19,15 +27,18 @@ import PhonePage, { metadata as phoneMeta } from "@/app/phone/page";
 import MeetingsPage, { metadata as meetingsMeta } from "@/app/meetings/page";
 import OsPage, { metadata as osMeta } from "@/app/os/page";
 import { BANNED } from "@/content/__tests__/bannedCopy";
+import { ADDRESS } from "@/components/landing/MeetingsLanding";
+import { HOME_FAQ } from "@/lib/homeFaq";
 
 const pages = [
-  { path: "/meetings", Page: MeetingsPage, meta: meetingsMeta, h1: "Leave every meeting with the notes already written." },
+  { path: "/meetings", Page: MeetingsPage, meta: meetingsMeta, h1: "Ask your meeting anything. Out loud." },
 ];
 
 describe.each(pages)("$path", ({ path, Page, meta, h1 }) => {
   it("renders its headline and a waitlist form", () => {
     const { container } = render(<Page />);
     expect(screen.getByRole("heading", { level: 1 }).textContent).toBe(h1);
+    expect(container.querySelectorAll("h1")).toHaveLength(1);
     const button = screen.getByRole("button", { name: "Join the waitlist" });
     expect(button.closest("form")).not.toBeNull();
     expect(container.querySelector('main a[href="/sign-up"]')).toBeNull();
@@ -46,10 +57,22 @@ describe.each(pages)("$path", ({ path, Page, meta, h1 }) => {
 
   it("carries no banned word, price or dash", () => {
     const { container } = render(<Page />);
-    const text = container.textContent ?? "";
+    // The invite address is the product's real one (agents@…), not copy.
+    const text = (container.textContent ?? "").replaceAll(ADDRESS, "");
     expect(text).not.toMatch(BANNED);
     expect(text).not.toMatch(/\$\d/);
     expect(text).not.toMatch(/[—–]/);
+  });
+});
+
+describe("/meetings, the call", () => {
+  it("keeps the form under the menu's #waitlist anchor and says Nova is an example, on Google Meet only", () => {
+    const { container } = render(<MeetingsPage />);
+    expect(container.querySelector("#waitlist form")).not.toBeNull();
+    const text = container.textContent ?? "";
+    expect(text).toContain("Here it's called Nova. You pick the name.");
+    expect(text).toContain("Google Meet only. Not Zoom, Microsoft Teams or Webex.");
+    expect([...container.querySelectorAll('main a[href="#waitlist"]')]).toHaveLength(2);
   });
 });
 
@@ -150,11 +173,57 @@ describe("/", () => {
 });
 
 describe("/phone", () => {
-  it("is today's home under its own canonical", async () => {
-    render(await PhonePage());
+  afterEach(() => {
+    pricing.value = null;
+  });
+
+  it("is today's home under its own canonical, with one h1", async () => {
+    const { container } = render(await PhonePage());
     expect(screen.getByRole("heading", { level: 1 }).textContent).toBe(
       "Your phone, answered and booked while your hands are busy.",
     );
+    expect(container.querySelectorAll("h1")).toHaveLength(1);
     expect(phoneMeta.alternates?.canonical).toBe("https://thelightbulb.company/phone");
+  });
+
+  it("tracks both sign-up doors and points Hear the voices at the stock samples", async () => {
+    captureSignupCta.mockClear();
+    const { container } = render(await PhonePage());
+    const doors = screen.getAllByRole("link", { name: "Set up your assistant" });
+    expect(doors.map((a) => a.getAttribute("href"))).toEqual(["/sign-up", "/sign-up"]);
+    doors.forEach((a) => fireEvent.click(a));
+    expect(captureSignupCta.mock.calls.map(([o]) => o.ctaId)).toEqual(["hero_start_free", "closing_start_free"]);
+    expect(screen.getAllByRole("link", { name: "Hear the voices" }).map((a) => a.getAttribute("href"))).toEqual([
+      "#voices",
+      "#voices",
+    ]);
+    const voices = container.querySelector("#voices")!;
+    expect(voices.textContent).toContain("These are stock samples.");
+    expect([...voices.querySelectorAll(".vc a")].map((a) => [a.getAttribute("aria-label"), a.getAttribute("href")])).toEqual([
+      ["Play Marin, a stock sample", "/voice-samples/gpt-live-1-marin-en.wav"],
+      ["Play Quartz, a stock sample", "/voice-samples/gpt-live-1-quartz-en.wav"],
+      ["Play Willow, a stock sample", "/voice-samples/gpt-live-1-willow-en.wav"],
+    ]);
+  });
+
+  it("says Nova is an example name and shows the visible questions the structured data carries", async () => {
+    const { container } = render(await PhonePage());
+    expect(container.textContent).toContain("Name it Nova, or anything you like.");
+    const faq = [...container.querySelectorAll("#faq details")].map((d) => [
+      d.querySelector("summary")?.textContent,
+      d.querySelector("p")?.textContent,
+    ]);
+    expect(faq).toEqual(HOME_FAQ.map(({ q, a }) => [q, a]));
+  });
+
+  it("reads the price from the backend and never invents one", async () => {
+    const neutral = render(await PhonePage());
+    expect(neutral.container.textContent).toContain("One monthly plan with minutes included. Month to month");
+    expect(neutral.container.textContent).not.toMatch(/\$\d/);
+    expect(neutral.container.textContent).not.toMatch(/[—–]/);
+    neutral.unmount();
+    pricing.value = { voiceMonthlyUsd: 1, voiceIncludedMinutes: 1 };
+    const priced = render(await PhonePage());
+    expect(priced.container.textContent).toContain("PLAN LINE FROM THE BACKEND. Month to month");
   });
 });

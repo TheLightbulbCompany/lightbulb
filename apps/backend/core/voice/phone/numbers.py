@@ -3,7 +3,7 @@
 import re
 
 
-_E164 = re.compile(r"\+[1-9]\d{6,14}")  # routers/agent_text._valid_phone
+_E164 = re.compile(r"\+[1-9]\d{6,14}")
 
 
 def _e164(raw: str) -> str | None:

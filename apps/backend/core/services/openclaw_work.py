@@ -50,7 +50,7 @@ AMBIENT_STEER_SUFFIX = (
 _RETRY_VISIBILITY_SECONDS = 10
 #: F4 (predeploy review, M6-R37): hoisted to runtime_transport (the shared home
 #: container_rpc.call also reads) so a fleet-wide budget change has one source. Kept as a
-#: module attribute here so agent_mail_delivery's existing import keeps working unchanged.
+#: module attribute here so existing imports keep working unchanged.
 _AGENTCORE_INGRESS_TIMEOUT_S = runtime_transport.AGENTCORE_INGRESS_TIMEOUT_S
 _OPERATION_LEASE_SECONDS = 300
 _DESERIALIZER = TypeDeserializer()

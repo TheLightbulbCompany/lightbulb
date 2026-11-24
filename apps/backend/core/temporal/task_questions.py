@@ -492,10 +492,10 @@ async def _push_once(key: str, user_id: str, title: str, body: str, data: dict) 
 
 @activity.defn(name="relay_question")
 async def relay_question(ws: str, task_id: str, qid: str) -> None:
-    """The card in the task room and the origin thread, a push to each answerer (never anyone else), the away
-    email. Event ids and push keys come from the qid, so a retry posts and pushes once."""
+    """The card in the task room and the origin thread, a push to each answerer (never anyone else).
+    Event ids and push keys come from the qid, so a retry posts and pushes once."""
     from core.repositories import questions_repo, tasks_repo
-    from core.services import messaging, needs_you_email, questions, task_conversation
+    from core.services import messaging, questions, task_conversation
 
     q = await questions_repo.get_question(ws, task_id, qid)
     tree = await tasks_repo.get_task_tree(ws, task_id)
@@ -550,9 +550,6 @@ async def relay_question(ws: str, task_id: str, qid: str) -> None:
         if not await still_open():
             return
         await _push_once(f"qpush:{ws}:{qid}:{uid}", uid, push_title, body, data)
-    if not await still_open():
-        return
-    await needs_you_email.queue_question(ws, task_id, qid, list(q["answerers"]), title.replace("**", ""), body)
 
 
 @activity.defn(name="remind_question")

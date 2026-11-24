@@ -29,7 +29,6 @@ def dedup_table_and_settings(monkeypatch):
             BillingMode="PAY_PER_REQUEST",
         )
         monkeypatch.setenv("WEBHOOK_DEDUP_TABLE", "test-webhook-event-dedup")
-        monkeypatch.setattr("core.config.settings.STRIPE_WORKSPACE_PRICE_ID", "price_workspace_test")
         yield
 
 
@@ -66,13 +65,13 @@ async def test_replayed_stripe_webhook_processed_once(dedup_table_and_settings, 
         lambda body, sig, secret: fake_event,
     )
 
-    # Spy on the underlying repo write that the handler triggers via
-    # billing_repo.set_subscription on customer.subscription.updated.
+    # Spy on the handler run for customer.subscription.updated.
+    handler = AsyncMock(return_value=None)
     with (
-        patch(
-            "core.repositories.billing_repo.set_subscription",
-            new=AsyncMock(return_value={}),
-        ) as mock_write,
+        patch.dict(
+            "routers.billing.STRIPE_WEBHOOK_HANDLERS",
+            {"customer.subscription.updated": handler},
+        ),
         patch(
             "core.repositories.billing_repo.list_by_stripe_customer_id",
             new=AsyncMock(
@@ -99,4 +98,4 @@ async def test_replayed_stripe_webhook_processed_once(dedup_table_and_settings, 
 
     assert first.status_code == 200
     assert second.status_code == 200
-    assert mock_write.await_count == 1, f"Expected 1 underlying write, got {mock_write.await_count}"
+    assert handler.await_count == 1, f"Expected 1 handler run, got {handler.await_count}"

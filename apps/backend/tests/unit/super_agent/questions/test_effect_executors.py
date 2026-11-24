@@ -5,7 +5,6 @@ from unittest.mock import AsyncMock
 import httpx
 import pytest
 
-from core.services import agent_mail_send
 from core.services.credentials import integration_secret_store
 from core.services import effect_executors as ex
 
@@ -13,26 +12,10 @@ OWNER = "org_1"
 MAIL = {"agentId": "a-1", "to": "acme@example.com", "subject": "Q3 invoice", "body": "Attached."}
 
 
-@pytest.mark.parametrize(
-    ("result", "outcome"),
-    [("sent", "mail:sent"), ("error", ex.ExecutorUnknown), ("rate_limited", ex.ExecutorRefused)],
-)
-async def test_mail_send(monkeypatch, result, outcome):
-    send = AsyncMock(return_value=result)
-    monkeypatch.setattr(agent_mail_send, "send", send)
-    if isinstance(outcome, str):
-        assert await ex.mail_send(OWNER, MAIL, "user_sam") == outcome
-    else:
-        with pytest.raises(outcome):
-            await ex.mail_send(OWNER, MAIL, "user_sam")
-    kw = send.await_args.kwargs
-    assert (kw["agent_id"], kw["to"], kw["subject"], kw["body_text"], kw["purpose"]) == (
-        "a-1",
-        "acme@example.com",
-        "Q3 invoice",
-        "Attached.",
-        "task",
-    )
+async def test_mail_send_refuses_because_agent_mail_is_retired():
+    with pytest.raises(ex.ExecutorRefused) as refused:
+        await ex.mail_send(OWNER, MAIL, "user_sam")
+    assert refused.value.code == "mail_retired"
 
 
 PR = {"repo": "acme/web", "number": 7, "sha": "abc123"}

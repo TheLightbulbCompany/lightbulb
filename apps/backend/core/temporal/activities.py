@@ -42,7 +42,6 @@ from core.services import (
     room_memory,
     runtime_runs,
     runtime_transport,
-    source_replies,
     super_agent_faults,
     task_conversation,
     task_asks,
@@ -1137,13 +1136,8 @@ async def _deliver(
     waiting: bool = False,
     waiting_tasks: list[str] | None = None,
 ) -> str | None:
-    """Post in the trigger's place: its thread or room (chat), the deliver room (other sources), or back to the
-    sender for a plain mail/text reply. Idempotent on `event_id`."""
+    """Post in the trigger's place: its thread or room (chat), the deliver room (other sources). Idempotent on `event_id`."""
     ref = trig.get("ref") or {}
-    if trig["source"] in ("mail", "text") and not refs:
-        # A plain reply goes back the way it came (lane A's sender), idempotent on `event_id`.
-        await source_replies.deliver_reply(ws, trig, text, idempotency_key=event_id)
-        return None
     room = ts.trigger_room(trig)
     if not room or not await _room_exists(room):
         # A deliver room that is not a room (gate run 2: an automation saved with `room:acc-a1-…`) must not fail
@@ -1264,10 +1258,8 @@ async def _subscribe(ws: str, task_id: str, thread_key: str | None) -> None:
 
 
 def _silent(dec, triggers: dict[str, dict]) -> bool:
-    """`ignore`, and a `note` on mail or text: those channels get no "Noted" line and store nothing."""
-    return isinstance(dec, ts.Ignore) or (
-        isinstance(dec, ts.Note) and triggers[dec.trigger_ids[0]]["source"] in ("mail", "text")
-    )
+    """`ignore`: nothing is posted for it."""
+    return isinstance(dec, ts.Ignore)
 
 
 async def _apply(

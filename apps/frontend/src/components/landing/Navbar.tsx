@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useAuth, UserButton } from "@clerk/nextjs";
 
 import { Logo } from "@/components/Logo";
@@ -10,12 +10,14 @@ import { hydrateFromStorage, strike, useLampTheme } from "@/components/landing/H
 import { captureSignupCta } from "@/lib/signupFlow";
 import { trackSparkDownload, useOnPhone } from "@/app/os/SparkDownload";
 
-const LINKS = [
-  { href: "/phone", label: "Phone" },
-  { href: "/meetings", label: "Meetings" },
-  { href: "/os", label: "Spark" },
-  { href: "/pricing", label: "Pricing" },
+// One Products menu, not a link per product (owner, 2026-11-24).
+export const PRODUCTS = [
+  { href: "/phone", name: "Lightbulb Phone", line: "Answers your business line and books appointments." },
+  { href: "/meetings", name: "Lightbulb Meetings", line: "Joins your Google Meet and keeps the notes." },
+  { href: "/os", name: "Spark", line: "One-click voice interface for your Mac." },
 ] as const;
+
+const onPage = (pathname: string, href: string) => pathname === href || pathname.startsWith(`${href}/`);
 
 type Cta = { product: "phone" | "spark" | "meetings"; label: string; short: string; href: string };
 
@@ -37,6 +39,9 @@ export function navCta(pathname: string): Cta {
 
 export function Navbar() {
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [productsOpen, setProductsOpen] = useState(false);
+  const productsRef = useRef<HTMLDivElement>(null);
+  const productsBtn = useRef<HTMLButtonElement>(null);
   const { isSignedIn, isLoaded } = useAuth();
   const pathname = usePathname() ?? "/";
   const theme = useLampTheme();
@@ -72,6 +77,37 @@ export function Navbar() {
     hydrateFromStorage(); // adopt a stored choice into the store; the inline script already painted it
   }, []);
 
+  // Both menus close on a new page (reset during render, not in an effect); the Products panel also
+  // closes on Escape (focus back to its button) and on a click outside it.
+  const [menuPath, setMenuPath] = useState(pathname);
+  if (menuPath !== pathname) {
+    setMenuPath(pathname);
+    setProductsOpen(false);
+    setMobileOpen(false);
+  }
+  useEffect(() => {
+    if (!productsOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      setProductsOpen(false);
+      productsBtn.current?.focus();
+    };
+    const onDown = (e: PointerEvent) => {
+      if (!productsRef.current?.contains(e.target as Node)) setProductsOpen(false);
+    };
+    document.addEventListener("keydown", onKey);
+    document.addEventListener("pointerdown", onDown);
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      document.removeEventListener("pointerdown", onDown);
+    };
+  }, [productsOpen]);
+
+  const closeMenus = () => {
+    setProductsOpen(false);
+    setMobileOpen(false);
+  };
+
   // Close mobile menu on resize to desktop
   useEffect(() => {
     const mq = window.matchMedia("(min-width: 769px)");
@@ -87,20 +123,58 @@ export function Navbar() {
         <Logo size="md" withMark />
       </div>
       <div className={`nav-links${mobileOpen ? " mobile-open" : ""}`}>
-        {LINKS.map((l) => (
-          <Link
-            key={l.href}
-            href={l.href}
-            className={pathname.startsWith(l.href) ? "active" : undefined}
-            onClick={() => setMobileOpen(false)}
+        <div
+          className="nav-products"
+          ref={productsRef}
+          onBlur={(e) => {
+            // Tabbing out of the menu closes it.
+            if (e.relatedTarget && !e.currentTarget.contains(e.relatedTarget as Node)) setProductsOpen(false);
+          }}
+        >
+          <button
+            type="button"
+            ref={productsBtn}
+            className={`nav-products-btn${PRODUCTS.some((p) => onPage(pathname, p.href)) ? " active" : ""}`}
+            aria-expanded={productsOpen}
+            aria-controls="nav-products-panel"
+            onClick={() => setProductsOpen((v) => !v)}
           >
-            {l.label}
-          </Link>
-        ))}
+            Products
+            <svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true">
+              <path d="M2 3.5 5 6.5l3-3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </button>
+          {/* The phone menu has no dropdown: it shows this list under a plain label. */}
+          <span className="nav-products-label" aria-hidden="true">Products</span>
+          <div id="nav-products-panel" className={`nav-products-panel${productsOpen ? " open" : ""}`}>
+            {PRODUCTS.map((p) => {
+              const current = onPage(pathname, p.href);
+              return (
+                <Link
+                  key={p.href}
+                  href={p.href}
+                  className={current ? "active" : undefined}
+                  aria-current={current ? "page" : undefined}
+                  onClick={closeMenus}
+                >
+                  <span className="nav-product-name">{p.name}</span>
+                  <span className="nav-product-line">{p.line}</span>
+                </Link>
+              );
+            })}
+          </div>
+        </div>
+        <Link
+          href="/pricing"
+          className={onPage(pathname, "/pricing") ? "active" : undefined}
+          onClick={closeMenus}
+        >
+          Pricing
+        </Link>
         {signedOut && (
           <>
             {!spark && (
-              <Link href="/sign-in" className="nav-mobile-login">
+              <Link href="/sign-in" className="nav-mobile-login" onClick={closeMenus}>
                 Log in
               </Link>
             )}
@@ -108,7 +182,7 @@ export function Navbar() {
           </>
         )}
         {signedIn && (
-          <Link href="/voice" className="nav-mobile-login">
+          <Link href="/voice" className="nav-mobile-login" onClick={closeMenus}>
             Open Lightbulb
           </Link>
         )}

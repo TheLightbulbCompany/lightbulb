@@ -240,10 +240,6 @@ class Settings(BaseSettings):
     """The ``whsec_`` workspace verification secret. Empty = every Recall webhook is refused."""
     RECALL_GOOGLE_LOGIN_GROUP_ID: str = ""
     """Recall Google Login Group the Meet bot signs in with. Empty = joins signed out (and may wait in the lobby)."""
-    # Text agents (Photon iMessage/SMS). Empty = the texting rail is off.
-    PHOTON_API_KEY: str = ""  # Photon 2.0 project key, pho_sk_...
-    PHOTON_PROJECT_ID: str = ""  # pho_prj_...
-    PHOTON_WEBHOOK_SECRET: str = ""  # the Standard-Webhooks whsec_... secret
     MEET_BOT_PAGE_URL: str = ""
     """The bot's Output Media page. Empty = ``{FRONTEND_URL}/meet-bot``."""
     OPENROUTER_MARKUP: str = ""
@@ -325,7 +321,6 @@ class Settings(BaseSettings):
     # Billing / Stripe
     STRIPE_SECRET_KEY: str = ""
     STRIPE_WEBHOOK_SECRET: str = ""
-    STRIPE_WORKSPACE_PRICE_ID: str = ""
     #: The $250/month voice plan's flat fee (one licensed price); Metronome bills only its overage minutes.
     STRIPE_VOICE_PLAN_PRICE_ID: str = ""
     #: Spark's $20/month subscription (one licensed price); empty: no checkout link.
@@ -333,24 +328,6 @@ class Settings(BaseSettings):
     #: Save Spark voice transcripts (text only, 90 days) to the spark-transcripts table. Dev only until the
     #: owner approves prod and the privacy text changes; off: nothing is saved.
     SPARK_TRANSCRIPTS_ENABLED: bool = False
-    STRIPE_BASE_PRICE_ID: str = ""
-    # Stripe price for the Ultra runtime tier. Empty default so the app boots
-    # without it; CDK-wired in dev/prod. This is the billing source of truth
-    # for "$150".
-    STRIPE_ULTRA_PRICE_ID: str = ""
-    # $100/month Front desk add-on (a third subscription item; pays for the workspace's texting number).
-    # Empty = fail closed: the add-on cannot be bought.
-    STRIPE_FRONT_DESK_PRICE_ID: str = ""
-    # Display dollars for the Workspace plan, echoed to clients via
-    # /billing/account. Kept in lockstep with STRIPE_WORKSPACE_PRICE_ID's unit
-    # amount in Stripe. The iOS paywall renders the web price from this, and
-    # App Review requires a displayed external price to be accurate, so a
-    # divergence here is a compliance bug rather than a cosmetic one.
-    WORKSPACE_PRICE_USD: int = 50
-    BASE_PRICE_USD: int = 20
-    ULTRA_PRICE_USD: int = 150
-    # Display dollars for STRIPE_FRONT_DESK_PRICE_ID (Photon's $250/month line price); lockstep with its unit amount.
-    FRONT_DESK_PRICE_USD: int = 250
     # Display dollars for STRIPE_SPARK_PRICE_ID (Spark's monthly price); lockstep with its unit amount.
     SPARK_PRICE_USD: int = 20
 

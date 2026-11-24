@@ -30,7 +30,6 @@ from core.services.update_service import run_scheduled_worker
 from core.voice import engine_hooks
 from routers import (
     agent_mail,
-    agent_text,
     apple_iap,
     automations,
     voice_meet,
@@ -41,8 +40,6 @@ from routers import (
     connections,
     container,
     debug,
-    desktop_auth,
-    devices,
     engine_callbacks,
     hooks,
     huddles,
@@ -56,7 +53,6 @@ from routers import (
     ops,
     os as os_router,
     os_billing as os_billing_router,
-    photon_inbound,
     platform_info,
     runtime_rpc,
     ses_inbound,
@@ -169,8 +165,6 @@ async def lifespan(app: FastAPI):
     # stale "shutting down" from a prior shutdown.
     set_shutting_down(False)
 
-    from core.services.daily_digest import run_digest_sweeper
-    from core.services.needs_you_email import run_needs_you_sweeper
     from core.services.durable_activity import run_trial_idle_sweeper
     from core.services.run_ledger import run_ledger_sweeper
     from core.services.browser_control import run_autosave_sweeper
@@ -191,10 +185,6 @@ async def lifespan(app: FastAPI):
     os_voice_task = asyncio.create_task(os_voice_sweeper(os_voice_stop))
     memory_sweeper_stop = asyncio.Event()
     memory_sweeper_task = asyncio.create_task(run_memory_sweeper(memory_sweeper_stop))
-    digest_stop = asyncio.Event()
-    digest_task = asyncio.create_task(run_digest_sweeper(digest_stop))
-    away_stop = asyncio.Event()
-    away_task = asyncio.create_task(run_needs_you_sweeper(away_stop))
 
     gauge_task = asyncio.create_task(_running_count_gauge_loop())
 
@@ -210,8 +200,6 @@ async def lifespan(app: FastAPI):
             "voice_call_sweeper": voice_sweeper_task,
             "os_voice_sweeper": os_voice_task,
             "memory_sweeper": memory_sweeper_task,
-            "daily_digest": digest_task,
-            "needs_you_email": away_task,
             "running_gauges": gauge_task,
         }
     )
@@ -247,8 +235,6 @@ async def lifespan(app: FastAPI):
     voice_sweeper_stop.set()
     os_voice_stop.set()
     memory_sweeper_stop.set()
-    digest_stop.set()
-    away_stop.set()
     gauge_task.cancel()
     try:
         async with asyncio.timeout(20):
@@ -263,8 +249,6 @@ async def lifespan(app: FastAPI):
                 voice_sweeper_task,
                 os_voice_task,
                 memory_sweeper_task,
-                digest_task,
-                away_task,
                 gauge_task,
             ]
             await asyncio.gather(*cleanup, return_exceptions=True)
@@ -278,8 +262,6 @@ async def lifespan(app: FastAPI):
             voice_sweeper_task,
             os_voice_task,
             memory_sweeper_task,
-            digest_task,
-            away_task,
             gauge_task,
         ):
             task.cancel()
@@ -291,8 +273,6 @@ async def lifespan(app: FastAPI):
             voice_sweeper_task,
             os_voice_task,
             memory_sweeper_task,
-            digest_task,
-            away_task,
             gauge_task,
             return_exceptions=True,
         )
@@ -485,7 +465,6 @@ app.openapi = custom_openapi
 
 # Routes
 app.include_router(users.router, prefix="/api/v1/users", tags=["users"])
-app.include_router(devices.router, prefix="/api/v1/devices", tags=["devices"])
 app.include_router(os_router.router, prefix="/api/v1/os", tags=["os"])
 app.include_router(os_billing_router.router, prefix="/api/v1/os", tags=["os"])
 
@@ -494,7 +473,6 @@ app.include_router(webhooks.router, prefix="/api/v1/webhooks", tags=["webhooks"]
 
 # SES-inbound agent-email ingest (provisioned agent email, inbound leg).
 # A Lambda parses raw SES mail and POSTs the clean JSON payload here.
-app.include_router(photon_inbound.router, prefix="/api/v1/webhooks", tags=["webhooks"])
 app.include_router(ses_inbound.router, prefix="/api/v1/webhooks", tags=["webhooks"])
 
 # Browser/mobile canonical messaging and the guarded HTTP runtime bridge.
@@ -561,8 +539,6 @@ app.include_router(workspace_files.router, prefix="/api/v1/container", tags=["co
 # Debug routes (dev-only container provisioning)
 app.include_router(debug.router, prefix="/api/v1/debug", tags=["debug"])
 
-app.include_router(desktop_auth.router, prefix="/api/v1/auth", tags=["desktop"])
-
 
 # ChatGPT OAuth (device-code flow for BYO ChatGPT-token billing)
 app.include_router(oauth.router, prefix="/api/v1")
@@ -587,7 +563,6 @@ app.include_router(platform_info.router, prefix="/api/v1/platform-info", tags=["
 # Agent mail (container routes under /u/{owner_id}/… use hook-token auth;
 # /addresses routes use Clerk). Policy lives in core/services/agent_mail_send.
 app.include_router(agent_mail.router, prefix="/api/v1/agent-mail", tags=["agent-mail"])
-app.include_router(agent_text.router, prefix="/api/v1/agent-text", tags=["agent-text"])
 
 # Admin dashboard — every endpoint gated by Depends(require_platform_admin).
 from routers import admin as admin_router  # noqa: E402

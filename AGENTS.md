@@ -74,6 +74,7 @@ From plan Part 1 (F-numbers). Each constrains code; do not reopen them.
 - **F17 A Meet session may sleep after five idle minutes and wake on its name.**
 - **F20 Booking conflicts are the model's and the booking tool's;** the tool still reserves a slot atomically.
 - **F22 Missed-caller and waitlist texts stay off** until a consent review.
+- **Texting is removed** (founder, 23 Nov 2026): no Photon webhook, agent-text routes, text lines or member phones. Do not rebuild it.
 - **F37 The business owns its opening** (greeting, AI notice, recording notice): an editable default, nothing
   enforced in code, except that the assistant never claims to be a person when a caller sincerely asks.
 - **F32 One pool of credits covers voice and text.** Design pending (plan Part 2, Q2): build no second meter.
@@ -129,7 +130,7 @@ match. Keep the id-qualified form in the deploy-role trust policies.
 Names from deleted systems that still carry load. Prove nothing reads a resource before you delete it.
 
 - **`paperclip-companies` table**: the canonical workspace identity row.
-- **`PAPERCLIP_SERVICE_TOKEN_KEY`**: signs session shares, digests and Needs-you links.
+- **`PAPERCLIP_SERVICE_TOKEN_KEY`**: signs the Spark billing links, local-session grants and meeting-context tokens (`service_token._signing_key`).
 - **The bridge's `/internal/paperclip/v1/runs` route** (`apps/infra/hermes/bridge/server.py`): creates, polls
   and stops a real Hermes turn.
 - **`ECS_SUBNETS`, `ECS_SECURITY_GROUP_ID`**: the AgentCore `networkModeConfig` that
@@ -145,9 +146,10 @@ Names from deleted systems that still carry load. Prove nothing reads a resource
   stack (detached, not deleted).
 - **`LitestreamReplicaLifecycle`** in `service-stack.ts`: carries the bucket-scoped `s3:ListBucket` every profile
   read, write and delete needs.
-- **`components/messaging`, `workspace`, `teams` and `control`** in the web app: partly live. `/voice/lightbulb`
-  mounts `workspace/RightPane` (which renders `teams` and `control` panels) and `messaging`; `/voice/settings`
-  mounts `settings/SettingsPlace`, which pulls in `control` panels. Prove a file has no importer before you delete it.
+- **The web app's old chat folders are gone**: `components/messaging`, `workspace`, `teams`, `control` and
+  `settings/SettingsPlace` no longer exist (checked against `origin/main`, 2026-11-23). `/voice` is `components/voice`
+  over `hooks/useRooms.ts`; rooms are still the conversation store, so do not touch the messaging rooms.
+  Old docs and specs still name those paths; they are history, not a map.
 
 ## Critical Rules
 
@@ -466,7 +468,7 @@ this file keeps the why, not inventories.
   token that is not a first-party Clerk session.
 - `owner_lifecycle.py` is a DynamoDB conditional-write lease on the path that writes an owner's credentials. It
   fails closed.
-- New Clerk calls go through `clerk_admin.py`; `routers/billing.py` and `routers/desktop_auth.py` still call
+- New Clerk calls go through `clerk_admin.py`; `routers/billing.py` still calls
   `api.clerk.com` inline.
 - Credentials for connectors are materialized into a profile only through `core/services/credentials/hermes_cli.py`
   `project`.
@@ -517,7 +519,7 @@ fields (`apps/frontend/src/lib/pricing.ts`); never bake a price into a client re
 React 19, Tailwind v4, Clerk, SWR. The app lives under `src/app/voice/`: Home (`/voice`), `/voice/lightbulb` (the
 orb and the conversation), `/voice/agent`, `/voice/needs-you`, `/voice/settings`, `/voice/setup`, with components in
 `components/voice/`. Sign-in, sign-up and the Mac app land on `/voice`. `/chat` redirects to `/voice/lightbulb`
-(or `/voice/settings` for provider and settings links); the old workspace shell is deleted; `RightPane` survives inside `/voice/lightbulb`. `src/middleware.ts`
+(or `/voice/settings` for provider and settings links); the old workspace shell is deleted. Nothing under `components/voice` or `components/huddle` imports `messaging`, `workspace` or `teams`. `src/middleware.ts`
 protects `/voice` and the other app routes and runs the admin-host gate (`/admin` 404s off admin hosts).
 
 - **`packages/shared` (`@lightbulb/shared`) is load-bearing:** the API client, the AppSync live-events client and
@@ -570,15 +572,15 @@ mail), `HERMES_SHARED_RUNTIME_ARN`, `VOICE_BUY_NUMBERS`, `VOICE_INBOUND_TRUNK_ID
 ## No Mac app here
 
 Business products are web only (founder, 19 Nov 2026). The Tauri app that lived at `apps/desktop/` is deleted;
-Eve, a separate app outside this repo, is the only Mac app. It reuses the native sign-in bridge that stays here:
-`/auth/desktop-callback` calls `POST /auth/desktop/sign-in-token` (`routers/desktop_auth.py`) and hands the ticket
-to `flickmeon://auth`.
+Spark (Eve), a separate app outside this repo, is the only Mac app. It signs in with Clerk's native SDK; the
+`/auth/desktop-callback` page and `POST /auth/desktop/sign-in-token` bridge for the old Tauri app are deleted.
 
 ## iPhone app
 
 The Expo iPhone app (`apps/mobile/`) was removed from the repo on 2026-11-20 and lives in git history. App Store
 record 6788944100 with bundle id `co.isol8.mobile` still exists and is untouched. Installed copies keep running
-against the unchanged backend (push, Apple IAP, app-return pages) but get no more over-the-air updates.
+against the backend (Apple IAP, app-return pages) but get no more over-the-air updates. The `/devices` push-token
+routes are deleted, so an installed copy can no longer register for push.
 
 ## Knowledge graph (graphify)
 

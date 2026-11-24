@@ -69,9 +69,6 @@ export interface SecretNames {
   livekitApiSecret: string;
   recallApiKey: string;
   recallWebhookSecret: string;
-  photonApiKey: string;
-  photonProjectId: string;
-  photonWebhookSecret: string;
   huddleWorkerSecret: string;
   /**
    * Symmetric secret used by the FastAPI Paperclip proxy router to sign
@@ -1646,43 +1643,17 @@ export class ServiceStack extends cdk.Stack {
       // backend validates the `azp` (authorized party) claim against this
       // allowlist instead. Broader than CORS_ORIGINS because azp reflects the
       // MINT origin, not the calling origin: admin-host sessions call the API
-      // via server actions (no CORS), the paperclip-proxy bootstrap page
-      // handshakes Clerk sessions on the company.isol8.co hosts, and
-      // localhost frontends point at the dev API during development. Native
+      // via server actions (no CORS), and localhost frontends point at the dev
+      // API during development. Native
       // (mobile) tokens carry no azp and always pass.
       // Rollout: ships in audit mode (log + metric, never
       // reject); flip CLERK_AZP_MODE to "enforce" per env once the
       // auth.azp.mismatch metric shows zero legitimate mismatches.
       CLERK_AUTHORIZED_PARTIES:
         env === "prod"
-          ? `https://${rootDomain},https://www.${rootDomain},https://admin.${rootDomain},https://company.${rootDomain}`
-          : `https://dev.${rootDomain},https://admin.dev.${rootDomain},https://dev.company.${rootDomain},http://localhost:3000`,
+          ? `https://${rootDomain},https://www.${rootDomain},https://admin.${rootDomain}`
+          : `https://dev.${rootDomain},https://admin.dev.${rootDomain},http://localhost:3000`,
       CLERK_AZP_MODE: "audit",
-      // Stripe flat-fee Price ID is environment-specific: prod is created in
-      // Stripe live mode, dev in test mode, and they MUST NOT cross-pollinate
-      // (a test-mode Price would silently create test subscriptions in prod).
-      // Read per-env from the runner's secrets at synth time.
-      STRIPE_WORKSPACE_PRICE_ID:
-        env === "prod"
-          ? (process.env.STRIPE_WORKSPACE_PRICE_ID_PROD ?? "")
-          : (process.env.STRIPE_WORKSPACE_PRICE_ID_DEV ?? ""),
-      STRIPE_BASE_PRICE_ID:
-        env === "prod"
-          ? (process.env.STRIPE_BASE_PRICE_ID_PROD ?? "")
-          : (process.env.STRIPE_BASE_PRICE_ID_DEV ?? ""),
-      // Stripe Ultra Price ID — same env-specific live/test split as
-      // STRIPE_WORKSPACE_PRICE_ID above (a test-mode Price would silently create
-      // test subscriptions in prod). Read per-env from the runner's secrets
-      // at synth time. Consumed by the Ultra-tier checkout call site.
-      STRIPE_ULTRA_PRICE_ID:
-        env === "prod"
-          ? (process.env.STRIPE_ULTRA_PRICE_ID_PROD ?? "")
-          : (process.env.STRIPE_ULTRA_PRICE_ID_DEV ?? ""),
-      // Front desk add-on Price, same live/test split. Empty fails closed.
-      STRIPE_FRONT_DESK_PRICE_ID:
-        env === "prod"
-          ? (process.env.STRIPE_FRONT_DESK_PRICE_ID_PROD ?? "")
-          : (process.env.STRIPE_FRONT_DESK_PRICE_ID_DEV ?? ""),
       FRONTEND_URL:
         env === "prod" ? `https://${rootDomain}` : `https://dev.${rootDomain}`,
       // Public-facing base URL of THIS API. Used by /hooks/credentials
@@ -1958,15 +1929,6 @@ export class ServiceStack extends cdk.Stack {
       ),
       RECALL_WEBHOOK_SECRET: ecs.Secret.fromSecretsManager(
         secretsmanager.Secret.fromSecretNameV2(this, "ImportRecallWebhookSecret", props.secretNames.recallWebhookSecret),
-      ),
-      PHOTON_API_KEY: ecs.Secret.fromSecretsManager(
-        secretsmanager.Secret.fromSecretNameV2(this, "ImportPhotonApiKey", props.secretNames.photonApiKey),
-      ),
-      PHOTON_PROJECT_ID: ecs.Secret.fromSecretsManager(
-        secretsmanager.Secret.fromSecretNameV2(this, "ImportPhotonProjectId", props.secretNames.photonProjectId),
-      ),
-      PHOTON_WEBHOOK_SECRET: ecs.Secret.fromSecretsManager(
-        secretsmanager.Secret.fromSecretNameV2(this, "ImportPhotonWebhookSecret", props.secretNames.photonWebhookSecret),
       ),
       HUDDLE_WORKER_SECRET: ecs.Secret.fromSecretsManager(
         secretsmanager.Secret.fromSecretNameV2(this, "ImportHuddleWorkerSecret", props.secretNames.huddleWorkerSecret),

@@ -194,7 +194,7 @@ async def seed_voice(a, b, mp, calls) -> dict:
 
 
 async def seed_billing(a, b, mp, calls) -> dict:
-    for name in ("STRIPE_WORKSPACE_PRICE_ID", "STRIPE_FRONT_DESK_PRICE_ID", "STRIPE_VOICE_PLAN_PRICE_ID"):
+    for name in ("STRIPE_VOICE_PLAN_PRICE_ID",):
         mp.setattr(settings, name, f"price_{name}")
     for name in ("METRONOME_VOICE_ENROLLMENT_ENABLED", "METRONOME_API_KEY", "METRONOME_VOICE_RATE_CARD_ID"):
         mp.setattr(settings, name, True if name.endswith("ENABLED") else "test")
@@ -325,26 +325,6 @@ async def seed_agent_mail(a, b, mp, calls) -> dict:
     return {"key": agent_mail_inbox_repo.reply_key(address, mail["received_key"]), "meeting": room}
 
 
-async def seed_agent_text(a, b, mp, calls) -> dict:
-    await workspaces(a, b)
-    mp.setattr("core.services.photon.enabled", lambda: True)  # else a reply is "disabled" before the key is read
-    team = await _mail(a, "acme-a")
-    for t, number in ((a, "+15551230000"), (b, "+15551239999")):
-        assert await agent_email_repo.put_pending_line(owner_id=t.tenant, agent_id=ceo(t), operation_id="op")
-        await agent_email_repo.record_text_line(
-            number=number, owner_id=t.tenant, agent_id=ceo(t), photon_resource_id="r", photon_user_id="u",
-            operation_id="op",
-        )  # fmt: skip
-    text = await agent_mail_inbox_repo.put_message(
-        address=team, owner_id=a.tenant, agent_id=ceo(a), message_id="t-a", from_addr="+15559870000",
-        subject="", text=f"{MARKER} text", headers={}, attachments=[], channel="text",
-    )  # fmt: skip
-    return {
-        "key": agent_mail_inbox_repo.reply_key(team, text["received_key"]),
-        "_needles": ["+15551230000", "+15559870000"],
-    }
-
-
 async def seed_company_slug(a, b, mp, calls) -> dict:
     await _mail(a, "acme-a")  # A's claimed slug, as a claim leaves it
     await ok(a, "POST", "/api/v1/company/slug/hold", {"slug": "held-a"})
@@ -418,12 +398,6 @@ async def seed_oauth(a, b, mp, calls) -> dict:
     return {}
 
 
-async def seed_devices(a, b, mp, calls) -> dict:
-    await user_repo.put(a.user_id, None)
-    await user_repo.set_push_token(a.user_id, "dev-a", {"token": f"ExponentPushToken[{MARKER}]", "platform": "ios"})
-    return {}
-
-
 async def seed_debug(a, b, mp, calls) -> dict:
     await workspaces(a, b)
     await billing_rows(a, b)
@@ -457,7 +431,6 @@ SEEDS = {
     "workspace_files": seed_workspace_files,
     "memory": seed_memory,
     "agent_mail": seed_agent_mail,
-    "agent_text": seed_agent_text,
     "company_slug": seed_company_slug,
     "connections": seed_connections,
     "container": seed_container,
@@ -465,7 +438,6 @@ SEEDS = {
     "os": seed_os,
     "runtime_rpc": seed_runtime_rpc,
     "oauth": seed_oauth,
-    "devices": seed_devices,
     "debug": seed_debug,
     "config": seed_config,
 }
@@ -529,8 +501,6 @@ CASES = [
     Case("billing", "GET", "/api/v1/billing/trial-recap"),
     Case("billing", "GET", "/api/v1/billing/credits/balance"),
     Case("billing", "POST", "/api/v1/billing/portal"),
-    Case("billing", "POST", "/api/v1/billing/checkout", {"plan": "workspace"}),
-    Case("billing", "POST", "/api/v1/billing/front-desk", {}),
     Case("billing", "GET", "/api/v1/billing/voice-plan"),
     Case("billing", "POST", "/api/v1/billing/voice-plan/checkout", VOICE_PLAN),
     Case("billing", "DELETE", "/api/v1/billing/voice-plan", query={"expectedOwnerId": "{b_tenant}"}),
@@ -632,20 +602,6 @@ CASES = [
     ),
     # memory: tenant = caller
     Case("memory", "POST", "/api/v1/memory/recall", {"question": "what"}),
-    # agent_text: tenant = caller
-    Case("agent_text", "GET", "/api/v1/agent-text/line"),
-    Case("agent_text", "POST", "/api/v1/agent-text/me/phone/code"),
-    Case("agent_text", "DELETE", "/api/v1/agent-text/me/phone"),
-    Case(
-        "agent_text",
-        "POST",
-        "/api/v1/agent-text/reply",
-        {"key": "{key}", "text": "hi"},
-        a_id=True,
-        ok=(200,),
-        says="bad_reply_key",
-    ),
-    Case("agent_text", "POST", "/api/v1/agent-text/thread", {"key": "{key}", "mode": "human"}, a_id=True),
     # agent_mail: tenant = caller; mail keys and transcripts are read at the caller's own team address
     Case("agent_mail", "GET", "/api/v1/agent-mail/address"),  # an org's read creates its mailbox; a person's reads
     Case("agent_mail", "PATCH", "/api/v1/agent-mail/address", {"send_to_anyone": False}),
@@ -700,7 +656,6 @@ CASES = [
     # users: the caller's own row; self-delete wipes only the caller
     Case("users", "POST", "/api/v1/users/sync"),
     Case("users", "GET", "/api/v1/users/me"),
-    Case("users", "POST", "/api/v1/users/me/active"),
     Case("users", "GET", "/api/v1/users/me/prefs"),
     Case("users", "PUT", "/api/v1/users/me/prefs", {"timezone": "Europe/London"}),
     Case("users", "POST", "/api/v1/users/me/delete", {"confirm_email": "{b}@example.com"}),
@@ -713,15 +668,8 @@ CASES = [
     Case("os", "GET", "/api/v1/os/voice-session/{a_voice}", a_id=True),
     Case("os", "DELETE", "/api/v1/os/voice-session/{a_voice}", a_id=True),
     Case("os", "POST", "/api/v1/os/event", {"event": "app_opened", "installId": "{new}"}),  # B's own install
-    # devices, support, desktop sign-in: the caller's own
-    Case(
-        "devices", "POST", "/api/v1/devices", {"token": "ExponentPushToken[b]", "platform": "ios", "deviceId": "dev-b"}
-    ),
-    Case("devices", "DELETE", "/api/v1/devices/dev-a"),
+    # support: the caller's own
     Case("support_tickets", "POST", "/api/v1/support/tickets", {"message": "help"}),
-    Case(
-        "desktop_auth", "POST", "/api/v1/auth/desktop/sign-in-token", ok=(500,)
-    ),  # no CLERK_SECRET_KEY in tests: the case proves only that nothing of A's moves
     # runtime_rpc: tenant = caller
     Case(
         "runtime_rpc",
@@ -741,7 +689,6 @@ NO_SEED = {
     "main": "/protected echoes the caller's own id",
     "support_tickets": "one POST: it reads the caller's own billing and container rows, emails support and stores "
     "nothing; it takes no id",
-    "desktop_auth": "mints a Clerk sign-in token for the caller; reads no tenant row (Clerk is the network fake)",
 }
 
 
@@ -1216,18 +1163,6 @@ async def test_person_provisions_posts_and_dispatches_only_on_their_own_tenant(d
                       {**text, "clientMessageId": str(uuid.uuid4()), "threadRootMessageId": None})  # fmt: skip
     assert read.status_code in (403, 404) and post.status_code in (403, 404), (read.text[:200], post.text[:200])
     assert snapshot(ddb, person.user_id, room["roomId"]) == before
-
-
-async def test_person_workspace_checkout_bills_no_seats(ddb, calls, jwks, monkeypatch):
-    """A person's tenant is one human: the Team checkout carries no seat item."""
-    await seed_billing(Tenant("user_a", None), Tenant("user_b", None), monkeypatch, calls)
-    person = Tenant("user_solo", None)
-    calls.clear()
-    assert (await call(person, "POST", "/api/v1/billing/checkout", {"plan": "workspace"})).status_code == 200
-    (session,) = _stripe_posts(calls, "/v1/checkout/sessions")
-    assert "price_seat" not in session.values() and session["metadata[workspace_id]"] == person.user_id
-    row = await billing_repo.get_by_owner_id(person.user_id, consistent_read=True)
-    assert row["subscription_status"] == "trial_local"
 
 
 @pytest.mark.parametrize("paid", [False, True])

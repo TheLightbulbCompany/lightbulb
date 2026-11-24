@@ -19,8 +19,7 @@ from __future__ import annotations
 import httpx
 import json
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
-from datetime import datetime
-from typing import Any, Literal
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -29,6 +28,7 @@ from boto3.dynamodb.conditions import Key
 from core.auth import AuthContext, get_current_user, resolve_owner_id
 from core.dynamodb import get_item, messaging_table, owner_pk, query_all, run_in_thread, utc_now_iso
 from core.billing import voice_billing, voice_plan
+from core.billing.voice_billing import TIMELINE_ROOMS, epoch_ms, month_seconds
 from core.engine import client as engine
 from core.engine.contract import ConversationOut
 from core.repositories import billing_repo, container_repo
@@ -39,9 +39,6 @@ from core.voice.phone.numbers import _e164, us_number
 
 router = APIRouter()
 
-#: The newest rooms read per timeline. ponytail: one META read per call/channel room, capped; page by createdAt
-#: (or keep a by-kind index) when a workspace outgrows it.
-TIMELINE_ROOMS = 300
 MAX_CONFIG_BYTES = 64_000
 #: What a live greeting must say (the frontend's `isLawful`): an empty greeting is the page's default, which says both.
 
@@ -64,16 +61,6 @@ _MEETING_FIELDS = (
 )
 
 
-def _epoch_ms(v: Any) -> int:
-    """An ISO string, epoch seconds or epoch ms, as epoch ms (0 when missing or unreadable)."""
-    if isinstance(v, (int, float)):
-        return int(v if v > 1e12 else v * 1000)
-    try:
-        return int(datetime.fromisoformat(str(v).replace("Z", "+00:00")).timestamp() * 1000)
-    except ValueError:
-        return 0
-
-
 def _items(conv: ConversationOut) -> list[dict]:
     if conv.kind == "call":
         call = conv.annotations.get("call") or {}
@@ -82,7 +69,7 @@ def _items(conv: ConversationOut) -> list[dict]:
                 **call,
                 "type": "call",
                 "roomId": conv.conversation_id,
-                "at": _epoch_ms(call.get("startedAt") or conv.created_at),
+                "at": epoch_ms(call.get("startedAt") or conv.created_at),
             }
         ]
     meeting = conv.annotations.get("meeting")
@@ -94,7 +81,7 @@ def _items(conv: ConversationOut) -> list[dict]:
         "type": "meeting",
         "roomId": conv.conversation_id,
         "people": [p["name"] for p in roster.values() if p.get("name")],
-        "at": _epoch_ms(meeting.get("startAt") or conv.created_at),
+        "at": epoch_ms(meeting.get("startAt") or conv.created_at),
     }
     # A recurring series has moved on by the time its notes land: each held occurrence (meeting_invites history)
     # is its own past row, keyed by ``occurrence``, with what that occurrence kept.
@@ -107,7 +94,7 @@ def _items(conv: ConversationOut) -> list[dict]:
             "type": "meeting",
             "roomId": conv.conversation_id,
             "occurrence": h["startAt"],
-            "at": _epoch_ms(h["startAt"]),
+            "at": epoch_ms(h["startAt"]),
         }
         for h in meeting.get("history") or []
         if h.get("startAt")
@@ -120,30 +107,6 @@ async def timeline(auth: AuthContext = Depends(get_current_user)) -> dict:
     ws = resolve_owner_id(auth)
     items = [i for c in await engine.list_conversations(ws, ["call", "channel"], TIMELINE_ROOMS) for i in _items(c)]
     return {"items": sorted(items, key=lambda i: i["at"], reverse=True)}
-
-
-async def month_seconds(ws: str, tz_name: str | None) -> int:
-    """Seconds of calls and held meetings this month (the business's timezone): the month's counter row
-    (voice_billing.add_month_seconds at each end). A month whose counter doesn't exist yet (nothing has ended since
-    the counter shipped) is summed from the newest TIMELINE_ROOMS call and channel rooms instead.
-    ponytail: the fallback goes once every workspace has a counter for the month (December)."""
-    counted = await voice_billing.counted_seconds(ws, tz_name)
-    if counted is not None:
-        return counted
-    start = voice_billing.month_start(tz_name)
-    total, since = 0, start.timestamp()
-    for c in await engine.list_conversations(ws, ["call", "channel"], TIMELINE_ROOMS):
-        if c.kind == "call":
-            call = c.annotations.get("call") or {}
-            if _epoch_ms(call.get("startedAt") or c.created_at) >= since * 1000:
-                total += int(call.get("durationSec") or 0)
-        elif (
-            (mt := c.annotations.get("meeting") or {}).get("inCallAt")
-            and mt.get("endedAt")
-            and int(mt["inCallAt"]) >= since
-        ):
-            total += max(0, int(mt["endedAt"]) - int(mt["inCallAt"]))
-    return total
 
 
 @router.get("/voice/usage")

@@ -65,9 +65,6 @@ function buildServiceStack(environment: "dev" | "prod", inspectAssets?: (images:
       livekitApiSecret: `lightbulb/${environment}/livekit_api_secret`,
       recallApiKey: `lightbulb/${environment}/recall_api_key`,
       recallWebhookSecret: `lightbulb/${environment}/recall_webhook_secret`,
-      photonApiKey: `lightbulb/${environment}/photon_api_key`,
-      photonProjectId: `lightbulb/${environment}/photon_project_id`,
-      photonWebhookSecret: `lightbulb/${environment}/photon_webhook_secret`,
       huddleWorkerSecret: `lightbulb/${environment}/huddle_worker_secret`,
       metronomeWebhookSecret: `lightbulb/${environment}/metronome_webhook_secret`,
       wsInternalSecret: `lightbulb/${environment}/ws_internal_secret`,
@@ -195,9 +192,9 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
     expect(names).toEqual(expect.arrayContaining(["RECALL_API_KEY", "RECALL_WEBHOOK_SECRET"]));
   });
 
-  test("backend task carries the Photon secrets", () => {
+  test("backend task carries no texting secrets", () => {
     const secrets = JSON.stringify(template.findResources("AWS::ECS::TaskDefinition"));
-    for (const name of ["PHOTON_API_KEY", "PHOTON_PROJECT_ID", "PHOTON_WEBHOOK_SECRET"]) expect(secrets).toContain(name);
+    expect(secrets).not.toContain("PHOTON_");
     expect(secrets).not.toContain("SENDBLUE_");
   });
 
@@ -439,18 +436,6 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
     });
   });
 
-  test("backend task definition carries STRIPE_WORKSPACE_PRICE_ID", () => {
-    template.hasResourceProperties("AWS::ECS::TaskDefinition", {
-      ContainerDefinitions: Match.arrayWith([
-        Match.objectLike({
-          Environment: Match.arrayWith([
-            Match.objectLike({ Name: "STRIPE_WORKSPACE_PRICE_ID" }),
-          ]),
-        }),
-      ]),
-    });
-  });
-
   test("backend task definition carries STRIPE_SPARK_PRICE_ID", () => {
     template.hasResourceProperties("AWS::ECS::TaskDefinition", {
       ContainerDefinitions: Match.arrayWith([
@@ -463,16 +448,16 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
     });
   });
 
-  test("backend task definition carries STRIPE_FRONT_DESK_PRICE_ID", () => {
-    template.hasResourceProperties("AWS::ECS::TaskDefinition", {
-      ContainerDefinitions: Match.arrayWith([
-        Match.objectLike({
-          Environment: Match.arrayWith([
-            Match.objectLike({ Name: "STRIPE_FRONT_DESK_PRICE_ID" }),
-          ]),
-        }),
-      ]),
-    });
+  test("the retired Workspace, Base, Ultra and Front desk price ids no longer reach the task env", () => {
+    const taskDefs = JSON.stringify(template.findResources("AWS::ECS::TaskDefinition"));
+    for (const removed of [
+      "STRIPE_WORKSPACE_PRICE_ID",
+      "STRIPE_BASE_PRICE_ID",
+      "STRIPE_ULTRA_PRICE_ID",
+      "STRIPE_FRONT_DESK_PRICE_ID",
+    ]) {
+      expect(taskDefs).not.toContain(removed);
+    }
   });
 
   test("no Stripe rail flag or removed company-Stripe/top-up setting reaches the task env", () => {
@@ -1090,11 +1075,11 @@ describe("ServiceStack — Clerk azp (SEC-8) per-env wiring", () => {
   test.each([
     [
       "dev",
-      `https://dev.${ROOT_DOMAIN},https://admin.dev.${ROOT_DOMAIN},https://dev.company.${ROOT_DOMAIN},http://localhost:3000`,
+      `https://dev.${ROOT_DOMAIN},https://admin.dev.${ROOT_DOMAIN},http://localhost:3000`,
     ],
     [
       "prod",
-      `https://${ROOT_DOMAIN},https://www.${ROOT_DOMAIN},https://admin.${ROOT_DOMAIN},https://company.${ROOT_DOMAIN}`,
+      `https://${ROOT_DOMAIN},https://www.${ROOT_DOMAIN},https://admin.${ROOT_DOMAIN}`,
     ],
   ] as const)("%s backend gets azp allowlist in audit mode", (envName, parties) => {
     const template = envName === "dev" ? SERVICE_TEMPLATE_DEV : buildServiceStack("prod");

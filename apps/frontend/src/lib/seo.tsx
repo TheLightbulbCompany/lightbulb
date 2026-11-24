@@ -180,7 +180,7 @@ export const hubJsonLd = {
   ],
 };
 
-/** /phone's one `@graph` (05 Part B): its FAQ is the visible HomeFaq, word for word. */
+/** /phone's one `@graph` (05 Part B): its FAQ is the visible questions section, word for word. */
 export const phoneJsonLd = {
   "@context": "https://schema.org",
   "@graph": [

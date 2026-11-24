@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import boto3
 import pytest
+from botocore.exceptions import ClientError
 from moto import mock_aws
 
 from core.services import billing_service
@@ -105,70 +106,51 @@ class TestBillingServiceCancelSubscription:
 
 
 @pytest.mark.asyncio
-async def test_build_subscription_checkout_passes_line_items_verbatim(monkeypatch):
-    """The builder forwards its line_items list to Stripe untouched — this is
-    what lets the team path add a base-price item alongside the seat item in
-    a later task without the builder itself changing."""
-    captured: dict = {}
-
-    def fake_create(**kwargs):
-        captured.update(kwargs)
-        return MagicMock(id="cs_test_1", url="https://checkout.stripe.com/x")
-
-    monkeypatch.setattr(billing_service.stripe.checkout.Session, "create", fake_create)
+async def test_person_customer_does_not_reuse_another_tenants_email_customer(monkeypatch):
+    """Voice-plan checkout makes the Stripe customer here: a new one per tenant, never one found by email."""
+    service = BillingService()
+    monkeypatch.setattr(billing_service.billing_repo, "get_by_owner_id", AsyncMock(return_value=None))
     monkeypatch.setattr(
         billing_service.billing_repo,
-        "get_by_owner_id",
-        AsyncMock(return_value={"owner_id": "org_1", "stripe_customer_id": "cus_1"}),
+        "create_if_not_exists",
+        AsyncMock(return_value={"owner_id": "user_2", "stripe_customer_id": "cus_user_2"}),
     )
+    create = MagicMock(return_value=MagicMock(id="cus_user_2"))
+    monkeypatch.setattr(billing_service.stripe.Customer, "create", create)
+    list_customers = MagicMock()
+    monkeypatch.setattr(billing_service.stripe.Customer, "list", list_customers)
 
-    items = [{"price": "price_base", "quantity": 1}, {"price": "price_seat", "quantity": 3}]
-    await billing_service._build_subscription_checkout(
-        owner_id="org_1",
-        line_items=items,
-        metadata={"owner_id": "org_1"},
-        success_url="https://x/ok",
-        cancel_url="https://x/no",
-        idempotency_key="k1",
+    account = await service.create_customer_for_owner(owner_id="user_2", email="owner@example.com")
+
+    list_customers.assert_not_called()
+    create.assert_called_once_with(
+        metadata={"workspace_id": "user_2", "owner_id": "user_2"},
+        idempotency_key="workspace-customer:v2:user_2",
     )
+    assert account["stripe_customer_id"] == "cus_user_2"
 
-    assert captured["line_items"] == items
 
-
-class TestLegacyFlatCheckoutIdempotencyKey:
-    """The retained legacy builder uses one stable key per 5-minute bucket."""
-
-    # Frozen so the 5-minute bucket cannot roll between two calls and fake a
-    # difference (or hide a sameness).
-    NOW = 1_800_000_000.0
-
-    @classmethod
-    async def _key_for(cls) -> str:
-        created = MagicMock(return_value=MagicMock(id="cs_1"))
-        with (
-            patch("core.services.billing_service.time.time", return_value=cls.NOW),
-            patch.object(
-                billing_service.billing_repo,
-                "get_by_owner_id",
-                new=AsyncMock(return_value={"stripe_customer_id": "cus_1"}),
-            ),
-            patch.object(billing_service.settings, "STRIPE_WORKSPACE_PRICE_ID", "price_flat"),
-            patch("stripe.checkout.Session.create", new=created),
-        ):
-            await billing_service._build_subscription_checkout(
-                owner_id="u_1",
-                line_items=[{"price": "price_flat", "quantity": 1}],
-                metadata={"owner_id": "u_1"},
-                success_url="https://x/ok",
-                cancel_url="https://x/no",
-                idempotency_key=billing_service._checkout_idempotency_key("flat_checkout", "u_1", "bedrock_claude:_"),
+@pytest.mark.asyncio
+async def test_person_customer_backfill_race_keeps_the_existing_row_winner(monkeypatch):
+    service = BillingService()
+    existing = {"owner_id": "user_2", "subscription_status": "trial_local"}
+    winner = {"owner_id": "user_2", "stripe_customer_id": "cus_winner"}
+    monkeypatch.setattr(billing_service.billing_repo, "get_by_owner_id", AsyncMock(side_effect=[existing, winner]))
+    monkeypatch.setattr(
+        billing_service.billing_repo,
+        "set_stripe_customer_id",
+        AsyncMock(
+            side_effect=ClientError(
+                {"Error": {"Code": "ConditionalCheckFailedException", "Message": "already claimed"}},
+                "UpdateItem",
             )
-        return created.call_args.kwargs["idempotency_key"]
+        ),
+    )
+    monkeypatch.setattr(billing_service.stripe.Customer, "create", MagicMock(return_value=MagicMock(id="cus_loser")))
+    delete = MagicMock()
+    monkeypatch.setattr(billing_service.stripe.Customer, "delete", delete)
 
-    @pytest.mark.asyncio
-    async def test_flat_checkout_key_is_untouched(self):
-        """The current flat-checkout key stays stable within its time bucket."""
-        key = await self._key_for()
-        with patch("core.services.billing_service.time.time", return_value=self.NOW):
-            unchanged = billing_service._checkout_idempotency_key("flat_checkout", "u_1", "bedrock_claude:_")
-        assert key == unchanged
+    account = await service.create_customer_for_owner(owner_id="user_2", email="owner@example.com")
+
+    assert account == winner
+    delete.assert_called_once_with("cus_loser", idempotency_key="delete_customer:cus_loser")

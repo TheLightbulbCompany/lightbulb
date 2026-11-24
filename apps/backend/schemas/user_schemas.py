@@ -30,30 +30,6 @@ class CreateKeysResponse(BaseModel):
     public_key: str = Field(..., description="X25519 public key (32 bytes hex)")
 
 
-class DeviceRegisterRequest(BaseModel):
-    """Body for POST /api/v1/devices — one device's Expo push token."""
-
-    token: str = Field(..., description="Expo push token, ExponentPushToken[...]")
-    platform: Literal["ios", "android"] = Field(default="ios", description="Device platform")
-    deviceId: str = Field(..., min_length=1, description="Stable per-install device id")
-    timezone: str | None = Field(
-        default=None,
-        max_length=64,
-        description="The device's IANA timezone (e.g. Europe/Paris). Stored on the user; an unknown zone is ignored.",
-    )
-
-    @field_validator("token")
-    @classmethod
-    def _looks_like_expo_token(cls, v: str) -> str:
-        if not (v.startswith("ExponentPushToken[") or v.startswith("ExpoPushToken[")):
-            raise ValueError("not an Expo push token")
-        return v
-
-
-class DeviceRegisterResponse(BaseModel):
-    status: str = Field(..., description="'registered'")
-
-
 NotifyLevel = Literal["off", "badge", "banner"]
 
 
@@ -71,10 +47,6 @@ class UserPrefs(BaseModel):
     """GET/PUT /api/v1/users/me/prefs response."""
 
     timezone: str = Field(..., description="IANA timezone; America/New_York when never set")
-    dailySummary: bool = Field(..., description="Daily 'needs you' digest (push + email); default on")
-    awayEmail: bool = Field(
-        default=True, description="Email a DM, @mention or approval left unseen 5 minutes while away; default on"
-    )
     chatTheme: Literal["light", "dark"] | None = Field(
         default=None,
         description="Account chat theme; null when never set on any device (client falls back to OS/localStorage)",
@@ -90,8 +62,6 @@ class UserPrefsUpdate(BaseModel):
     """PUT /api/v1/users/me/prefs body. Omitted fields are left unchanged."""
 
     timezone: str | None = Field(default=None, max_length=64, description="IANA timezone, e.g. Europe/Paris")
-    dailySummary: bool | None = None
-    awayEmail: bool | None = None
     chatTheme: Literal["light", "dark"] | None = None
     sessionsReachableFromBackgroundWork: bool | None = None
     #: The whole object; a client sends every field it shows.

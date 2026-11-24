@@ -71,7 +71,7 @@ def strictest(rows: list[dict]) -> dict:
     any is paused, verified senders unioned. No rows is the open default."""
     rows = [
         r for r in rows if not r.get("alias_of") and not r.get("kind")
-    ]  # alias and text-line rows carry no settings
+    ]  # alias and other typed (``kind``) rows carry no settings
     settings = {
         "send_to_anyone": all(bool(r.get("send_to_anyone")) for r in rows),
         "verified_senders": sorted({s for r in rows for s in r.get("verified_senders") or []}),

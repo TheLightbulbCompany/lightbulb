@@ -14,7 +14,7 @@ vi.mock("@/lib/signupFlow", () => ({ captureSignupCta }));
 const capture = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/analytics", () => ({ capture }));
 
-import { Navbar, navCta } from "../Navbar";
+import { Navbar, navCta, PRODUCTS } from "../Navbar";
 
 const IPHONE = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148 Safari/604.1";
 
@@ -88,5 +88,77 @@ describe("Navbar", () => {
       surface: "landing_nav",
     });
     expect(capture).not.toHaveBeenCalled();
+  });
+
+  it("on the company home: a plain Sign up that names no product, under the same ctaId", () => {
+    render(<Navbar />);
+    expect(button()).toHaveAttribute("href", "/sign-up");
+    expect(button().textContent).toContain("Sign up");
+    expect(button().textContent).not.toContain("Lightbulb Phone");
+    fireEvent.click(button());
+    expect(captureSignupCta).toHaveBeenCalledWith({ ctaId: "nav_sign_up", label: "Sign up", surface: "landing_nav" });
+  });
+
+  it("puts the three products under one Products menu, in order, then Pricing", () => {
+    render(<Navbar />);
+    const products = screen.getByRole("button", { name: "Products" });
+    expect(products).toHaveAttribute("aria-controls", "nav-products-panel");
+    const panel = document.getElementById("nav-products-panel")!;
+    const links = [...panel.querySelectorAll("a")];
+    expect(links.map((a) => [a.getAttribute("href"), a.querySelector(".nav-product-name")?.textContent])).toEqual([
+      ["/phone", "Lightbulb Phone"],
+      ["/meetings", "Lightbulb Meetings"],
+      ["/os", "Spark"],
+    ]);
+    expect(links[2].textContent).toContain("One-click voice interface for your Mac.");
+    expect(PRODUCTS).toHaveLength(3);
+    // No product is a top-level link of its own any more.
+    const top = [...document.querySelectorAll(".nav-links > a")].map((a) => a.getAttribute("href"));
+    expect(top).toContain("/pricing");
+    expect(top.filter((h) => ["/phone", "/meetings", "/os"].includes(h ?? ""))).toEqual([]);
+  });
+
+  it("opens and closes the Products panel: click, Escape, outside click, link tap", () => {
+    render(<Navbar />);
+    const products = screen.getByRole("button", { name: "Products" });
+    const panel = document.getElementById("nav-products-panel")!;
+    expect(products).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(products);
+    expect(products).toHaveAttribute("aria-expanded", "true");
+    expect(panel).toHaveClass("open");
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(products).toHaveAttribute("aria-expanded", "false");
+    expect(products).toHaveFocus();
+    fireEvent.click(products);
+    fireEvent.pointerDown(document.body);
+    expect(products).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(products);
+    fireEvent.click(screen.getByRole("link", { name: /Lightbulb Meetings/ }));
+    expect(products).toHaveAttribute("aria-expanded", "false");
+  });
+
+  it("closes the Products panel on a route change", () => {
+    const { rerender } = render(<Navbar />);
+    const products = screen.getByRole("button", { name: "Products" });
+    fireEvent.click(products);
+    s.path = "/pricing";
+    rerender(<Navbar />);
+    expect(products).toHaveAttribute("aria-expanded", "false");
+  });
+
+  it("marks the current product, and only it", () => {
+    s.path = "/meetings";
+    render(<Navbar />);
+    expect(screen.getByRole("link", { name: /Lightbulb Meetings/ })).toHaveAttribute("aria-current", "page");
+    expect(screen.getByRole("link", { name: /Lightbulb Phone/ })).not.toHaveAttribute("aria-current");
+    expect(screen.getByRole("link", { name: /Spark/ })).not.toHaveAttribute("aria-current");
+  });
+
+  it("closes the phone menu after a product tap", () => {
+    render(<Navbar />);
+    fireEvent.click(screen.getByRole("button", { name: "Open menu" }));
+    expect(document.querySelector(".nav-links")).toHaveClass("mobile-open");
+    fireEvent.click(screen.getByRole("link", { name: /Spark/ }));
+    expect(document.querySelector(".nav-links")).not.toHaveClass("mobile-open");
   });
 });

@@ -114,36 +114,52 @@ describe("/os", () => {
   });
 });
 
-// The founder's own wording (20 Nov): the one bold headline allowed to say "AI".
-const HUB_H1_AI_EXCEPTION = "The voice AI application company.";
+const HOME_H1 = "Voice to run your life, business and computer";
 
 describe("/", () => {
-  it("leads with the company line and gives each product its own card and door", () => {
+  it("says the whole line once, and lets the word turn only for the eye", () => {
     const { container } = render(<HubPage />);
-    expect(screen.getByRole("heading", { level: 1 }).textContent).toBe(HUB_H1_AI_EXCEPTION);
-    const cards = container.querySelectorAll(".lb-hub-card");
-    expect([...cards].map((c) => c.querySelector("h2")?.textContent)).toEqual([
-      "Lightbulb Phone",
-      "Lightbulb Meetings",
-      "Spark",
-    ]);
-    const spark = cards[2];
-    expect(spark.querySelector("p")?.textContent).toBe("One-click voice interface for your Mac.");
-    expect(screen.getByRole("link", { name: "Download for Mac" }).getAttribute("href")).toBe("/os");
-    expect(screen.getByRole("link", { name: "Set up Lightbulb Phone" }).getAttribute("href")).toBe("/sign-up");
-    expect(screen.getAllByRole("link", { name: "Join the waitlist" }).map((a) => a.getAttribute("href"))).toEqual([
-      "/meetings",
-    ]);
-    expect(screen.getByRole("link", { name: "See how it works" }).getAttribute("href")).toBe("/phone");
-    expect(screen.getByRole("link", { name: "Talk to a founder" }).getAttribute("href")).toBe("/request-setup");
-    // The salon mock-up lives on /phone only.
-    expect(container.querySelector(".lb-art")).toBeNull();
+    expect(container.querySelectorAll("h1")).toHaveLength(1);
+    expect(screen.getByRole("heading", { level: 1, name: HOME_H1 })).toBeTruthy();
+    expect(container.querySelector("#word")?.closest("[aria-hidden=true]")).toBeTruthy();
+    expect(container.textContent).toContain("Say it like you'd say it to a person.");
+    expect(container.textContent).toContain("Examples, not real customers");
   });
 
-  it("keeps AI out of every other bold headline", () => {
+  it("opens the window on Spark, then Phone and Meetings, and the arrow keys move between them", () => {
+    render(<HubPage />);
+    const tabs = screen.getAllByRole("tab");
+    expect(tabs.map((t) => t.textContent)).toEqual(["Spark", "Phone", "Meetings"]);
+    expect(tabs.map((t) => t.getAttribute("aria-selected"))).toEqual(["true", "false", "false"]);
+    expect(screen.getByRole("tabpanel").id).toBe("p-spark");
+    fireEvent.keyDown(tabs[0], { key: "ArrowRight" });
+    expect(tabs[1].getAttribute("aria-selected")).toBe("true");
+    expect(screen.getByRole("tabpanel").id).toBe("p-phone");
+    expect(document.activeElement).toBe(tabs[1]);
+    fireEvent.keyDown(tabs[1], { key: "End" });
+    expect(screen.getByRole("tabpanel").id).toBe("p-meetings");
+    fireEvent.keyDown(tabs[2], { key: "ArrowRight" });
+    expect(screen.getByRole("tabpanel").id).toBe("p-spark");
+  });
+
+  it("gives each product a row and its own door, Spark first", () => {
+    const { container } = render(<HubPage />);
+    expect([...container.querySelectorAll(".prow h2")].map((h) => h.textContent)).toEqual([
+      "Spark",
+      "Lightbulb Phone",
+      "Lightbulb Meetings",
+    ]);
+    expect(screen.getByRole("link", { name: "Download for Mac" }).getAttribute("href")).toBe("/download/spark");
+    expect(screen.getByRole("link", { name: "Set up Lightbulb Phone" }).getAttribute("href")).toBe("/sign-up");
+    expect(screen.getByRole("link", { name: "Join the waitlist" }).getAttribute("href")).toBe("/meetings#waitlist");
+    expect(screen.getByRole("link", { name: "Talk to a founder" }).getAttribute("href")).toBe("/request-setup");
+    for (const img of container.querySelectorAll(".prow img")) expect(img.getAttribute("alt")).toMatch(/page/);
+  });
+
+  it("keeps AI out of every bold headline", () => {
     const { container } = render(<HubPage />);
     const bold = [...container.querySelectorAll("h1, h2, h3, b")].map((el) => el.textContent ?? "");
-    expect(bold.filter((t) => t !== HUB_H1_AI_EXCEPTION && /\bAI\b/.test(t))).toEqual([]);
+    expect(bold.filter((t) => /\bAI\b/.test(t))).toEqual([]);
   });
 
   it("carries no FAQ, pricing, banned word, price or dash", () => {
@@ -158,8 +174,9 @@ describe("/", () => {
   it("tracks the sign-up door and is the canonical company home", () => {
     captureSignupCta.mockClear();
     render(<HubPage />);
-    fireEvent.click(screen.getByRole("link", { name: /Set up Lightbulb Phone/ }));
-    expect(captureSignupCta.mock.calls.map(([o]) => o.ctaId)).toEqual(["hub_sign_up"]);
+    fireEvent.click(screen.getByRole("link", { name: "Set up Lightbulb Phone" }));
+    fireEvent.click(screen.getByRole("link", { name: "Talk to a founder" }));
+    expect(captureSignupCta.mock.calls.map(([o]) => o.ctaId)).toEqual(["hub_sign_up", "hub_founder"]);
     expect(hubMeta.alternates?.canonical).toBe("https://thelightbulb.company/");
     expect(hubMeta.title).toBe("The Voice AI Application Company | Lightbulb");
     expect(String(hubMeta.description)).not.toMatch(/salon|receptionist/i);

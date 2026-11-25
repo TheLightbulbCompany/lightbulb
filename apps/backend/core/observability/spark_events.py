@@ -18,6 +18,8 @@ PRODUCT = "spark"
 VERSION = re.compile(r"[0-9]{1,4}(\.[0-9]{1,4}){0,3}([-+][0-9A-Za-z.]{1,16})?")
 # An OS version is dotted numbers, each up to five digits: macOS 26.2, Windows 10.0.26100.
 OS_VERSION = re.compile(r"[0-9]{1,5}(\.[0-9]{1,5}){0,3}")
+# A delegation id from the engine's newId("dlg"): the prefix, then base-36 time and random characters.
+TASK_ID = re.compile(r"dlg_[0-9a-z]{10,24}")
 NS = uuid.uuid5(uuid.NAMESPACE_URL, "lightbulb:spark")
 
 
@@ -39,6 +41,26 @@ def _seconds(v: object) -> bool:
 
 _METHOD = _enum("apple", "google", "email")
 _PROVIDER = _enum("chatgpt", "claude")
+_PERMISSION = _enum("microphone", "accessibility", "screen_recording")
+_TASK_SOURCE = _enum("voice", "typed", "automation")
+_TALK_KIND = _enum("hold", "handsFree", "typed", "wakeWord", "none")
+_STEP = _enum("sign_in", "brain", "permissions", "say_hi")
+_STEP_ACTION = _enum("shown", "completed", "skipped")
+_SIGNIN_FAIL = _enum("signin", "timeout", "download", "offline", "space", "no_plan")
+_HEARD_FROM = _enum(
+    "friend_or_invite",
+    "x_twitter",
+    "youtube",
+    "tiktok_reels",
+    "reddit",
+    "hacker_news",
+    "product_hunt",
+    "newsletter_or_podcast",
+    "search_or_ai_assistant",
+    "windows_store",
+    "other",
+    "skipped",
+)
 _PROBLEM_KIND = _enum(
     "permission.accessibility",
     "permission.screenRecording",
@@ -71,16 +93,28 @@ APP_EVENTS: dict[str, dict[str, Callable[[object], bool]]] = {
     "signin_completed": {"method": _METHOD, "is_new_account": _bool},
     "brain_signin_started": {"provider": _PROVIDER, "needed_download": _bool},
     "brain_chosen": {"provider": _PROVIDER},
-    "permission_granted": {"permission": _enum("microphone", "accessibility", "screen_recording")},
+    "permission_granted": {"permission": _PERMISSION},
+    "permission_prompted": {"permission": _PERMISSION},
+    "permission_denied": {"permission": _PERMISSION},
+    "analytics_optout_set": {"on": _bool},
+    "onboarding_step": {"step": _STEP, "action": _STEP_ACTION},
+    "brain_signin_failed": {"provider": _PROVIDER, "reason": _SIGNIN_FAIL},
+    "heard_from_answered": {"choice": _HEARD_FROM},
     "full_access_set": {"on": _bool},
     "onboarding_completed": {"skipped_sign_in": _bool, "seconds_total": _seconds},
     "first_conversation": {},
     "first_tidy": {"outcome": _enum("done", "already_tidy", "declined", "stopped", "failed")},
+    "task_started": {"task_id": _match(TASK_ID), "source": _TASK_SOURCE, "talk_kind": _TALK_KIND},
+    # task_id is absent from old apps' task_completed / task_failed: the property is simply not sent.
     "task_completed": {
-        "source": _enum("voice", "typed", "automation"),
+        "task_id": _match(TASK_ID),
+        "source": _TASK_SOURCE,
         "seconds_bucket": _enum("lt10", "lt30", "lt120", "lt600", "gte600"),
     },
-    "task_failed": {"reason": _enum("auth", "quota", "rate", "unreachable", "signed_out", "other")},
+    "task_failed": {
+        "task_id": _match(TASK_ID),
+        "reason": _enum("auth", "quota", "rate", "unreachable", "signed_out", "other"),
+    },
     "problem_raised": {"kind": _PROBLEM_KIND},
     "upgrade_clicked": {},
     "manage_subscription_clicked": {},
@@ -118,6 +152,7 @@ def facts(row: dict, now: int) -> dict:
         "spark_status": os_billing.status(row, now),
         "spark_trial_ends_at": int(row["os_trial_ends_at"]),
         "spark_referrals": int(row.get("os_referrals", 0)),
+        "spark_subscription_status": row.get("os_subscription_status") or "none",
     }
 
 

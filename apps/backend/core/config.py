@@ -339,6 +339,8 @@ class Settings(BaseSettings):
     SPARK_TRANSCRIPTS_ENABLED: bool = False
     # Display dollars for STRIPE_SPARK_PRICE_ID (Spark's monthly price); lockstep with its unit amount.
     SPARK_PRICE_USD: int = 20
+    # What a minute of Spark voice costs us (gpt-live-1.1): a calibration value for the margin metric, unverified.
+    SPARK_VOICE_USD_PER_MIN: float = 0.05
 
     # Apple In-App Purchase (App Store guideline 3.1.3(b) — the plan must also
     # be buyable inside the iOS app). ALL default empty, and the feature is off

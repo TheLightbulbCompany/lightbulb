@@ -664,6 +664,7 @@ CASES = [
     Case("os", "GET", "/api/v1/os/account"),
     Case("os", "DELETE", "/api/v1/os/account"),  # B's own Spark data and Clerk user only
     Case("os", "POST", "/api/v1/os/referral", {"code": "nobody"}),
+    Case("os", "POST", "/api/v1/os/channel", {"channel": "yt-abc"}),  # only the caller's own person
     Case("os", "POST", "/api/v1/os/voice-session", {"sdp": "v=0\r\n", "kind": "hold", "dcid": 4}),  # B's own
     Case("os", "GET", "/api/v1/os/voice-session/{a_voice}", a_id=True),
     Case("os", "DELETE", "/api/v1/os/voice-session/{a_voice}", a_id=True),

@@ -31,11 +31,27 @@ def table(monkeypatch):
         sessions = resource.create_table(
             TableName=dynamodb.table_name("containers"),
             KeySchema=[{"AttributeName": "owner_id", "KeyType": "HASH"}],
-            AttributeDefinitions=[{"AttributeName": "owner_id", "AttributeType": "S"}],
+            AttributeDefinitions=[
+                {"AttributeName": "owner_id", "AttributeType": "S"},
+                {"AttributeName": "status", "AttributeType": "S"},
+            ],
+            GlobalSecondaryIndexes=[
+                {
+                    "IndexName": "status-index",
+                    "KeySchema": [{"AttributeName": "status", "KeyType": "HASH"}],
+                    "Projection": {"ProjectionType": "ALL"},
+                }
+            ],
             BillingMode="PAY_PER_REQUEST",
         )
-        for sid in (SID, "vs_2"):
-            sessions.put_item(Item={**os_voice._key(sid), "status": os_voice.ACTIVE, "sessionId": sid})
+        resource.create_table(
+            TableName=dynamodb.table_name("users"),
+            KeySchema=[{"AttributeName": "user_id", "KeyType": "HASH"}],
+            AttributeDefinitions=[{"AttributeName": "user_id", "AttributeType": "S"}],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        for sid, user in ((SID, "user_a"), ("vs_2", "user_b")):
+            sessions.put_item(Item={**os_voice._key(sid), "status": os_voice.ACTIVE, "sessionId": sid, "userId": user})
         monkeypatch.setattr(dynamodb, "_dynamodb_resource", resource)
         yield t
 
@@ -163,6 +179,65 @@ async def test_an_ended_session_saves_no_more_turns(table, on, monkeypatch):
     )  # fmt: skip
     await os_voice._flush(s)  # the sideband's late final flush
     assert rows(table) == [] and seen == []
+
+
+async def test_a_session_opened_with_analytics_off_saves_nothing(table, on):
+    s = state() | {"client": {"analytics": False}}
+    await hear(s, ("user", "private"), ("spark", "reply"))
+    await os_voice._flush(s)
+    assert rows(table) == [] and "turns" not in s
+
+
+@pytest.mark.parametrize("client", [{"analytics": True}, {}])
+async def test_analytics_on_or_unsent_saves(table, on, client):
+    s = state() | {"client": client}
+    await hear(s, ("user", "hi"))
+    await os_voice._flush(s)
+    assert [r["text"] for r in rows(table)] == ["hi"]
+
+
+async def test_no_transcript_set_mid_session_drops_held_turns_and_saves_nothing_more(table, on):
+    s = state()
+    await hear(s, ("user", "held when the person opted out"))
+    s["noTranscript"] = True  # what _tick copies from the row
+    await os_voice._flush(s)
+    assert rows(table) == [] and "turns" not in s
+    await hear(s, ("user", "said after"))
+    await os_voice._flush(s)
+    assert rows(table) == []
+
+
+async def test_tick_picks_up_the_flag_from_the_row(table, on, monkeypatch):
+    class WS:
+        async def send(self, _):
+            pass
+
+    sessions = table.meta.client
+    sessions.update_item(
+        TableName=dynamodb.table_name("containers"), Key=os_voice._key(SID),
+        UpdateExpression="SET noTranscript = :t", ExpressionAttributeValues={":t": True},
+    )  # fmt: skip
+    s = state() | {"trialEndsAt": None}
+    await hear(s, ("user", "held"))
+    assert await os_voice._tick(WS(), s)
+    assert s["noTranscript"] is True and "turns" not in s
+    assert rows(table) == []
+
+
+async def test_stop_transcripts_flags_active_sessions_and_deletes_turns(table, on):
+    for user, sid in (("user_a", SID), ("user_b", "vs_2")):
+        s = state(user, sid)
+        await hear(s, ("user", "hi"))
+        await os_voice._flush(s)
+    await os_voice.stop_transcripts("user_a")
+    sessions = table.meta.client
+
+    def flag(sid):
+        item = sessions.get_item(TableName=dynamodb.table_name("containers"), Key=os_voice._key(sid))["Item"]
+        return item.get("noTranscript")
+
+    assert flag(SID) is True and flag("vs_2") is None
+    assert [r["user_id"] for r in rows(table)] == ["user_b"]
 
 
 def test_the_script_hides_the_user_id():

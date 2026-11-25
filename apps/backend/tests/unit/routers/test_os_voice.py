@@ -260,6 +260,58 @@ async def test_unknown_client_keys_and_bad_values_are_dropped(ddb, clock, no_sid
     assert rec(ddb, r.json()["sessionId"])["client"] == {"appVersion": "1.0.0"}
 
 
+async def test_client_analytics_and_platform_are_kept(ddb, clock, no_sideband, openai):
+    r = await create(client={"appVersion": "2.1.1", "analytics": True, "platform": "windows"})
+    assert rec(ddb, r.json()["sessionId"])["client"] == {
+        "appVersion": "2.1.1",
+        "analytics": True,
+        "platform": "windows",
+    }
+
+
+@pytest.mark.parametrize("client", [{"analytics": "no", "platform": "linux"}, {"analytics": 0, "platform": ["mac"]}])
+async def test_bad_analytics_and_platform_are_dropped(ddb, clock, no_sideband, openai, client):
+    r = await create(client=client)
+    assert rec(ddb, r.json()["sessionId"])["client"] == {}
+
+
+async def test_the_model_is_stored_on_the_row(ddb, clock, no_sideband, openai):
+    r = await create(model="gpt-live-1")
+    assert rec(ddb, r.json()["sessionId"])["model"] == "gpt-live-1"
+    r = await create()
+    assert rec(ddb, r.json()["sessionId"])["model"] == "gpt-live-1.1"
+
+
+@pytest.fixture
+def deleted(monkeypatch):
+    calls = []
+
+    async def fake(user_id):
+        calls.append(user_id)
+
+    monkeypatch.setattr(os_voice, "delete_transcripts", fake)
+    return calls
+
+
+@pytest.mark.parametrize(("analytics", "expected"), [(False, ["user_a"]), (True, []), (None, [])])
+async def test_a_session_opened_with_analytics_off_schedules_deletion(
+    ddb, clock, no_sideband, openai, deleted, analytics, expected
+):
+    client = {"appVersion": "1.0.0"} | ({} if analytics is None else {"analytics": analytics})
+    assert (await create(client=client)).status_code == 201
+    await asyncio.gather(*os_voice._BACKGROUND)
+    assert deleted == expected
+
+
+async def test_a_failing_scheduled_deletion_never_fails_the_open(ddb, clock, no_sideband, openai, monkeypatch, caplog):
+    async def boom(user_id):
+        raise RuntimeError("ddb down")
+
+    monkeypatch.setattr(os_voice, "delete_transcripts", boom)
+    assert (await create(client={"analytics": False})).status_code == 201
+    await asyncio.gather(*os_voice._BACKGROUND)
+
+
 async def test_the_largest_allowed_config_passes(ddb, clock, no_sideband, openai):
     assistant = {"role": "assistant", "content": [{"type": "output_text", "text": "x" * 1_000}], "status": "completed"}
     big = [USER, assistant, {"role": "developer", "content": [{"text": "y" * 63_535}], "type": "message", "id": None}]

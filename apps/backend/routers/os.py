@@ -472,7 +472,7 @@ def _live_session(session: Any) -> dict:
 
 def _client(client: Any) -> dict:
     """The app's description of itself, stored with the session (never sent to OpenAI): its version and
-    protocol as short strings, which assistant it runs (`brain`) and whether it has full access. Unknown keys
+    protocol as short strings, which assistant it runs (`brain`) and whether it has full access, whether usage data is on (`analytics`) and its `platform`. Unknown keys
     and known keys with a bad value are dropped."""
     client = client if isinstance(client, dict) else {}
     out = {k: str(client[k])[:64] for k in ("appVersion", "protocol") if k in client}
@@ -480,6 +480,10 @@ def _client(client: Any) -> dict:
         out["brain"] = client["brain"]
     if type(client.get("fullAccess")) is bool:
         out["fullAccess"] = client["fullAccess"]
+    if type(client.get("analytics")) is bool:
+        out["analytics"] = client["analytics"]
+    if client.get("platform") in ("mac", "windows"):
+        out["platform"] = client["platform"]
     return out
 
 
@@ -513,6 +517,8 @@ async def create_voice_session(
     at = _now()
     if os_billing.status(await _account(auth, at), at) == "ended":
         raise HTTPException(status_code=402, detail="trial_ended")
+    if client.get("analytics") is False:  # a retry of the delete the app's opt-out event asked for
+        os_voice.spawn(os_voice.delete_transcripts(auth.user_id))
     return await os_voice.open_session(auth.user_id, kind, client, model, config, sdp)
 
 
@@ -612,9 +618,27 @@ async def post_event(request: Request, auth: AuthContext | None = Depends(get_op
             props |= {"install_id": install_id, "product": spark_events.PRODUCT} | spark_events.common_properties(body)
             day = time.strftime("%Y-%m-%d", time.gmtime())
             once = str(uuid.uuid5(spark_events.NS, f"app_opened:{install_id}:{day}")) if event == "app_opened" else None
+            if auth and event == "analytics_optout_set" and props.get("on") is False:
+                os_voice.spawn(os_voice.stop_transcripts(auth.user_id))  # before PostHog: it must not depend on it
+            set_once = (
+                {"spark_heard_from": props["choice"]} if event == "heard_from_answered" and "choice" in props else None
+            )
             product_analytics.capture_product_event(
-                distinct_id=distinct_id, event=event, properties=props, event_uuid=once
+                distinct_id=distinct_id, event=event, properties=props, event_uuid=once, set_once=set_once
             )
     except Exception:  # noqa: BLE001  analytics never fails the app
         logger.warning("os event not captured", exc_info=True)
+    return Response(status_code=204)
+
+
+CHANNEL = re.compile(r"[a-z0-9-]{2,32}")
+
+
+@router.post("/channel", status_code=204, operation_id="os_channel")
+async def post_channel(body: Any = Body(None), auth: AuthContext = Depends(get_human_session)) -> Response:
+    """The creator or campaign code (`?c=`) this person arrived with, kept on their PostHog person the first
+    time only. A code that does not match CHANNEL is ignored: always 204."""
+    channel = body.get("channel") if isinstance(body, dict) else None
+    if isinstance(channel, str) and CHANNEL.fullmatch(channel):
+        spark_events.server_event(auth.user_id, "channel_applied", auth.user_id, set_once={"spark_channel": channel})
     return Response(status_code=204)

@@ -314,18 +314,58 @@ async def sync_subscription(event: dict, _billing_service=None) -> None:
     return None
 
 
+_STATUSES = (
+    "none",
+    "trialing",
+    "active",
+    "past_due",
+    "unpaid",
+    "paused",
+    "canceled",
+    "incomplete",
+    "incomplete_expired",
+)
+_CANCEL_REASONS = ("cancellation_requested", "payment_failed", "payment_disputed")
+_CANCEL_FEEDBACK = (
+    "customer_service", "low_quality", "missing_features", "other", "switched_service", "too_complex",
+    "too_expensive", "unused",
+)  # fmt: skip
+
+
+def _status_enum(status: str | None) -> str:
+    status = status or "none"
+    return status if status in _STATUSES else "other"
+
+
 def _subscription_events(user_id: str, old: dict, current: dict) -> None:
     """Product events for the status change this webhook wrote: a start when the stored status had no live
     subscription behind it (absent, canceled or incomplete), so past_due and back is not a new start; a
-    cancel when a stored subscription becomes canceled."""
+    cancel when a stored subscription becomes canceled, with Stripe's cancellation reason and survey answer
+    (enums only, never the comment); and `subscription_updated {status_from, status_to}` on every change of
+    the stored status. A redelivery finds the status already stored, so it sends nothing."""
     before, after = old.get("os_subscription_status"), current["status"]
-    if after in LIVE and (before is None or before == "canceled" or before.startswith("incomplete")):
-        event = "subscription_started"
-    elif after == "canceled" and before not in (None, "canceled"):
-        event = "subscription_cancelled"
-    else:
+    if before == after:
         return
-    spark_events.server_event(user_id, event, current["id"], row=old | {"os_subscription_status": after}, now=_now())
+    row, at = old | {"os_subscription_status": after}, _now()
+    if after in LIVE and (before is None or before == "canceled" or before.startswith("incomplete")):
+        spark_events.server_event(user_id, "subscription_started", current["id"], row=row, now=at)
+    elif after == "canceled" and before is not None:
+        details = current.get("cancellation_details")
+        details = details if isinstance(details, dict) else {}
+        props = {
+            k: details[k]
+            for k, allowed in (("reason", _CANCEL_REASONS), ("feedback", _CANCEL_FEEDBACK))
+            if isinstance(details.get(k), str) and details[k] in allowed
+        }
+        spark_events.server_event(user_id, "subscription_cancelled", current["id"], props, row=row, now=at)
+    spark_events.server_event(
+        user_id,
+        "subscription_updated",
+        f"{current['id']}:{before}:{after}:{time.time_ns()}",  # a status that flaps is a new event each time
+        {"status_from": _status_enum(before), "status_to": _status_enum(after)},
+        row=row,
+        now=at,
+    )
 
 
 async def extend_trial(user_id: str) -> None:

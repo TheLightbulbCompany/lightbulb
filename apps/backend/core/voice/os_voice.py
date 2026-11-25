@@ -71,6 +71,7 @@ TASK_ID = f"{os.getenv('HOSTNAME') or 'local'}-{uuid.uuid4().hex[:8]}"
 # The OpenAI close reasons, as the reasons GET /os/voice-session reports.
 _REASONS = {"close_requested": "client_closed", "remote_hangup": "client_closed", "expired": "expired"}
 _TASKS: dict[str, asyncio.Task] = {}
+_BACKGROUND: set[asyncio.Task] = set()  # fire-and-forget work: the event loop keeps only a weak reference
 _connect = websockets.connect
 _transport: httpx.AsyncBaseTransport | None = None  # tests swap in httpx.MockTransport
 
@@ -124,13 +125,29 @@ async def _create_live(body: dict) -> tuple[str, str]:
     raise _Upstream(502)
 
 
-async def reserve(user_id: str, sid: str, kind: str, client: dict, started_at: int) -> None:
+def spawn(coro) -> None:
+    """Run `coro` in the background, held until it finishes. A failure is logged (the type only) and never raised."""
+
+    async def guarded() -> None:
+        try:
+            await coro
+        except Exception as e:  # noqa: BLE001 -- the type only
+            logger.warning("os voice background task failed: %s", type(e).__name__)
+
+    task = asyncio.create_task(guarded())
+    _BACKGROUND.add(task)
+    task.add_done_callback(_BACKGROUND.discard)
+
+
+async def reserve(user_id: str, sid: str, kind: str, client: dict, started_at: int, model: str | None = None) -> None:
     """Make `sid` the person's one session, in one transaction: write its row, set their active set to
     exactly {sid}, and mark every previous one `closeRequested: replaced` (its sideband then closes it).
     The write is conditional on the set being what was read, so of two concurrent opens the later one
     replaces the earlier: exactly one stays active."""
     users = get_table("users")
     row = {**_key(sid), "status": ACTIVE, "sessionId": sid, "userId": user_id, "kind": kind, "client": client}
+    if model:
+        row["model"] = model
     row |= {"startedAt": started_at, "usageSeconds": 0, "session_ttl": started_at + MAX_SESSION_S + ENDED_TTL_S}
     for _ in range(5):
         person = (await run_in_thread(users.get_item, Key={"user_id": user_id}, ConsistentRead=True)).get("Item") or {}
@@ -171,7 +188,7 @@ async def open_session(
     backend-owned settings, and start its sideband. Returns the 201 body; raises the contract's error, or
     returns a JSONResponse for `capacity`."""
     started_at, sid = now(), f"vs_{uuid.uuid4().hex}"
-    await reserve(user_id, sid, kind, client, started_at)
+    await reserve(user_id, sid, kind, client, started_at, model)
     config |= {
         "model": model,
         "store": False,
@@ -292,9 +309,18 @@ async def end_session(sid: str, reason: str, seconds: int) -> bool:
     logger.info("os voice session %s ended: %s after %ss", sid, reason, seconds)
     client = row.get("client") or {}
     props = {"seconds": seconds, "kind": row.get("kind"), "ended_reason": reason}
-    spark_events.server_event(
-        row["userId"], "voice_session_ended", sid, props | ({"brain": client["brain"]} if "brain" in client else {})
-    )
+    for prop, value in (
+        ("brain", client.get("brain")),
+        ("platform", client.get("platform")),
+        ("full_access", client.get("fullAccess")),
+        ("model", row.get("model")),
+    ):
+        if value is not None:
+            props[prop] = value
+    version = client.get("appVersion")
+    if isinstance(version, str) and spark_events.VERSION.fullmatch(version):
+        props["app_version"] = version
+    spark_events.server_event(row["userId"], "voice_session_ended", sid, props)
     return True
 
 
@@ -376,6 +402,9 @@ async def _tick(ws, s: dict) -> bool:
     if (row := await _lease(s["sessionId"], at, expression, values)) is None:
         return False
     s["closeRequested"] = row.get("closeRequested")
+    s["noTranscript"] = row.get("noTranscript")
+    if s["noTranscript"]:
+        s.pop("turns", None)  # opted out: what is held is dropped unsaved
     await _flush(s, idle=TURN_PAUSE_S)
     if not s.get("closeReason") and (reason := await _due(s, at)):
         s["closeReason"] = reason
@@ -387,6 +416,12 @@ async def _tick(ws, s: dict) -> bool:
         await _reap_unconfirmed(s["sessionId"], s["usageSeconds"])
         return False
     return True
+
+
+def _saves(s: dict) -> bool:
+    """Whether this session may keep a transcript: not when the app opened it with usage data off, and not
+    once the person turned it off mid-session (`stop_transcripts` sets `noTranscript` on the row)."""
+    return (s.get("client") or {}).get("analytics") is not False and not s.get("noTranscript")
 
 
 async def _save_turn(s: dict, role: str, text: str, start_ms: int) -> None:
@@ -419,6 +454,9 @@ async def _save_turn(s: dict, role: str, text: str, start_ms: int) -> None:
 
 async def _flush(s: dict, idle: float = 0.0) -> None:
     """Save each held turn whose side has been silent `idle` seconds (0: every held turn, at session end)."""
+    if not _saves(s):
+        s.pop("turns", None)
+        return
     turns = s.get("turns") or {}
     for role in tuple(turns):
         parts, last, start_ms = turns[role]
@@ -465,7 +503,7 @@ async def _event(s: dict, raw) -> bool:
         if isinstance(session, dict) and type(session.get("expires_at")) is int:
             s["expiresAt"] = session["expires_at"]
     elif kind in _ROLES:
-        if settings.SPARK_TRANSCRIPTS_ENABLED and isinstance(event.get("delta"), str):
+        if settings.SPARK_TRANSCRIPTS_ENABLED and _saves(s) and isinstance(event.get("delta"), str):
             await _transcribe(s, _ROLES[kind], event["delta"], event.get("start_ms"))
     elif kind == "session.closed":
         await _flush(s)
@@ -535,21 +573,44 @@ async def run_sideband(sid: str) -> None:
         await _flush(s)  # a dropped or cancelled sideband keeps the turns it heard
 
 
+async def _active_sessions(user_id: str, sessions) -> set[str]:
+    """The person's active session ids: `sessions` (their users row's active set) and every active session of
+    theirs on the status index. A replaced session left the set but stays active until its sideband closes it,
+    and the index can lag a new one, hence the union."""
+    rows = await container_repo.get_by_status(ACTIVE)
+    return set(sessions or ()) | {r["sessionId"] for r in rows if r.get("userId") == user_id and r.get("sessionId")}
+
+
 async def forget(user_id: str, sessions) -> None:
     """Close the person's open sessions, then delete their saved transcripts. A closed session's sideband can
-    save no more turns (`_save_turn` writes only while the session is active). `sessions` is their users row's
-    active set; a replaced session left it but stays active until its sideband closes it, so every active
-    session of theirs on the status index is closed too (the index can lag a new one, hence the union)."""
-    rows = await container_repo.get_by_status(ACTIVE)
-    for sid in set(sessions or ()) | {
-        r["sessionId"] for r in rows if r.get("userId") == user_id and r.get("sessionId")
-    }:
+    save no more turns (`_save_turn` writes only while the session is active)."""
+    for sid in await _active_sessions(user_id, sessions):
         await close_and_wait(sid, "signed_out")  # OpenAI gets session.close before the cleanup
     await delete_transcripts(user_id)
 
 
+async def stop_transcripts(user_id: str) -> None:
+    """The person turned usage data off: their active sessions save no more turns and the turns already saved
+    are deleted. The sessions stay open; each sideband sees `noTranscript` on its next tick."""
+    person = (await run_in_thread(get_table("users").get_item, Key={"user_id": user_id}, ConsistentRead=True)).get(
+        "Item"
+    ) or {}
+    for sid in await _active_sessions(user_id, person.get(ACTIVE)):
+        with contextlib.suppress(ClientError):  # ended meanwhile: nothing to stop
+            await run_in_thread(
+                _table().update_item,
+                Key=_key(sid),
+                UpdateExpression="SET noTranscript = :t",
+                ConditionExpression="#st = :active",
+                ExpressionAttributeNames={"#st": "status"},
+                ExpressionAttributeValues={":t": True, ":active": ACTIVE},
+            )
+    await delete_transcripts(user_id)
+
+
 async def delete_transcripts(user_id: str) -> None:
-    """Delete every saved transcript turn of this person (their Spark account is being deleted)."""
+    """Delete every saved transcript turn of this person: their Spark account is being deleted, or they turned
+    usage data off."""
 
     def delete() -> None:
         table, start = get_table(TRANSCRIPTS), {}

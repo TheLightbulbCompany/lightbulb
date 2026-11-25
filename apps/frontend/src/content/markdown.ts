@@ -45,8 +45,3 @@ export function loadMarkdownDir<M>(sub: string): MarkdownDoc<M>[] {
       return { slug: f.slice(0, -3), meta: meta as M, content };
     });
 }
-
-/** Rough read time at ~220 words/minute, never below 1. */
-export function readingMinutes(markdown: string): number {
-  return Math.max(1, Math.round(markdown.split(/\s+/).length / 220));
-}

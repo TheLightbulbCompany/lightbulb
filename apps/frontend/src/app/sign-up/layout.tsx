@@ -4,9 +4,8 @@ import { ThemeStamp } from "@/components/ThemeStamp";
 import { absoluteUrl } from "@/lib/seo";
 
 export const metadata: Metadata = {
-  title: "Set up your AI receptionist | Lightbulb",
-  description:
-    "Set up an AI receptionist for your salon, spa or barbershop in five steps. Keep your number. Month to month.",
+  title: "Sign up for Spark | Lightbulb",
+  description: "Create your Spark account. Spark is a one-click voice interface for your Mac.",
   alternates: { canonical: absoluteUrl("/sign-up") },
 };
 

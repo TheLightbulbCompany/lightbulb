@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseFrontmatter, readingMinutes } from "../markdown";
-import { getAllPosts } from "../blog";
+import { parseFrontmatter } from "../markdown";
 import { getAllDocs } from "../docs";
 
 describe("parseFrontmatter", () => {
@@ -19,23 +18,8 @@ describe("parseFrontmatter", () => {
   });
 });
 
-it("readingMinutes never drops below 1", () => {
-  expect(readingMinutes("one two")).toBe(1);
-  expect(readingMinutes(Array(660).fill("w").join(" "))).toBe(3);
-});
-
-it("every post and doc on disk has the fields the pages render", () => {
-  const posts = getAllPosts();
+it("every doc on disk has the fields the pages render", () => {
   const nonEmptyString = (v: unknown) => typeof v === "string" && v.trim().length > 0;
-  for (const p of posts) {
-    expect([p.title, p.description, p.author].every(nonEmptyString)).toBe(true);
-    expect(p.date).toMatch(/^\d{4}-\d{2}-\d{2}$/);
-    expect(Array.isArray(p.tags) && p.tags.every((t) => typeof t === "string")).toBe(true);
-    // The page renders its own <h1> from `title`, so a body must not OPEN with
-    // its title as an H1 (the duplicate-heading bug this guards). Deliberately
-    // not scanning every line: `# comment` inside a fenced shell block is valid.
-    expect(p.content).not.toMatch(/^(?:\r?\n)* {0,3}#(?:[ \t]|$)/);
-  }
   const docs = getAllDocs();
   expect(docs.map((d) => d.order)).toEqual(docs.map((_, i) => i + 1));
   for (const d of docs) expect([d.title, d.description].every(nonEmptyString)).toBe(true);

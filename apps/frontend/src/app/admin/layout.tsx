@@ -61,46 +61,10 @@ export default async function AdminLayout({
             </Link>
             <nav className="flex items-center gap-1 text-sm">
               <Link
-                href="/"
-                className="rounded-md px-3 py-1.5 text-muted-foreground hover:bg-accent hover:text-foreground"
-              >
-                Overview
-              </Link>
-              <Link
-                href="/users"
-                className="rounded-md px-3 py-1.5 text-muted-foreground hover:bg-accent hover:text-foreground"
-              >
-                Users
-              </Link>
-              <Link
-                href="/growth"
-                className="rounded-md px-3 py-1.5 text-muted-foreground hover:bg-accent hover:text-foreground"
-              >
-                Growth
-              </Link>
-              <Link
                 href="/spark"
                 className="rounded-md px-3 py-1.5 text-muted-foreground hover:bg-accent hover:text-foreground"
               >
                 Spark
-              </Link>
-              <Link
-                href="/deploys"
-                className="rounded-md px-3 py-1.5 text-muted-foreground hover:bg-accent hover:text-foreground"
-              >
-                Deploys
-              </Link>
-              <Link
-                href="/audit"
-                className="rounded-md px-3 py-1.5 text-muted-foreground hover:bg-accent hover:text-foreground"
-              >
-                Audit
-              </Link>
-              <Link
-                href="/health"
-                className="rounded-md px-3 py-1.5 text-muted-foreground hover:bg-accent hover:text-foreground"
-              >
-                Health
               </Link>
             </nav>
           </div>

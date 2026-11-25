@@ -5,18 +5,17 @@ import { useEffect, useState } from "react";
 
 import { Logo } from "@/components/Logo";
 import { AuthSwitchLink } from "@/components/onboarding/AuthSwitchLink";
+import { authFallbackUrl } from "@/lib/domain";
 
 const TASKS = [
-  "a new booking",
-  "a moved appointment",
-  "the after-hours calls",
-  "a question on prices",
-  "your meeting notes",
+  "the clicking",
+  "three photos to Sam",
 ];
 
 const ROTATE_INTERVAL = 2800;
 
 export default function Page() {
+  const fallback = authFallbackUrl(typeof window === "undefined" ? undefined : window.location.host);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [exitIndex, setExitIndex] = useState<number | null>(null);
 
@@ -289,11 +288,11 @@ export default function Page() {
               </div>
               <h2 className="auth-title">Welcome back</h2>
               <p className="auth-subtitle">
-                Sign in to see your calls and bookings.
+                Sign in to your Spark account.
               </p>
             </div>
 
-            <SignIn fallbackRedirectUrl="/voice" signUpFallbackRedirectUrl="/voice" />
+            <SignIn fallbackRedirectUrl={fallback} signUpFallbackRedirectUrl={fallback} />
 
             <p className="auth-footer">
               Don&apos;t have an account?{" "}

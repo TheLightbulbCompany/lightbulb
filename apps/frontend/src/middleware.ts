@@ -1,37 +1,11 @@
-import { clerkMiddleware, createRouteMatcher } from "@clerk/nextjs/server";
+import { clerkMiddleware } from "@clerk/nextjs/server";
 import { NextResponse, type NextRequest } from "next/server";
 
 import {
-  DEFAULT_ADMIN_HOSTS,
   ROOT_DOMAIN,
   SITE_URL,
+  parseAdminHosts,
 } from "@/lib/domain";
-import { paperclipLinkTarget } from "@/lib/paperclipLinks";
-
-// `/voice` and its pages only: `/voice(.*)` also matched the public stock samples
-// under `/voice-samples/`, which the iPhone app plays without a web session.
-export const PROTECTED_ROUTES = [
-  "/chat(.*)",
-  "/voice",
-  "/voice/(.*)",
-  "/onboarding",
-  "/settings(.*)",
-  "/welcome(.*)",
-];
-const isProtectedRoute = createRouteMatcher(PROTECTED_ROUTES);
-
-// NEXT_PUBLIC_ADMIN_HOSTS is set in no deployed environment, so the derived
-// default below is what actually runs everywhere — there is no hot-fix lever, a
-// wrong admin host needs a rebuild. (`.env.example` documents the same set;
-// keep the two in step.)
-function parseAdminHosts(raw: string | undefined): Set<string> {
-  const source = raw && raw.length > 0 ? raw.split(",") : DEFAULT_ADMIN_HOSTS;
-  return new Set(
-    source
-      .map((h) => h.trim().toLowerCase())
-      .filter(Boolean),
-  );
-}
 
 const ADMIN_HOSTS = parseAdminHosts(process.env.NEXT_PUBLIC_ADMIN_HOSTS);
 
@@ -78,23 +52,6 @@ export function decideAdminHostRouting(
   return { kind: "passthrough" };
 }
 
-/**
- * Pure pathname -> decision function for the agent-Paperclip-link redirect,
- * exported so it can be unit-tested without a Next.js request object (mirrors
- * decideAdminHostRouting above). The bundled paperclip skill writes internal
- * links as native Paperclip paths (e.g. `/ISOA/issues/ISOA-317`), which have
- * no route in this app — the retired `/teams/*` tree never redirected them,
- * so a direct hit (typed, pasted, or opened from a notification) 404'd.
- * Bounces it onto the Lightbulb place instead.
- */
-export function decidePaperclipLinkRedirect(
-  pathname: string,
-): { kind: "redirect"; to: string } | null {
-  const to = paperclipLinkTarget(pathname);
-  return to ? { kind: "redirect", to } : null;
-}
-
-
 export type CanonicalHostDecision = { kind: "redirect"; to: string } | null;
 
 /**
@@ -111,7 +68,7 @@ export function decideCanonicalHostRedirect(
   return { kind: "redirect", to: `${SITE_URL}${pathname}${search}` };
 }
 
-const _clerkMiddleware = clerkMiddleware(async (auth, req) => {
+const _clerkMiddleware = clerkMiddleware(async (_auth, req) => {
   const host = (req.headers.get("host") ?? "").toLowerCase();
   const decision = decideAdminHostRouting(host, req.nextUrl.pathname);
 
@@ -124,26 +81,13 @@ const _clerkMiddleware = clerkMiddleware(async (auth, req) => {
     return NextResponse.rewrite(url);
   }
 
-  const paperclipRedirect = decidePaperclipLinkRedirect(req.nextUrl.pathname);
-  if (paperclipRedirect) {
-    return NextResponse.redirect(new URL(paperclipRedirect.to, req.url), 307);
-  }
-
-  const authObj = await auth();
-
-  if (isProtectedRoute(req)) {
-    if (!authObj.userId) {
-      return authObj.redirectToSignIn();
-    }
-  }
+  // No page is behind sign-in any more except the admin, whose layout gates itself.
 });
 
 export default function middleware(req: NextRequest, evt: Parameters<typeof _clerkMiddleware>[1]) {
   const host = (req.headers.get("host") ?? "").toLowerCase();
   const canonicalHost = decideCanonicalHostRedirect(host, req.nextUrl.pathname, req.nextUrl.search);
   if (canonicalHost) return NextResponse.redirect(canonicalHost.to, 308);
-  // Recall's bot loads /meet-bot in a bare browser: public, and no Clerk handshake.
-  if (req.nextUrl.pathname === "/meet-bot" || req.nextUrl.pathname.startsWith("/meet-bot/")) return NextResponse.next();
   return _clerkMiddleware(req, evt);
 }
 

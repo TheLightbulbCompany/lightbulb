@@ -8,7 +8,6 @@ import {
 import {
   decideAdminHostRouting,
   decideCanonicalHostRedirect,
-  decidePaperclipLinkRedirect,
 } from '@/middleware';
 
 const ADMIN_HOSTS = new Set([
@@ -150,65 +149,5 @@ describe('decideAdminHostRouting (admin host gate)', () => {
     expect(
       decideAdminHostRouting('admin.thelightbulb.company', '/sign-up/verify-email-address', ADMIN_HOSTS),
     ).toEqual({ kind: 'passthrough' });
-  });
-});
-
-// The bundled paperclip skill writes agent links as native Paperclip paths
-// (e.g. `/ISOA/issues/ISOA-317`); a direct hit on one 404'd because the
-// retired /teams/* tree never redirected them.
-describe('decidePaperclipLinkRedirect (agent Paperclip-link redirect)', () => {
-  it('redirects a direct hit on an agent-written issue path to the Lightbulb place', () => {
-    expect(decidePaperclipLinkRedirect('/ISOA/issues/ISOA-317')).toEqual({
-      kind: 'redirect',
-      to: '/voice/lightbulb',
-    });
-  });
-
-  it('leaves ordinary app paths alone', () => {
-    expect(decidePaperclipLinkRedirect('/chat')).toBeNull();
-    expect(decidePaperclipLinkRedirect('/settings')).toBeNull();
-    expect(decidePaperclipLinkRedirect('/admin')).toBeNull();
-  });
-
-  it('redirects a dropped-prefix issue/approval link too', () => {
-    // Agents sometimes hand-write an issue/approval link without the
-    // required company prefix; those two sections tolerate it as a
-    // defensive fallback (comment-style.md still requires the prefix).
-    expect(decidePaperclipLinkRedirect('/issues/ISOA-317')).toEqual({
-      kind: 'redirect',
-      to: '/voice/lightbulb',
-    });
-    expect(decidePaperclipLinkRedirect('/approvals/ca6ba09d-b558')).toEqual({
-      kind: 'redirect',
-      to: '/voice/lightbulb',
-    });
-  });
-
-  it('maps the retired /teams/tasks links and prefixed agent, run and goal links', () => {
-    for (const path of ['/teams/tasks/ISOA-12', '/PAP/agents/cto', '/PAP/agents/cto/runs/run-9', '/PAP/goals/g-142']) {
-      expect(decidePaperclipLinkRedirect(path)).toEqual({ kind: 'redirect', to: '/voice/lightbulb' });
-    }
-    expect(decidePaperclipLinkRedirect('/teams/inbox')).toBeNull();
-    expect(decidePaperclipLinkRedirect('/PAP/sprints/1')).toBeNull();
-  });
-
-  it('still requires the prefix for agents/projects/goals', () => {
-    expect(decidePaperclipLinkRedirect('/agents/cto')).toBeNull();
-    expect(decidePaperclipLinkRedirect('/projects/growth')).toBeNull();
-    expect(decidePaperclipLinkRedirect('/goals/g-142')).toBeNull();
-  });
-});
-
-describe('protected routes', () => {
-  it('protects /voice pages but not the public stock voice samples', async () => {
-    const { createRouteMatcher } = await import('@clerk/nextjs/server');
-    const { NextRequest } = await import('next/server');
-    const { PROTECTED_ROUTES } = await import('@/middleware');
-    const isProtected = createRouteMatcher(PROTECTED_ROUTES);
-    const at = (path: string) => isProtected(new NextRequest(`https://thelightbulb.company${path}`));
-    expect(at('/voice')).toBe(true);
-    expect(at('/voice/agent')).toBe(true);
-    expect(at('/voice/settings')).toBe(true);
-    expect(at('/voice-samples/gpt-live-1-marin-en.wav')).toBe(false);
   });
 });

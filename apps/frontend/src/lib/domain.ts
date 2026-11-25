@@ -72,6 +72,24 @@ export const DEFAULT_ADMIN_HOSTS = [
   "admin.localhost:3000",
 ];
 
+// NEXT_PUBLIC_ADMIN_HOSTS is set in no deployed environment, so the derived
+// default above is what actually runs everywhere — there is no hot-fix lever, a
+// wrong admin host needs a rebuild. (`.env.example` documents the same set;
+// keep the two in step.)
+export function parseAdminHosts(raw: string | undefined): Set<string> {
+  const source = raw && raw.length > 0 ? raw.split(",") : DEFAULT_ADMIN_HOSTS;
+  return new Set(
+    source
+      .map((h) => h.trim().toLowerCase())
+      .filter(Boolean),
+  );
+}
+
+/** Where sign-in and sign-up land: the admin's root on an admin host, Spark's page everywhere else. */
+export function authFallbackUrl(host: string | undefined): string {
+  return host && parseAdminHosts(process.env.NEXT_PUBLIC_ADMIN_HOSTS).has(host.toLowerCase()) ? "/" : "/os";
+}
+
 /**
  * The retired product domain, still attached to this Vercel project. Every
  * request on these hosts, static files included, is 308d to the product

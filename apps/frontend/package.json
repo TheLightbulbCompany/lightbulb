@@ -19,14 +19,10 @@
   "dependencies": {
     "@clerk/nextjs": "^6.39.6",
     "@lightbulb/shared": "workspace:*",
-    "@livekit/components-react": "^2.9.24",
-    "@openuidev/react-lang": "1.0.1",
     "@vercel/analytics": "^2.0.1",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
-    "livekit-client": "^2.22.3",
     "lucide-react": "^0.562.0",
-    "mermaid": "^11",
     "next": "16.3.8",
     "posthog-js": "^1.368.0",
     "radix-ui": "^1.4.3",
@@ -38,9 +34,7 @@
     "remark-gfm": "^4.0.1",
     "sonner": "^2.0.7",
     "swr": "^2.3.8",
-    "tailwind-merge": "^3.4.0",
-    "yaml": "^2.9.0",
-    "zod": "4.3.6"
+    "tailwind-merge": "^3.4.0"
   },
   "devDependencies": {
     "@next/bundle-analyzer": "16.3.8",
@@ -48,7 +42,6 @@
     "@tailwindcss/postcss": "^4",
     "@testing-library/jest-dom": "^6.4.0",
     "@testing-library/react": "^16.0.0",
-    "@testing-library/user-event": "^14.5.0",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",

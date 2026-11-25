@@ -499,7 +499,7 @@ export function OsLanding({ ready, price }: { ready: boolean; price: SparkPrice 
           </div>
         </div>
       </section>
-      <Footer cta={false} />
+      <Footer />
     </main>
   );
 }

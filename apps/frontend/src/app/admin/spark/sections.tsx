@@ -2,7 +2,32 @@ import { Card } from "@/components/admin/Card";
 import { MetricStat } from "@/components/admin/MetricStat";
 
 import type { Kn, SparkData } from "../_lib/api";
-import { Table } from "../growth/sections";
+
+export function Table({ head, rows }: { head: string[]; rows: React.ReactNode[][] }) {
+  if (rows.length === 0) return <div className="text-xs text-muted-foreground">none</div>;
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-xs">
+        <thead>
+          <tr className="text-left text-muted-foreground">
+            {head.map((h) => (
+              <th key={h} className="pb-1 pr-4 font-normal">{h}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r, i) => (
+            <tr key={i} className="border-t border-border text-foreground">
+              {r.map((c, j) => (
+                <td key={j} className="py-1 pr-4 tabular-nums">{c}</td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
 
 /** "k / n (p%)"; a dash when there is nothing to divide by (never a fake 0%). */
 export const kn = (v: Kn | null | undefined) =>

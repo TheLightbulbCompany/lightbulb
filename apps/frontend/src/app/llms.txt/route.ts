@@ -1,5 +1,3 @@
-import { getAllPosts } from "@/content/blog";
-import { COMPARE_PAGES } from "@/content/compare";
 import { getAllDocs } from "@/content/docs";
 import { SITE_URL } from "@/lib/domain";
 import { PRODUCT_FACTS, PRODUCT_SUMMARY } from "@/lib/seo";
@@ -10,8 +8,7 @@ import { PRODUCT_FACTS, PRODUCT_SUMMARY } from "@/lib/seo";
  *
  * Generated from the same sources as `sitemap.ts` so it cannot drift. The
  * facts come from lib/seo.tsx, where every line is a VERIFIED claim; no price
- * is typed here: the price lives in /pricing.md, which reads the billing API
- * every 5 minutes, while this file is static.
+ * is typed here.
  */
 export const dynamic = "force-static";
 
@@ -20,7 +17,6 @@ function line(name: string, path: string, description: string) {
 }
 
 export function GET() {
-  const posts = getAllPosts();
   const body = [
     "# Lightbulb",
     "",
@@ -32,20 +28,8 @@ export function GET() {
     "",
     "## Pages",
     "",
-    line("Home", "/", "Lightbulb's three products."),
-    line("Lightbulb Phone", "/phone", "What the AI receptionist does and how to set it up."),
-    line("Lightbulb Meetings", "/meetings", "The Google Meet assistant; waitlist."),
     line("Spark", "/os", "A voice app for the Mac; download."),
-    line("Pricing", "/pricing", "The monthly Lightbulb Phone plan for one business."),
     "",
-    "## Comparisons",
-    "",
-    ...COMPARE_PAGES.map((page) => line(page.h1, page.path, page.description)),
-    line("All comparisons", "/compare", "An AI receptionist next to voicemail, a front desk receptionist and a human answering service."),
-    "",
-    ...(posts.length
-      ? ["## Blog", "", ...posts.map((post) => line(post.title, `/blog/${post.slug}`, post.description)), ""]
-      : []),
     "## Developer network (a separate, free tool)",
     "",
     line("Lightbulb network", "/network", "A free command that lets coding agents message each other, peer to peer and end-to-end encrypted."),
@@ -53,7 +37,7 @@ export function GET() {
     "",
     "## Optional",
     "",
-    line("Full text", "/llms-full.txt", "The facts, comparisons and every network doc in one file."),
+    line("Full text", "/llms-full.txt", "The facts and every network doc in one file."),
     "",
   ].join("\n");
 

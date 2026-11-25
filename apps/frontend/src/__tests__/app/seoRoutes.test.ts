@@ -2,38 +2,32 @@ import { describe, expect, it } from "vitest";
 
 import { GET as llms } from "@/app/llms.txt/route";
 import { GET as llmsFull } from "@/app/llms-full.txt/route";
-import { GET as rss } from "@/app/blog/rss.xml/route";
-import { getAllPosts } from "@/content/blog";
 import { getAllDocs } from "@/content/docs";
 import { SITE_URL } from "@/lib/domain";
-import { COMPARE_PAGES } from "@/content/compare";
 import sitemap from "@/app/sitemap";
 import robots from "@/app/robots";
-import { BANNED } from "@/content/__tests__/bannedCopy";
 
 /**
- * These three routes are GENERATED from the same content sources as
- * `sitemap.ts` so they cannot drift. The tests assert exactly that: add a doc
- * or a post and it must appear, without anyone editing a list by hand.
+ * These routes are GENERATED from the same content sources as `sitemap.ts`
+ * so they cannot drift: add a doc and it must appear, without anyone editing
+ * a list by hand.
  */
 
 async function body(res: Response | Promise<Response>) {
   return (await res).text();
 }
 
+const RETIRED = ["/phone", "/meetings", "/pricing", "/compare", "/request-setup", "/blog", "/voice", "/chat"];
+
 describe("/llms.txt", () => {
-  it("lists every doc, post, and landing page with an absolute URL", async () => {
+  it("lists every doc and Spark's page with an absolute URL", async () => {
     const text = await body(llms());
     for (const doc of getAllDocs()) {
       expect(text).toContain(`${SITE_URL}/docs/${doc.slug}`);
       expect(text).toContain(doc.description);
     }
-    for (const post of getAllPosts()) {
-      expect(text).toContain(`${SITE_URL}/blog/${post.slug}`);
-    }
-    for (const page of COMPARE_PAGES) {
-      expect(text).toContain(`${SITE_URL}${page.path}`);
-    }
+    expect(text).toContain(`${SITE_URL}/os)`);
+    for (const path of RETIRED) expect(text).not.toContain(`${SITE_URL}${path})`);
   });
 
   it("is served as plain text and opens with the llms.txt H1 + summary", async () => {
@@ -42,83 +36,32 @@ describe("/llms.txt", () => {
     const text = await body(res);
     expect(text.startsWith("# Lightbulb\n")).toBe(true);
     expect(text).toContain("\n> ");
-  });
-
-  it("states the receptionist's facts with no price, trial or old-product claim", async () => {
-    const text = await body(llms());
-    const product = text.slice(0, text.indexOf("## Developer network"));
-    expect(product).toContain("AI receptionist");
-    expect(product).toContain("There is no free trial");
-    // Only the developer section may say "agents"; no price is ever typed.
-    expect(product.replace("There is no free trial", "").match(BANNED)?.[0]).toBeUndefined();
-    expect(text).not.toMatch(/six|AI employees|CEO|seat/i);
-  });
-
-  it("names the three products and their pages", async () => {
-    const text = await body(llms());
-    for (const path of ["/phone", "/meetings", "/os"]) expect(text).toContain(`${SITE_URL}${path})`);
-    expect(text).toContain("Spark");
+    expect(text).not.toMatch(/receptionist|salon/i);
   });
 });
 
 describe("/llms-full.txt", () => {
-  it("carries every comparison and the full markdown of every doc and post", async () => {
+  it("carries the full markdown of every doc", async () => {
     const text = await body(llmsFull());
-    for (const p of COMPARE_PAGES) expect(text).toContain(p.intro);
     for (const doc of getAllDocs()) {
       expect(text).toContain(doc.content.trim().slice(0, 60));
-    }
-    for (const post of getAllPosts()) {
-      expect(text).toContain(post.content.trim().slice(0, 60));
     }
   });
 });
 
 describe("/sitemap.xml", () => {
-  it("lists the comparisons, and none of the retired pages", () => {
+  it("lists Spark and the network, and none of the retired pages", () => {
     const urls = sitemap().map((e) => e.url);
-    for (const p of COMPARE_PAGES) expect(urls).toContain(`${SITE_URL}${p.path}`);
-    expect(urls).toContain(`${SITE_URL}/network`);
-    expect(urls).toContain(`${SITE_URL}/docs`);
-    expect(urls).toContain(`${SITE_URL}/request-setup`);
-    for (const path of ["/phone", "/meetings", "/os"]) expect(urls).toContain(`${SITE_URL}${path}`);
-    for (const gone of ["/compare/slack", "/docs/get-started", "/salons", "/spas", "/barbershops"]) {
-      expect(urls).not.toContain(`${SITE_URL}${gone}`);
-    }
+    for (const path of ["/", "/os", "/network", "/docs"]) expect(urls).toContain(`${SITE_URL}${path}`);
+    for (const path of RETIRED) expect(urls).not.toContain(`${SITE_URL}${path}`);
     expect(new Set(urls).size).toBe(urls.length);
   });
 });
 
 describe("/robots.txt", () => {
-  it("keeps the signed-in app and the meeting bot out, and the voice samples in", () => {
+  it("keeps the admin and the API out", () => {
     const rules = robots().rules;
     const disallow = (Array.isArray(rules) ? rules[0] : rules).disallow as string[];
-    expect(disallow).toEqual(expect.arrayContaining(["/voice/", "/meet-bot"]));
-    expect(disallow).not.toContain("/voice");
-    expect(disallow.some((d) => "/voice-samples/gpt-live-1-marin-en.wav".startsWith(d))).toBe(false);
-  });
-});
-
-describe("/blog/rss.xml", () => {
-  it("emits one well-formed item per post, newest first", async () => {
-    const res = rss();
-    expect(res.headers.get("Content-Type")).toMatch(/^application\/rss\+xml/);
-    const text = await body(res);
-    const posts = getAllPosts();
-    expect(text.match(/<item>/g) ?? []).toHaveLength(posts.length);
-    expect(text).toContain(`<atom:link href="${SITE_URL}/blog/rss.xml"`);
-    for (const post of posts) {
-      expect(text).toContain(`<guid isPermaLink="true">${SITE_URL}/blog/${post.slug}</guid>`);
-    }
-    // Newest-first ordering is what a reader shows at the top.
-    if (posts.length > 1) {
-      expect(text.indexOf(`/blog/${posts[0].slug}<`)).toBeLessThan(text.indexOf(`/blog/${posts[1].slug}<`));
-    }
-  });
-
-  it("escapes XML metacharacters in titles and descriptions", async () => {
-    const text = await body(rss());
-    // No raw & that isn't an entity — the classic feed-corrupting bug.
-    expect(text).not.toMatch(/&(?!amp;|lt;|gt;|quot;|apos;)/);
+    expect(disallow).toEqual(["/admin", "/api"]);
   });
 });

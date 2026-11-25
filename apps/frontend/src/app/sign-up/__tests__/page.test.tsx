@@ -2,6 +2,7 @@
 import { beforeEach, expect, it, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import Page from "../[[...sign-up]]/page";
+import { authFallbackUrl } from "@/lib/domain";
 
 const signUpProps = vi.hoisted(() => vi.fn());
 vi.mock("@clerk/nextjs", () => ({
@@ -9,21 +10,24 @@ vi.mock("@clerk/nextjs", () => ({
 }));
 beforeEach(() => vi.clearAllMocks());
 
-it("speaks to an owner setting up a phone assistant, with no free-trial promise", () => {
+it("speaks about Spark, not the retired phone product", () => {
   render(<Page />);
-  expect(screen.getByRole("heading", { level: 1, hidden: true })).toHaveTextContent("Your phone, answered and booked.");
-  for (const line of ["Answers day and night", "Set up in five steps", "You stay in charge", "Pay when you go live"]) {
-    expect(screen.getByText(line)).toBeInTheDocument();
-  }
-  expect(screen.queryByText(/Free for 30 days|Your team in the same rooms|Agents that ask first/)).toBeNull();
+  expect(screen.getByRole("heading", { level: 1, hidden: true })).toHaveTextContent("One-click voice interface for your Mac.");
+  expect(screen.queryByText(/phone|booked|go live|business/i)).toBeNull();
 });
 
-it("sign up has one door: the Clerk form, landing on the voice home, and no join door", () => {
+it("sign up has one door: the Clerk form, landing on Spark's page, and no join door", () => {
   render(<Page />);
   expect(signUpProps).toHaveBeenCalledWith(expect.objectContaining({
-    fallbackRedirectUrl: "/voice", signInFallbackRedirectUrl: "/voice",
+    fallbackRedirectUrl: "/os", signInFallbackRedirectUrl: "/os",
   }));
   expect(screen.queryByRole("tab")).toBeNull();
   expect(screen.queryByLabelText("Join link")).toBeNull();
   expect(screen.getByRole("link", { name: "Sign in" })).toHaveAttribute("href", "/sign-in");
+});
+
+it("lands on the admin's root on an admin host", () => {
+  expect(authFallbackUrl("admin.thelightbulb.company")).toBe("/");
+  expect(authFallbackUrl("thelightbulb.company")).toBe("/os");
+  expect(authFallbackUrl(undefined)).toBe("/os");
 });

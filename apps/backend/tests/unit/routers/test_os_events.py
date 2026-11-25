@@ -49,6 +49,9 @@ VALID = {
     "manage_subscription_clicked": {},
     "referral_link_copied": {},
     "update_installed": {"from_version": "2.1.0", "to_version": "2.1.1"},
+    "automation_fired": {"ok": True, "brain": False},
+    "task_stopped": {"task_id": TASK_ID, "how": "said"},
+    "feature_used": {"feature": "dictation"},
 }
 
 
@@ -145,6 +148,9 @@ async def test_each_allowed_event_is_captured(event, signed_in, ph, ddb):
 ENGINE_TABLE = {
     "analytics_optout_set": ["on"],
     "app_first_launch": [],
+    "automation_fired": ["brain", "ok"],
+    "feature_used": ["feature"],
+    "task_stopped": ["how", "task_id"],
     "app_opened": [],
     "brain_chosen": ["provider"],
     "brain_signin_failed": ["provider", "reason"],
@@ -181,6 +187,8 @@ ENUMS = {  # the canonical values of each new enum; the engine sends exactly the
     ("brain_signin_failed", "reason"): ["signin", "timeout", "download", "offline", "space", "no_plan"],
     ("permission_prompted", "permission"): ["microphone", "accessibility", "screen_recording"],
     ("permission_denied", "permission"): ["microphone", "accessibility", "screen_recording"],
+    ("task_stopped", "how"): ["pressed", "said"],
+    ("feature_used", "feature"): ["automation_created", "dictation", "marks"],
     ("heard_from_answered", "choice"): [
         "friend_or_invite", "x_twitter", "youtube", "tiktok_reels", "reddit", "hacker_news", "product_hunt",
         "newsletter_or_podcast", "search_or_ai_assistant", "windows_store", "other", "skipped",
@@ -485,6 +493,41 @@ async def test_app_opened_twice_a_day_has_one_uuid(ph, ddb):
     await send("task_completed")
     uuids = [c["uuid"] for c in ph.captures]
     assert uuids[0] and uuids[0] == uuids[1] and uuids[2] is None
+
+
+@pytest.mark.parametrize(
+    ("event", "props", "kept"),
+    [
+        ("automation_fired", {"ok": "yes", "brain": True}, {"brain": True}),
+        ("automation_fired", {"ok": True, "brain": 1}, {"ok": True}),
+        ("automation_fired", {"ok": True, "brain": False, "name": "x"}, {"ok": True, "brain": False}),
+        ("automation_fired", {"ok": True}, {"ok": True}),
+        ("task_stopped", {"task_id": TASK_ID, "how": "clicked"}, {"task_id": TASK_ID}),
+        ("task_stopped", {"task_id": TASK_ID, "how": "said", "why": "x"}, {"task_id": TASK_ID, "how": "said"}),
+        ("task_stopped", {"how": "said"}, {"how": "said"}),
+        ("feature_used", {"feature": "memory"}, {}),
+        ("feature_used", {"feature": "marks", "extra": 1}, {"feature": "marks"}),
+        ("feature_used", {}, {}),
+    ],
+)
+def test_new_events_drop_bad_extra_and_missing_properties(event, props, kept):
+    assert spark_events.allowed_properties(event, props) == kept
+
+
+async def test_a_task_stopped_twice_has_one_uuid_per_task(ph, ddb):
+    other = "dlg_zzzzzzzzzzzz"
+    for tid in (TASK_ID, TASK_ID, other):
+        await send("task_stopped", {"task_id": tid, "how": "said"})
+    a, b, c = (x["uuid"] for x in ph.captures)
+    assert a and a == b and c and c != a
+
+
+async def test_feature_used_has_one_uuid_per_install_day_and_feature(ph, ddb):
+    for f in ("dictation", "dictation", "marks"):
+        await send("feature_used", {"feature": f})
+    await send("feature_used", {"feature": "dictation"}, install=str(uuid.uuid4()))
+    a, b, c, d = (x["uuid"] for x in ph.captures)
+    assert a and a == b and c != a and d != a
 
 
 async def test_posthog_failure_is_still_204(ph, ddb):

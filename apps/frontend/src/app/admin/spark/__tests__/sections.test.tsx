@@ -2,7 +2,7 @@ import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
 import type { SparkData } from "../../_lib/api";
-import { Channels, Cohorts, Funnel, Headline, Money, People, Reliability, Setup, Sources, kn } from "../sections";
+import { Channels, Cohorts, Funnel, Headline, Money, People, Reliability, Setup, Signals, Sources, kn } from "../sections";
 
 const DATA: SparkData = {
   generated_at: "2026-11-24T12:00:00Z",
@@ -60,6 +60,17 @@ const DATA: SparkData = {
     permissions: [{ permission: "microphone", prompted: 8, denied: { k: 2, n: 8 } }],
     unfinished: { k: 3, n: 12 },
   },
+  signals: {
+    stopped: { k: 3, n: 12, how: [{ key: "pressed", count: 2 }, { key: "said", count: 1 }, { key: "other", count: 0 }] },
+    automations: { runs: 10, ok: { k: 8, n: 10 }, with_brain: { k: 7, n: 10 }, people_30d: 3 },
+    features: [
+      { feature: "push to talk", people_30d: 4, people_7d: 3 },
+      { feature: "full access", people_30d: 2, people_7d: null },
+    ],
+    crash: { k: 2, n: 7 },
+    versions: [{ version: "1.0", people_7d: 4 }],
+    updates: [{ to_version: "1.1", installs_30d: 3 }],
+  },
 };
 
 const EMPTY: SparkData = {
@@ -68,6 +79,7 @@ const EMPTY: SparkData = {
   heard_from: null,
   setup: null,
   time_to_first_task: [],
+  signals: { stopped: null, automations: null, features: null, crash: null, versions: null, updates: null },
 };
 
 describe("spark sections", () => {
@@ -103,6 +115,38 @@ describe("spark sections", () => {
     );
     expect(screen.getAllByText("no data yet")).toHaveLength(4);
     expect(screen.queryByText("Paying users")).toBeNull();
+  });
+
+  it("renders the signals as counts, k / n, and the stop split", () => {
+    render(<Signals data={DATA} />);
+    expect(screen.getByText(/Stopped 3 \/ started 12 \(25%\)/)).toBeTruthy(); // stopped / started
+    expect(screen.getByText(/pressed 2, said 1, other 0/)).toBeTruthy();
+    expect(screen.getByText(/started 8 \/ 10 \(80%\)/)).toBeTruthy(); // automations started
+    expect(screen.getByText(/with a brain 7 \/ 10 \(70%\)/)).toBeTruthy(); // ... with a brain
+    expect(screen.queryByText("3 / 7 (43%)")).toBeNull(); // features are plain people counts
+    expect(screen.getByText(/2 \/ 7 \(29%\)/)).toBeTruthy(); // crashed people / active people
+    expect(screen.getByText("1.1")).toBeTruthy();
+    expect(screen.queryByText(/succeeded/)).toBeNull();
+    expect(screen.getByText(/the work finished\. 3 people\./)).toBeTruthy();
+    expect(screen.queryByText(/At least/)).toBeNull();
+  });
+
+  it("shows stops without a percentage when they exceed the starts", () => {
+    const d = { ...DATA, signals: { ...DATA.signals, stopped: { k: 4, n: 1, how: [{ key: "other", count: 4 }] } } };
+    render(<Signals data={d} />);
+    expect(screen.getByText(/Stopped 4 \/ started 1/)).toBeTruthy();
+    expect(screen.queryByText(/400%/)).toBeNull();
+  });
+
+  it("renders each versions and crashes part on its own", () => {
+    const d = { ...DATA, signals: { ...DATA.signals, versions: null, crash: null } };
+    render(<Signals data={d} />);
+    expect(screen.getByText("1.1")).toBeTruthy(); // updates still show
+  });
+
+  it("shows no data yet for signals never seen", () => {
+    render(<Signals data={EMPTY} />);
+    expect(screen.getAllByText("no data yet").length).toBeGreaterThanOrEqual(4);
   });
 
   it("renders k / n (p%) and a dash without a denominator", () => {

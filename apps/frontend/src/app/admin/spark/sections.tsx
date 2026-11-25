@@ -225,3 +225,72 @@ export function Money({ data }: { data: SparkData }) {
     </Card>
   );
 }
+
+export function Signals({ data }: { data: SparkData }) {
+  const { stopped, automations, features, crash, versions, updates } = data.signals;
+  return (
+    <div className="space-y-6">
+      <div className="grid gap-6 md:grid-cols-2">
+        <Card title="Signs of a bad result, last 30 days">
+          {stopped ? (
+            <div className="space-y-2 text-xs text-foreground">
+              <p>
+                {/* a stopped automation task has no counted start, so stops can exceed starts: no share then */}
+                Stopped {stopped.k} / started {stopped.n}
+                {stopped.k <= stopped.n && stopped.n > 0 ? ` (${Math.round((stopped.k / stopped.n) * 100)}%)` : ""}
+              </p>
+              <p className="text-muted-foreground">How they stopped: {counts(stopped.how)}.</p>
+            </div>
+          ) : (
+            NO_DATA
+          )}
+        </Card>
+        <Card title="Automations, last 30 days">
+          {automations ? (
+            <div className="space-y-2 text-xs text-foreground">
+              <p>
+                Runs {automations.runs}; started {kn(automations.ok)}; with a brain {kn(automations.with_brain)}
+              </p>
+              <p className="text-muted-foreground">
+                Started = the actions were started, not that the work finished. {automations.people_30d} people.
+              </p>
+            </div>
+          ) : (
+            NO_DATA
+          )}
+        </Card>
+      </div>
+      <Card title="Features, last 30 days (people)">
+        {features ? (
+          <Table
+            head={["Feature", "People, 30 days", "People, 7 days"]}
+            rows={features.map((f) => [f.feature, f.people_30d, f.people_7d ?? "—"])}
+          />
+        ) : (
+          NO_DATA
+        )}
+      </Card>
+      <Card title="Versions and crashes">
+        <div className="space-y-4">
+          {versions || updates ? (
+            <div className="grid gap-6 md:grid-cols-2">
+              {versions ? (
+                <Table head={["Version in use, 7 days", "People"]} rows={versions.map((v) => [v.version, v.people_7d])} />
+              ) : null}
+              {updates ? (
+                <Table head={["Updated to, 30 days", "Installs"]} rows={updates.map((u) => [u.to_version, u.installs_30d])} />
+              ) : null}
+            </div>
+          ) : null}
+          {crash ? (
+            <p className="text-xs text-muted-foreground">
+              People with a crash in 7 days, of people who opened the app: {kn(crash)} (about: someone who updated that week
+              counts twice). Undercounts crashes found more than 10 minutes after they happened.
+            </p>
+          ) : null}
+          {!versions && !updates && !crash ? NO_DATA : null}
+        </div>
+      </Card>
+    </div>
+  );
+}

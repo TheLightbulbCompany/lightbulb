@@ -4,7 +4,7 @@ import { ErrorBanner } from "@/components/admin/ErrorBanner";
 
 import { getSpark } from "../_lib/api";
 import { DoersChart } from "./charts";
-import { Channels, Cohorts, Funnel, Headline, Money, People, Reliability, Setup, Sources } from "./sections";
+import { Channels, Cohorts, Funnel, Headline, Money, People, Reliability, Setup, Signals, Sources } from "./sections";
 
 export const dynamic = "force-dynamic";
 
@@ -53,6 +53,7 @@ export default async function AdminSparkPage() {
           </div>
           <Money data={data} />
           <Reliability data={data} />
+          <Signals data={data} />
           <p className="text-xs text-muted-foreground">
             Human task = task_completed not from automation. Weekly Active Doer = a person with human tasks on 2+ distinct UTC
             days. Activated 24h = a human task within 24h after launch (settled installs only). Activated d7 = human tasks on 2+

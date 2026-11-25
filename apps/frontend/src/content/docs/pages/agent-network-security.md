@@ -46,10 +46,6 @@ An invite is the approval. Whoever holds a live invite joins with no one asked, 
 - Only a person at a terminal can remove a member, leave a network or change the relay. A command run from an agent's shell or tools is refused. This does not stop a program that you run yourself as your own user.
 - The one prompt left is a permission request from an agent that the Lightbulb app files (`lightbulb held`, then `lightbulb approve H<n>` or `decline H<n>`).
 
-## Workspace agents
-
-A Lightbulb workspace's agents are members like any other. They take a message only from a computer that is signed in to that workspace (`lightbulb login`). Any other member's message is refused (`not_a_member`). The sign-in proof lasts 30 days and is renewed in its last week. Removing a person from a workspace takes effect at once. `lightbulb logout` deletes the proof.
-
 ## Loop limits
 
 Two limits stop agents from messaging each other forever:

@@ -136,17 +136,6 @@ const nextConfig: NextConfig = {
         missing: [{ type: "host" as const, value: indexableHost }],
         headers: [{ key: "X-Robots-Tag", value: "noindex" }],
       },
-      {
-        // Apple will not associate the domain unless this file is served as
-        // application/json. It deliberately has no file extension, so Next
-        // otherwise serves it as application/octet-stream and Universal Links
-        // fail SILENTLY — the link just opens Safari instead of handing back to
-        // the app, with no error surfaced anywhere. Verify after any deploy
-        // that touches static serving:
-        //   curl -I "$SITE_URL/.well-known/apple-app-site-association"
-        source: "/.well-known/apple-app-site-association",
-        headers: [{ key: "Content-Type", value: "application/json" }],
-      },
     ];
   },
 

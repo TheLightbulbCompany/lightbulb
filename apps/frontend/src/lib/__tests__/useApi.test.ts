@@ -1,7 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { renderHook } from '@testing-library/react';
 import { useApi } from '@/lib/api';
-import { clearRequestIds, getRecentRequestIds } from '@/lib/requestIdLog';
 
 const { mockGetToken } = vi.hoisted(() => ({
   mockGetToken: vi.fn((): Promise<string | null> => Promise.resolve('mock-jwt-token')),
@@ -17,15 +16,13 @@ globalThis.fetch = mockFetch;
 describe('useApi().post', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    clearRequestIds();
     mockGetToken.mockImplementation(() => Promise.resolve('mock-jwt-token'));
   });
 
-  it('POSTs JSON with the bearer token and records the request id', async () => {
+  it('POSTs JSON with the bearer token', async () => {
     mockFetch.mockResolvedValueOnce({
       ok: true,
       status: 200,
-      headers: new Headers({ 'X-Request-ID': 'req_1' }),
       json: () => Promise.resolve({ status: 'sent' }),
     });
 
@@ -39,7 +36,6 @@ describe('useApi().post', () => {
         headers: expect.objectContaining({ Authorization: 'Bearer mock-jwt-token' }),
       }),
     );
-    expect(getRecentRequestIds()).toEqual(['req_1']);
   });
 
   it('throws on a non-2xx response', async () => {

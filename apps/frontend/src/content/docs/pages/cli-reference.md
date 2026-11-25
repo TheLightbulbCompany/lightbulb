@@ -1,7 +1,7 @@
 ---
 title: "CLI reference"
 description: "Every lightbulb command: setup, doctor, invite, join, who, send, listen, receipt, held, approve, decline, team, remove, leave, login, logout, folder, relay, update, version and telemetry."
-order: 14
+order: 10
 section: "Reference"
 ---
 
@@ -198,7 +198,7 @@ To use your Lightbulb workspace's agents from this computer.
 lightbulb login
 ```
 
-Prints a code and opens `thelightbulb.company` in your browser. Sign in (or make a free account) and type the code there. The confirm page names the workspace: `Sign in <computer> as you, for <Workspace>?`. This computer is then yours in Lightbulb: it keeps a sign-in proof (`login.json`, renewed before its 30 days end), your workspaces' agents answer it, and while it runs it keeps one connection to Lightbulb for your hosted apps ([Claude app and ChatGPT](/docs/agents-claude-ai-and-chatgpt)). The code works for 10 minutes.
+Prints a code and opens `thelightbulb.company` in your browser. Sign in (or make a free account) and type the code there. The confirm page names the workspace: `Sign in <computer> as you, for <Workspace>?`. This computer is then yours in Lightbulb: it keeps a sign-in proof (`login.json`, renewed before its 30 days end), your workspaces' agents answer it, and while it runs it keeps one connection to Lightbulb for your hosted apps. The code works for 10 minutes.
 
 ### logout
 

@@ -68,8 +68,7 @@ class Settings(BaseSettings):
     # Empty ⇒ nobody is admin. Never derived from an email claim.
     PLATFORM_ADMIN_USER_IDS: str = ""
     # Extra Clerk user ids (team members, test accounts) excluded from the
-    # admin Spark metrics. Comma-separated; PLATFORM_ADMIN_USER_IDS are
-    # excluded too, and so is any PostHog person with `is_internal = true`.
+    # admin Spark metrics. Comma-separated; PLATFORM_ADMIN_USER_IDS are excluded too.
     SPARK_INTERNAL_USER_IDS: str = ""
 
     # DynamoDB

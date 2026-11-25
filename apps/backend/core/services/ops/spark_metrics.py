@@ -1,27 +1,15 @@
-"""Spark product metrics for the admin console: HogQL over PostHog, cached 5 min.
+"""Spark product metrics for the admin console: HogQL over PostHog, cached.
 
-Events come from the desktop app via POST /os/event (core/observability/spark_events.py)
-and from the server (account_created, subscription_*, ...). Every query excludes
-internal accounts (see ``_internal_filter``) and other environments.
+Events come from the desktop app via POST /os/event (core/observability/spark_events.py) and from
+the server (subscription_*, ...). Every query excludes team accounts (``_internal_filter``) and other
+environments, and is bounded by time.
 
-Identity: ``app_first_launch`` is sent pre-sign-in under the install UUID, later events carry the
-Clerk id, and POST /os/event aliases install -> person at sign-in. Everything per-user is therefore
-keyed on HogQL ``person_id`` (alias-resolved), not ``distinct_id``. Installs = distinct person_id with
-``app_first_launch``; the ``install_id`` property was rejected as the key because it would count one
-person on two machines twice and never joins to the later events. (An install never signed in stays
-its own person, which is the right "install" count.)
+Identity: pre-sign-in events are under the install id, aliased to the Clerk user at sign-in, so
+everything per-user keys on HogQL ``person_id``. Installs = persons with ``app_first_launch``.
+A "human task" = task_completed whose ``source`` is missing or != 'automation'. Weeks are UTC,
+Monday start; the current week is flagged ``partial``.
 
-Definitions (each query below restates its own):
-1. Weekly Active Doers (north star) - distinct users with >=3 ``task_completed`` in the week.
-2. New activated users - installs whose first ``task_completed`` is within 24h of
-   ``app_first_launch``, split by ``platform`` (missing -> "unknown").
-3. Activation rate - activated installs / installs, per weekly install cohort.
-4. Week-4 retention - installs with a ``task_completed`` in days 22-28 after launch / installs,
-   per weekly install cohort (only once the cohort is old enough to have a full day-28).
-5. Task success rate - task_completed / (task_completed + task_failed) events per week, plus the
-   top ``task_failed.reason`` and ``problem_raised.kind`` of the last 7 days.
-Funnel (30 days, distinct users per stage, not strictly sequential) and a Reliability panel
-(installs reporting a ``health`` event with brain != ok in the last 24h).
+Any failed query -> no figures at all (``compute`` returns data=None + the failed query names).
 """
 
 from __future__ import annotations
@@ -29,26 +17,25 @@ from __future__ import annotations
 import asyncio
 import re
 import time
-from datetime import date, datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 
 from core.config import settings
 from core.services import posthog_admin
 from core.services.ops import envelope as env
-from core.services.ops.growth import _hogql_filter
+from core.services.ops.growth import _hogql_filter, _monday, _parse_ts, _utc_date, _weeks
 
 WEEKS = 12
-RETENTION_DAYS = (22, 28)  # inclusive day range after first launch
-CACHE_TTL_S = 300
-FUNNEL_STAGES = (
-    "spark_download_clicked",
-    "app_first_launch",
-    "signin_completed",
-    "onboarding_completed",
-    "task_completed",
-    "subscription_started",
-)
+INSTALL_DAYS = 84  # install scan window (12 weeks); event scans use 90d so day-29 follow-ups fit
+OK_TTL_S, FAIL_TTL_S = 300, 60
+STEPS = ("signin", "brain", "permission", "onboarding", "first task", "activated d7", "subscribed")
 
 _SAFE_ID = re.compile(r"^[A-Za-z0-9_\-]+$")
+_UTC_DAY = "toDate(toTimeZone(timestamp, 'UTC'))"
+_UTC_WEEK = "toStartOfWeek(toTimeZone(timestamp, 'UTC'), 1)"
+_CHANNEL = (
+    "coalesce(nullIf(toString(person.properties.spark_channel), ''),"
+    " nullIf(toString(person.properties.$initial_utm_source), ''), 'unknown')"
+)
 
 
 def _internal_filter() -> str:
@@ -61,221 +48,229 @@ def _internal_filter() -> str:
     return f"person_id not in (select person_id from person_distinct_ids where distinct_id in ({id_list}))"
 
 
-def _where() -> str:
-    return f"{_hogql_filter(settings.ENVIRONMENT or '')} and {_internal_filter()}"
+def _human(p: str = "") -> str:
+    return f"{p}event = 'task_completed' and coalesce(toString({p}properties.source), '') != 'automation'"
 
 
 def build_queries() -> dict[str, str]:
-    w = _where()
-    d0, d1 = RETENTION_DAYS
-
-    # Per-install launch time + platform (first launch wins); shared by metrics 2-4.
-    def installs(settled: bool = False) -> str:
-        # `settled`: only installs a full 24h old, so a fresh install can't read as "not activated" yet.
-        having = " having min(timestamp) <= now() - interval 24 hour" if settled else ""
-        return f"""(
-      select person_id, min(timestamp) as launch,
-             argMin(coalesce(nullIf(toString(properties.platform), ''), 'unknown'), timestamp) as platform
-      from events
-      where event = 'app_first_launch' and {w} and timestamp >= now() - interval {WEEKS} week
-      group by person_id{having})"""
-
-    task_window = f"timestamp >= now() - interval {WEEKS + 1} week"  # bound the task_completed scans
+    w = f"{_hogql_filter(settings.ENVIRONMENT or '')} and {_internal_filter()}"
+    human = _human()
+    plat = "coalesce(nullIf(toString(properties.platform), ''), 'unknown')"
+    ver = "coalesce(nullIf(toString(properties.app_version), ''), 'unknown')"
+    tasks = "event in ('task_completed', 'task_failed')"
+    kn = f"countIf({human}) as done, countIf(event = 'task_failed') as failed"
+    h = _human("e.")
+    after = "e.timestamp >= l.launch"
+    e_day = "toDate(toTimeZone(e.timestamp, 'UTC'))"
     return {
-        # 1. Weekly Active Doers: users with >=3 task_completed in the calendar week (Mon-start).
+        # Doers, weekly: persons with a human task on >= 2 distinct UTC days in the UTC week.
         "doers_weekly": f"""
-            select wk, count() as doers from (
-              select toStartOfWeek(timestamp, 1) as wk, person_id
-              from events where event = 'task_completed' and {w} and timestamp >= now() - interval {WEEKS} week
-              group by wk, person_id having count() >= 3)
-            group by wk order by wk limit 100""",
-        # 1b. Headline: the same definition over a rolling 7 days.
+            select wk, count() from (
+              select {_UTC_WEEK} as wk, person_id from events
+              where {human} and {w} and timestamp >= now() - interval {WEEKS} week
+              group by wk, person_id having uniq({_UTC_DAY}) >= 2)
+            group by wk limit 100""",
+        # Doers, rolling: same definition over the last 7 days (period 'last7') and the 7 before ('prev7').
         "doers_7d": f"""
-            select count() from (
-              select person_id from events
-              where event = 'task_completed' and {w} and timestamp >= now() - interval 7 day
-              group by person_id having count() >= 3)""",
-        # 2+3. Per weekly install cohort and platform: installs, and installs whose first
-        # task_completed landed within 24h after launch (activated). Activation rate = activated/installs.
-        "activation": f"""
-            select toStartOfWeek(l.launch, 1) as cohort, l.platform as platform,
-                   count() as installs,
-                   countIf(t.first_task >= l.launch and t.first_task <= l.launch + interval 24 hour) as activated
-            from {installs(settled=True)} as l
-            left join (select person_id, min(timestamp) as first_task from events
-                       where event = 'task_completed' and {w} and {task_window} group by person_id) as t
-              on l.person_id = t.person_id
-            group by cohort, platform order by cohort limit 500""",
-        # 4. Week-4 retention numerator: installs per cohort with >=1 task_completed in days {d0}-{d1}.
-        "retention": f"""
-            select cohort, count() as retained from (
-              select l.person_id as person_id, toStartOfWeek(l.launch, 1) as cohort
-              from {installs()} as l
-              join (select person_id, timestamp from events
-                    where event = 'task_completed' and {w} and {task_window}) as e on l.person_id = e.person_id
-              where e.timestamp >= l.launch + interval {d0} day and e.timestamp < l.launch + interval {d1 + 1} day
-              group by person_id, cohort)
-            group by cohort order by cohort limit 100""",
-        # 5a. Task success: weekly event counts of task_completed vs task_failed.
-        "tasks_weekly": f"""
-            select toStartOfWeek(timestamp, 1) as wk, event, count() as n
-            from events where event in ('task_completed', 'task_failed') and {w}
-              and timestamp >= now() - interval {WEEKS} week
-            group by wk, event order by wk limit 500""",
-        # 5b. Top task_failed.reason, last 7 days.
-        "failed_reasons": f"""
-            select coalesce(nullIf(toString(properties.reason), ''), 'unknown') as k, count() as n
-            from events where event = 'task_failed' and {w} and timestamp >= now() - interval 7 day
-            group by k order by n desc limit 10""",
-        # 5c. Top problem_raised.kind, last 7 days.
-        "problem_kinds": f"""
-            select coalesce(nullIf(toString(properties.kind), ''), 'unknown') as k, count() as n
-            from events where event = 'problem_raised' and {w} and timestamp >= now() - interval 7 day
-            group by k order by n desc limit 10""",
-        # Funnel, last 30 days: distinct users per stage. subscription_started counts only Spark's.
-        "funnel": f"""
-            select event, uniq(person_id) as users
-            from events
-            where event in ({", ".join(repr(s) for s in FUNNEL_STAGES)}) and {w}
-              and (event != 'subscription_started' or toString(properties.product) = 'spark')
-              and timestamp >= now() - interval 30 day
-            group by event limit 20""",
-        # Has the event ever been seen? Distinguishes "no data yet" from a green 0.
-        "seen_events": f"""
-            select event, count() from events
-            where event in ('health', 'problem_raised') and {w} and timestamp >= now() - interval 90 day
-            group by event limit 5""",
-        # Reliability: installs whose `health` event reported brain != ok in the last 24h.
-        "unhealthy": f"""
-            select uniq(person_id) from events
-            where event = 'health' and {w} and timestamp >= now() - interval 24 hour
-              and coalesce(toString(properties.brain), '') not in ('', 'ok')""",
+            select period, count() from (
+              select person_id, if(timestamp >= now() - interval 7 day, 'last7', 'prev7') as period from events
+              where {human} and {w} and timestamp >= now() - interval 14 day
+              group by person_id, period having uniq({_UTC_DAY}) >= 2)
+            group by period limit 10""",
+        # One row per install-person (launch in the last 84d), newest first. Funnel, cohorts, channels and
+        # the people table are all derived from it in Python. Every event counts only at/after the person's
+        # launch (`after`). Columns: launch, platform, first app_version, brain provider (latest), channel,
+        # email, then counts: signin, brain_chosen, accessibility permission, onboarding, human tasks,
+        # human tasks within 24h of launch (activated_24h), distinct UTC days with a human task within 7d of
+        # launch (activated_d7 = >= 2), human tasks on days 22-28 after launch (week 4), spark subscription,
+        # and the last human-task UTC day.
+        "installs": f"""
+            select l.launch, l.platform, l.version,
+              argMaxIf(toString(e.properties.provider), e.timestamp, e.event = 'brain_chosen' and {after}),
+              l.channel, l.email,
+              countIf(e.event = 'signin_completed' and {after}),
+              countIf(e.event = 'brain_chosen' and {after}),
+              countIf(e.event = 'permission_granted' and toString(e.properties.permission) = 'accessibility' and {after}),
+              countIf(e.event = 'onboarding_completed' and {after}),
+              countIf({h} and {after}),
+              countIf({h} and {after} and e.timestamp <= l.launch + interval 24 hour),
+              uniqIf({e_day}, {h} and {after} and e.timestamp < l.launch + interval 7 day),
+              countIf({h} and e.timestamp >= l.launch + interval 22 day and e.timestamp < l.launch + interval 29 day),
+              countIf(e.event = 'subscription_started' and toString(e.properties.product) = 'spark' and {after}),
+              toString(maxIf({e_day}, {h} and {after}))
+            from (select person_id, min(timestamp) as launch,
+                    argMin({plat}, timestamp) as platform, argMin({ver}, timestamp) as version,
+                    any({_CHANNEL}) as channel, any(coalesce(toString(person.properties.email), '')) as email
+                  from events where event = 'app_first_launch' and {w} and timestamp >= now() - interval {INSTALL_DAYS} day
+                  group by person_id) as l
+            left join (select person_id, event, timestamp, properties from events
+                       where event in ('signin_completed', 'brain_chosen', 'permission_granted', 'onboarding_completed',
+                                       'task_completed', 'subscription_started')
+                         and {w} and timestamp >= now() - interval 90 day) as e on l.person_id = e.person_id
+            group by l.person_id, l.launch, l.platform, l.version, l.channel, l.email
+            order by l.launch desc limit 5000""",
+        # Task success = human task_completed / (human task_completed + task_failed): weekly by platform,
+        # by app_version (30d) and by brain provider (30d; latest brain_chosen per person, any age <= 180d).
+        "success_weekly": f"""
+            select {_UTC_WEEK} as wk, {plat} as k, {kn} from events
+            where {tasks} and {w} and timestamp >= now() - interval {WEEKS} week group by wk, k limit 500""",
+        "success_version": f"""
+            select {ver} as k, {kn} from events
+            where {tasks} and {w} and timestamp >= now() - interval 30 day group by k limit 500""",
+        "success_provider": f"""
+            select coalesce(nullIf(p.provider, ''), 'unknown') as k, countIf({_human("t.")}), countIf(t.event = 'task_failed')
+            from (select person_id, event, properties from events where {tasks} and {w}
+                  and timestamp >= now() - interval 30 day) as t
+            left join (select person_id, argMax(toString(properties.provider), timestamp) as provider from events
+                       where event = 'brain_chosen' and {w} and timestamp >= now() - interval 180 day
+                       group by person_id) as p on t.person_id = p.person_id
+            group by k limit 50""",
+        # Last 7d: task_failed by reason and problem_raised by kind, with the distinct installs
+        # (properties.install_id) that raised each in the last 24h (brain.unavailable -> headline).
+        "problems": f"""
+            select event, coalesce(nullIf(toString(if(event = 'task_failed', properties.reason, properties.kind)), ''), 'unknown') as k,
+              count(), uniqIf(toString(properties.install_id), timestamp >= now() - interval 24 hour)
+            from events where event in ('task_failed', 'problem_raised') and {w} and timestamp >= now() - interval 7 day
+            group by event, k order by count() desc limit 200""",
+        # Last 30d: spark_download_clicked (anonymous web traffic, never a funnel step) by source / placement.
+        "downloads": f"""
+            select coalesce(nullIf(toString(properties.source), ''), nullIf(toString(properties.placement), ''), 'unknown') as k, count()
+            from events where event = 'spark_download_clicked' and {w} and timestamp >= now() - interval 30 day
+            group by k order by count() desc limit 20""",
     }
 
 
-def _monday(d: date) -> date:
-    return d - timedelta(days=d.weekday())
+def derive(rows: dict[str, list], now: datetime) -> dict:
+    """Raw HogQL rows (by query name) -> the JSON payload. Pure; no I/O. Counts only; every share is k and n."""
+    weeks = _weeks(now, WEEKS)
+    cur = weeks[-1]
+    wk_of = lambda v: str(v)[:10]  # noqa: E731  PostHog returns dates as ISO strings
+    kn = lambda k, n: {"k": k, "n": n}  # noqa: E731
 
+    per7 = {p: int(n) for p, n in rows["doers_7d"]}
+    doers = {wk_of(w): int(n) for w, n in rows["doers_weekly"]}
 
-def _rate(n: int, d: int) -> float | None:
-    return n / d if d else None
+    people, cohorts, channels = [], {}, {}
+    funnel = [0] * (len(STEPS) + 1)  # [launches, then STEPS]
+    for r in rows["installs"]:
+        launch = _parse_ts(r[0])
+        platform, version, provider, channel, email = r[1], r[2], r[3] or "unknown", r[4], r[5]
+        signin, brain, perm, onb, tasks, act24, d7days, w4, sub = (int(x) for x in r[6:15])
+        last_task = str(r[15])[:10] if tasks else None
+        age = now - launch
+        settled, d7_old = age >= timedelta(hours=24), age >= timedelta(days=7)
+        d7 = d7_old and d7days >= 2
+        reached = [signin, brain, perm, onb, tasks, d7, sub]
+        reached = [bool(x) for x in reached]
+        if age <= timedelta(days=30):
+            funnel[0] += 1
+            for i, ok in enumerate(reached):
+                funnel[i + 1] += ok
+        if age <= timedelta(days=60):
+            if len(people) < 200:
+                furthest = next((s for s, ok in zip(reversed(STEPS), reversed(reached)) if ok), "first launch")
+                people.append(
+                    {
+                        "installed": _utc_date(launch).isoformat(),
+                        "platform": platform,
+                        "version": version,
+                        "provider": provider,
+                        "channel": channel,
+                        "furthest": furthest,
+                        "last_task": last_task,
+                        "email": email or None,
+                    }
+                )
+            if settled:
+                c = channels.setdefault(channel, [0, 0])
+                c[0] += act24 > 0
+                c[1] += 1
+        wk = _monday(_utc_date(launch)).isoformat()
+        if wk in weeks:
+            c = cohorts.setdefault(
+                (wk, platform), {"installs": 0, "settled": 0, "act": 0, "d7_k": 0, "d7_n": 0, "w4_k": 0}
+            )
+            c["installs"] += 1
+            c["settled"] += settled
+            c["act"] += settled and act24 > 0
+            c["d7_n"] += d7_old
+            c["d7_k"] += d7
+            c["w4_k"] += settled and act24 > 0 and w4 > 0  # W4 only among activated installs
 
-
-# Which payload fields each query feeds. A failed query makes its fields None ("unknown"), never 0.
-def derive(rows: dict[str, list], now: datetime, failed: frozenset[str] = frozenset()) -> dict:
-    """Raw HogQL result rows (by query name) -> the JSON payload. Pure; no I/O.
-    Fields fed by a query in ``failed`` are None; health / problem_raised fields are None until
-    the event has been seen at all."""
-    ok = lambda *names: not (failed & set(names))  # noqa: E731
-    seen = {str(e) for e, _ in rows.get("seen_events", [])}
-    seen_known = ok("seen_events")
-    today = now.date()
-    weeks = [(_monday(today) - timedelta(weeks=i)).isoformat() for i in range(WEEKS - 1, -1, -1)]
-    day = lambda v: str(v)[:10]  # noqa: E731  PostHog returns dates as ISO strings
-
-    doers = {day(r[0]): int(r[1]) for r in rows["doers_weekly"]}
-    tasks: dict[str, dict[str, int]] = {}
-    for wk, event, n in rows["tasks_weekly"]:
-        tasks.setdefault(day(wk), {})[event] = int(n)
-
-    cohort_installs: dict[str, int] = {}
-    cohort_activated: dict[str, int] = {}
-    platforms: dict[str, dict[str, dict[str, int]]] = {}  # week -> platform -> {installs, activated}
-    for cohort, platform, installs, activated in rows["activation"]:
-        c = day(cohort)
-        cohort_installs[c] = cohort_installs.get(c, 0) + int(installs)
-        cohort_activated[c] = cohort_activated.get(c, 0) + int(activated)
-        platforms.setdefault(c, {})[platform] = {"installs": int(installs), "activated": int(activated)}
-    retained = {day(c): int(n) for c, n in rows["retention"]}
-    platform_names = sorted({p for per in platforms.values() for p in per})
-
-    act_ok, ret_ok = ok("activation"), ok("activation", "retention")
-    cohorts = []
-    for wk in weeks:
-        installs, activated = cohort_installs.get(wk, 0), cohort_activated.get(wk, 0)
-        # Measurable once the cohort's last install has passed day 28: week start + 7 + 28 + 1 days.
-        mature = date.fromisoformat(wk) + timedelta(days=7 + RETENTION_DAYS[1] + 1) <= today
-        cohorts.append(
+    cohort_rows = []
+    for (wk, platform), c in sorted(cohorts.items()):
+        # Mature once the cohort's last install has passed day 29: week start + 7 + 29 days.
+        mature = datetime.fromisoformat(wk).replace(tzinfo=timezone.utc) + timedelta(days=7 + 29) <= now
+        cohort_rows.append(
             {
                 "week": wk,
-                "installs": installs if act_ok else None,
-                "activated": activated if act_ok else None,
-                "activation_rate": _rate(activated, installs) if act_ok else None,
-                "w4_retained": retained.get(wk, 0) if mature and ret_ok else None,
-                "w4_retention": _rate(retained.get(wk, 0), installs) if mature and ret_ok else None,
-                "activated_by_platform": {
-                    p: platforms.get(wk, {}).get(p, {}).get("activated", 0) if act_ok else None for p in platform_names
-                },
+                "partial": wk == cur,
+                "platform": platform,
+                "installs": c["installs"],
+                "settled": c["settled"],
+                "activated_24h": kn(c["act"], c["settled"]),
+                "activated_d7": kn(c["d7_k"], c["d7_n"]),
+                "w4": kn(c["w4_k"], c["act"]) if mature else None,  # None = too early
             }
         )
 
-    tasks_ok = ok("tasks_weekly")
-    funnel = dict((e, int(u)) for e, u in rows["funnel"])
-    # Health / problem_raised may not be emitted yet: unseen (or unknowable) is None, not 0.
-    health_ok = seen_known and "health" in seen and ok("unhealthy")
-    problems_ok = seen_known and "problem_raised" in seen and ok("problem_kinds")
+    def success(name):
+        return [{"key": str(k), "success": kn(int(d), int(d) + int(f))} for k, d, f in rows[name]]
+
+    def top(event):
+        return [{"key": str(k), "count": int(n)} for e, k, n, _ in rows["problems"] if e == event][:10]
+
     return {
         "generated_at": now.isoformat(),
-        "weeks": weeks,
-        "failed_queries": sorted(failed),
         "wad": {
-            "rolling_7d": (int(rows["doers_7d"][0][0]) if rows["doers_7d"] else 0) if ok("doers_7d") else None,
-            "weekly": [{"week": wk, "doers": doers.get(wk, 0) if ok("doers_weekly") else None} for wk in weeks],
+            "last7": per7.get("last7", 0),
+            "prev7": per7.get("prev7", 0),
+            "weekly": [{"week": w, "partial": w == cur, "doers": doers.get(w, 0)} for w in weeks],
         },
-        "platforms": platform_names,
-        "cohorts": cohorts,
-        "task_success": {
+        "cohorts": cohort_rows,
+        "success": {
             "weekly": [
                 {
-                    "week": wk,
-                    "completed": tasks.get(wk, {}).get("task_completed", 0) if tasks_ok else None,
-                    "failed": tasks.get(wk, {}).get("task_failed", 0) if tasks_ok else None,
-                    "rate": _rate(
-                        tasks.get(wk, {}).get("task_completed", 0),
-                        tasks.get(wk, {}).get("task_completed", 0) + tasks.get(wk, {}).get("task_failed", 0),
-                    )
-                    if tasks_ok
-                    else None,
+                    "week": wk_of(w),
+                    "partial": wk_of(w) == cur,
+                    "platform": str(k),
+                    "success": kn(int(d), int(d) + int(f)),
                 }
-                for wk in weeks
+                for w, k, d, f in sorted(rows["success_weekly"], key=lambda r: str(r[0]))
             ],
-            "top_failed_reasons": [{"key": str(k), "count": int(n)} for k, n in rows["failed_reasons"]]
-            if ok("failed_reasons")
-            else None,
-            "top_problem_kinds": [{"key": str(k), "count": int(n)} for k, n in rows["problem_kinds"]]
-            if problems_ok
-            else None,
+            "by_version": success("success_version"),
+            "by_provider": success("success_provider"),
+            "failed_reasons": top("task_failed"),
+            "problem_kinds": top("problem_raised"),
         },
-        "funnel": [{"stage": st, "users": funnel.get(st, 0) if ok("funnel") else None} for st in FUNNEL_STAGES],
-        "reliability": {
-            "unhealthy_installs_24h": (int(rows["unhealthy"][0][0]) if rows["unhealthy"] else 0) if health_ok else None
-        },
+        "brain_unavailable_installs_24h": sum(
+            int(i) for e, k, _, i in rows["problems"] if e == "problem_raised" and k == "brain.unavailable"
+        ),
+        "funnel": [{"step": s, "k": k} for s, k in zip(("first launch", *STEPS), funnel)],
+        "downloads": [{"key": str(k), "count": int(n)} for k, n in rows["downloads"]],
+        "channels": [
+            {"channel": c, "activated_24h": kn(k, n)} for c, (k, n) in sorted(channels.items(), key=lambda x: -x[1][1])
+        ],
+        "people": people,
     }
 
 
-_cache: tuple[float, dict, str, list[dict]] | None = None
+_cache: tuple[float, dict | None, str, list[dict]] | None = None  # (expires_at, data, state, errors)
 
 
 async def compute() -> tuple[dict | None, str, list[dict]]:
-    """Run every query (one failure degrades to ``partial``/``unavailable``, never fake zeros)."""
+    """Run every query. Any failure -> (None, partial, failed query names): no figures, no fake zeros.
+    Failures are cached too (60s) so an open page during a PostHog outage doesn't hammer the API."""
     global _cache
     if _cache is not None and _cache[0] > time.monotonic():
         return _cache[1], _cache[2], _cache[3]
 
     queries = build_queries()
     results = await asyncio.gather(*(posthog_admin.hogql(q) for q in queries.values()))
-    by_name = dict(zip(queries, results))
-
     if all(r["stubbed"] for r in results):
         return None, env.UNAVAILABLE, [{"domain": "posthog", "reason": "not configured"}]
-    errors = [{"domain": f"posthog:{n}", "reason": r["error"]} for n, r in by_name.items() if r["error"]]
-    if len(errors) == len(results):
-        return None, env.UNAVAILABLE, errors
-
-    # A failed query's section renders empty (rows = []), flagged via errors; the page shows the banner.
-    failed = frozenset(e["domain"].split(":", 1)[1] for e in errors)
-    data = derive({n: r["results"] for n, r in by_name.items()}, datetime.now(timezone.utc), failed)
+    errors = [{"domain": f"posthog:{n}", "reason": r["error"]} for n, r in zip(queries, results) if r["error"]]
+    data = None if errors else derive({n: r["results"] for n, r in zip(queries, results)}, datetime.now(timezone.utc))
     state = env.PARTIAL if errors else env.OK
-    if not errors:
-        _cache = (time.monotonic() + CACHE_TTL_S, data, state, errors)
+    _cache = (time.monotonic() + (FAIL_TTL_S if errors else OK_TTL_S), data, state, errors)
     return data, state, errors

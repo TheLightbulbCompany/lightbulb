@@ -594,31 +594,48 @@ export async function getGrowth(token: string): Promise<OpsEnvelope<GrowthData> 
 }
 
 /** Any field is null when its query failed (or, for health / problem_raised, the event was never seen). */
-export interface SparkCohort {
-  week: string;
-  installs: number | null;
-  activated: number | null;
-  activation_rate: number | null;
-  /** null until the cohort is old enough for a day-28 reading. */
-  w4_retained: number | null;
-  w4_retention: number | null;
-  activated_by_platform: Record<string, number | null>;
+/** k of n; n = 0 renders as a dash. */
+export interface Kn {
+  k: number;
+  n: number;
+}
+export interface SparkPerson {
+  installed: string;
+  platform: string;
+  version: string;
+  provider: string;
+  channel: string;
+  furthest: string;
+  last_task: string | null;
+  email: string | null;
 }
 
 export interface SparkData {
   generated_at: string;
-  weeks: string[];
-  wad: { rolling_7d: number | null; weekly: { week: string; doers: number | null }[] };
-  platforms: string[];
-  cohorts: SparkCohort[];
-  task_success: {
-    weekly: { week: string; completed: number | null; failed: number | null; rate: number | null }[];
-    top_failed_reasons: { key: string; count: number }[] | null;
-    top_problem_kinds: { key: string; count: number }[] | null;
+  wad: { last7: number; prev7: number; weekly: { week: string; partial: boolean; doers: number }[] };
+  cohorts: {
+    week: string;
+    partial: boolean;
+    platform: string;
+    installs: number;
+    settled: number;
+    activated_24h: Kn;
+    activated_d7: Kn;
+    /** null = too early. */
+    w4: Kn | null;
+  }[];
+  success: {
+    weekly: { week: string; partial: boolean; platform: string; success: Kn }[];
+    by_version: { key: string; success: Kn }[];
+    by_provider: { key: string; success: Kn }[];
+    failed_reasons: { key: string; count: number }[];
+    problem_kinds: { key: string; count: number }[];
   };
-  funnel: { stage: string; users: number | null }[];
-  reliability: { unhealthy_installs_24h: number | null };
-  failed_queries: string[];
+  brain_unavailable_installs_24h: number;
+  funnel: { step: string; k: number }[];
+  downloads: { key: string; count: number }[];
+  channels: { channel: string; activated_24h: Kn }[];
+  people: SparkPerson[];
 }
 
 export async function getSpark(token: string): Promise<OpsEnvelope<SparkData | null> | null> {

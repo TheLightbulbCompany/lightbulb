@@ -425,8 +425,9 @@ def _saves(s: dict) -> bool:
 
 
 async def _save_turn(s: dict, role: str, text: str, start_ms: int) -> None:
-    """Write one turn, only while the session is active: an ended one (closed for an account deletion, say)
-    saves nothing more. Turns sort by when they started (ms into the session), so a reply that began before
+    """Write one turn, only while the session is active and neither it (`noTranscript`) nor the person
+    (`os_analytics_off`) has opted out, checked in the write's own transaction, so a sideband holding a stale
+    copy cannot save after a delete. An ended session (closed for an account deletion, say) saves nothing more. Turns sort by when they started (ms into the session), so a reply that began before
     the request's last words arrived still sorts after the request. A failure is counted and logged without
     its text; it never touches the session."""
     at = now()
@@ -438,11 +439,18 @@ async def _save_turn(s: dict, role: str, text: str, start_ms: int) -> None:
         active = {
             "TableName": _table().name,
             "Key": _key(s["sessionId"]),
-            "ConditionExpression": "#st = :active",
+            "ConditionExpression": "#st = :active AND attribute_not_exists(noTranscript)",
             "ExpressionAttributeNames": {"#st": "status"},
             "ExpressionAttributeValues": {":active": ACTIVE},
         }
-        await transact(table, [{"ConditionCheck": active}, {"Put": {"TableName": table.name, "Item": item}}])
+        # The person's own opt-out: it also covers a session whose open was in flight when they switched off.
+        person = {
+            "TableName": get_table("users").name,
+            "Key": {"user_id": s["userId"]},
+            "ConditionExpression": "attribute_not_exists(os_analytics_off)",
+        }
+        puts = [{"ConditionCheck": active}, {"ConditionCheck": person}]
+        await transact(table, [*puts, {"Put": {"TableName": table.name, "Item": item}}])
     except ClientError as e:
         if not is_cancelled(e):
             put_metric("os_voice.transcript.write_failed")
@@ -589,9 +597,27 @@ async def forget(user_id: str, sessions) -> None:
     await delete_transcripts(user_id)
 
 
+async def _set_opt_out(user_id: str, off: bool) -> None:
+    """Mark (or unmark) the person's users row `os_analytics_off`; a person with no row gets none."""
+    with contextlib.suppress(ClientError):
+        await run_in_thread(
+            get_table("users").update_item,
+            Key={"user_id": user_id},
+            UpdateExpression="SET os_analytics_off = :t" if off else "REMOVE os_analytics_off",
+            ConditionExpression="attribute_exists(user_id)",
+            **({"ExpressionAttributeValues": {":t": True}} if off else {}),
+        )
+
+
+async def clear_opt_out(user_id: str) -> None:
+    """The person turned usage data back on: their sessions may save turns again."""
+    await _set_opt_out(user_id, False)
+
+
 async def stop_transcripts(user_id: str) -> None:
     """The person turned usage data off: their active sessions save no more turns and the turns already saved
     are deleted. The sessions stay open; each sideband sees `noTranscript` on its next tick."""
+    await _set_opt_out(user_id, True)  # first: a session still opening then saves nothing
     person = (await run_in_thread(get_table("users").get_item, Key={"user_id": user_id}, ConsistentRead=True)).get(
         "Item"
     ) or {}

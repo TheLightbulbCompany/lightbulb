@@ -517,8 +517,10 @@ async def create_voice_session(
     at = _now()
     if os_billing.status(await _account(auth, at), at) == "ended":
         raise HTTPException(status_code=402, detail="trial_ended")
-    if client.get("analytics") is False:  # a retry of the delete the app's opt-out event asked for
-        os_voice.spawn(os_voice.delete_transcripts(auth.user_id))
+    if client.get("analytics") is False:  # a retry of the opt-out the app's event asked for
+        os_voice.spawn(os_voice.stop_transcripts(auth.user_id))
+    elif client.get("analytics") is True:
+        os_voice.spawn(os_voice.clear_opt_out(auth.user_id))
     return await os_voice.open_session(auth.user_id, kind, client, model, config, sdp)
 
 
@@ -607,6 +609,12 @@ async def post_event(request: Request, auth: AuthContext | None = Depends(get_op
     if not install_id:
         raise HTTPException(status_code=400, detail="invalid_event")
     distinct_id = auth.user_id if auth else install_id
+    if auth and body.get("event") == "analytics_optout_set":  # privacy: never lost to the rate limit
+        on = spark_events.allowed_properties("analytics_optout_set", body.get("properties")).get("on")
+        if on is False:
+            os_voice.spawn(os_voice.stop_transcripts(auth.user_id))
+        elif on is True:
+            os_voice.spawn(os_voice.clear_opt_out(auth.user_id))
     if (not auth and not _PER_IP.allow(_extract_caller_ip(request))) or not _PER_ID.allow(distinct_id):
         return Response(status_code=204)
     try:
@@ -618,8 +626,6 @@ async def post_event(request: Request, auth: AuthContext | None = Depends(get_op
             props |= {"install_id": install_id, "product": spark_events.PRODUCT} | spark_events.common_properties(body)
             day = time.strftime("%Y-%m-%d", time.gmtime())
             once = str(uuid.uuid5(spark_events.NS, f"app_opened:{install_id}:{day}")) if event == "app_opened" else None
-            if auth and event == "analytics_optout_set" and props.get("on") is False:
-                os_voice.spawn(os_voice.stop_transcripts(auth.user_id))  # before PostHog: it must not depend on it
             set_once = (
                 {"spark_heard_from": props["choice"]} if event == "heard_from_answered" and "choice" in props else None
             )

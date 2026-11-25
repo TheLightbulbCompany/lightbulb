@@ -249,7 +249,11 @@ def stopped(monkeypatch):
     async def fake(user_id):
         calls.append(user_id)
 
+    async def clear(user_id):
+        calls.append(("clear", user_id))
+
     monkeypatch.setattr(os_voice, "stop_transcripts", fake)
+    monkeypatch.setattr(os_voice, "clear_opt_out", clear)
     return calls
 
 
@@ -264,11 +268,24 @@ async def test_signed_in_optout_stops_transcripts(ph, ddb, stopped):
     assert ph.named("analytics_optout_set")[0]["properties"]["on"] is False
 
 
-@pytest.mark.parametrize("who,on", [(None, False), (A, True), (A, "no")])
+@pytest.mark.parametrize("who,on", [(None, False), (None, True), (A, "no")])
 async def test_other_optout_events_stop_nothing(ph, ddb, stopped, who, on):
     await send("analytics_optout_set", {"on": on}, who)
     await _settle()
     assert stopped == []
+
+
+async def test_opting_back_in_clears_the_flag(ph, ddb, stopped):
+    await send("analytics_optout_set", {"on": True}, A)
+    await _settle()
+    assert stopped == [("clear", "user_a")]
+
+
+async def test_an_optout_is_acted_on_even_when_rate_limited(ph, ddb, stopped, monkeypatch):
+    monkeypatch.setattr(os_router, "_PER_ID", os_router.RateBucket(0))
+    assert (await send("analytics_optout_set", {"on": False}, A)).status_code == 204
+    await _settle()
+    assert stopped == ["user_a"] and ph.captures == []
 
 
 async def test_optout_deletion_survives_a_posthog_failure(ph, ddb, stopped):

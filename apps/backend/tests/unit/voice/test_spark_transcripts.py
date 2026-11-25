@@ -240,6 +240,41 @@ async def test_stop_transcripts_flags_active_sessions_and_deletes_turns(table, o
     assert [r["user_id"] for r in rows(table)] == ["user_b"]
 
 
+async def test_a_stale_sideband_cannot_save_after_the_flag_is_set(table, on):
+    s = state()  # its in-memory copy never saw noTranscript
+    await hear(s, ("user", "held a tick too long"))
+    table.meta.client.update_item(
+        TableName=dynamodb.table_name("containers"), Key=os_voice._key(SID),
+        UpdateExpression="SET noTranscript = :t", ExpressionAttributeValues={":t": True},
+    )  # fmt: skip
+    await os_voice._flush(s)
+    assert rows(table) == []
+
+
+async def test_the_persons_opt_out_blocks_saves_and_clears(table, on):
+    users = table.meta.client
+    users.put_item(TableName=dynamodb.table_name("users"), Item={"user_id": "user_a"})
+    await os_voice.stop_transcripts("user_a")
+    assert users.get_item(TableName=dynamodb.table_name("users"), Key={"user_id": "user_a"})["Item"]["os_analytics_off"]
+    s = state()  # a session whose open was in flight with analytics on
+    await hear(s, ("user", "late"))
+    await os_voice._flush(s)
+    assert rows(table) == []
+    await os_voice.clear_opt_out("user_a")
+    s = state(sid="vs_2")  # the flagged session stays off; a new one saves
+    await hear(s, ("user", "back on"))
+    await os_voice._flush(s)
+    assert [r["text"] for r in rows(table)] == ["back on"]
+
+
+async def test_opt_out_never_creates_a_users_row(table, on):
+    await os_voice.stop_transcripts("user_nobody")
+    await os_voice.clear_opt_out("user_nobody")
+    assert "Item" not in table.meta.client.get_item(
+        TableName=dynamodb.table_name("users"), Key={"user_id": "user_nobody"}
+    )
+
+
 def test_the_script_hides_the_user_id():
     item = {"user_id": "user_a", "sk": f"1800000000#{SID}#1", "sessionId": SID, "role": "user", "text": "hi"}
     out = spark_transcripts.render([item])

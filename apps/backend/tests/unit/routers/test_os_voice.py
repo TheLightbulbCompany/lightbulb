@@ -284,19 +284,28 @@ async def test_the_model_is_stored_on_the_row(ddb, clock, no_sideband, openai):
 
 @pytest.fixture
 def deleted(monkeypatch):
-    calls = []
+    calls = {"stop": [], "clear": []}
 
-    async def fake(user_id):
-        calls.append(user_id)
+    async def stop(user_id):
+        calls["stop"].append(user_id)
 
-    monkeypatch.setattr(os_voice, "delete_transcripts", fake)
+    async def clear(user_id):
+        calls["clear"].append(user_id)
+
+    monkeypatch.setattr(os_voice, "stop_transcripts", stop)
+    monkeypatch.setattr(os_voice, "clear_opt_out", clear)
     return calls
 
 
-@pytest.mark.parametrize(("analytics", "expected"), [(False, ["user_a"]), (True, []), (None, [])])
-async def test_a_session_opened_with_analytics_off_schedules_deletion(
-    ddb, clock, no_sideband, openai, deleted, analytics, expected
-):
+@pytest.mark.parametrize(
+    ("analytics", "expected"),
+    [
+        (False, {"stop": ["user_a"], "clear": []}),
+        (True, {"stop": [], "clear": ["user_a"]}),
+        (None, {"stop": [], "clear": []}),
+    ],
+)
+async def test_a_session_open_syncs_the_opt_out(ddb, clock, no_sideband, openai, deleted, analytics, expected):
     client = {"appVersion": "1.0.0"} | ({} if analytics is None else {"analytics": analytics})
     assert (await create(client=client)).status_code == 201
     await asyncio.gather(*os_voice._BACKGROUND)
@@ -307,7 +316,7 @@ async def test_a_failing_scheduled_deletion_never_fails_the_open(ddb, clock, no_
     async def boom(user_id):
         raise RuntimeError("ddb down")
 
-    monkeypatch.setattr(os_voice, "delete_transcripts", boom)
+    monkeypatch.setattr(os_voice, "stop_transcripts", boom)
     assert (await create(client={"analytics": False})).status_code == 201
     await asyncio.gather(*os_voice._BACKGROUND)
 

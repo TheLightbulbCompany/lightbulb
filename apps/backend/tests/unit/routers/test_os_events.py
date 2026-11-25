@@ -32,9 +32,10 @@ VALID = {
     "full_access_set": {"on": True},
     "onboarding_completed": {"skipped_sign_in": False, "seconds_total": 120},
     "first_conversation": {},
-    "task_completed": {},
+    "task_completed": {"source": "typed", "seconds_bucket": "lt30"},
     "first_tidy": {"outcome": "already_tidy"},
     "task_failed": {"reason": "unreachable"},
+    "problem_raised": {"kind": "permission.screenRecording"},
     "upgrade_clicked": {},
     "manage_subscription_clicked": {},
     "referral_link_copied": {},
@@ -98,7 +99,13 @@ async def req(method, path, who=None, body=None, content=None, headers=None):
 
 
 async def send(event, properties=None, who=None, install=INSTALL, **extra):
-    body = {"event": event, "properties": properties or {}, "installId": install, "appVersion": "2.1.1"}
+    body = {
+        "event": event,
+        "properties": properties or {},
+        "installId": install,
+        "appVersion": "2.1.1",
+        "platform": "mac",
+    }
     body |= {"osVersion": "15.1"} | extra
     return await req("POST", "/os/event", who, body)
 
@@ -117,14 +124,53 @@ async def test_each_allowed_event_is_captured(event, signed_in, ph, ddb):
     assert c["properties"] == VALID[event] | {
         "app_version": "2.1.1",
         "os_version": "15.1",
+        "platform": "mac",
         "install_id": INSTALL,
         "product": "spark",
         "environment": c["properties"]["environment"],
     }
 
 
+# The Spark engine's EVENTS (packages/engine/src/account/events.ts), event to property names: its test holds the
+# same table, so a change on one side fails the other's test.
+ENGINE_TABLE = {
+    "app_first_launch": [],
+    "app_opened": [],
+    "brain_chosen": ["provider"],
+    "brain_signin_started": ["needed_download", "provider"],
+    "first_conversation": [],
+    "first_tidy": ["outcome"],
+    "full_access_set": ["on"],
+    "manage_subscription_clicked": [],
+    "onboarding_completed": ["seconds_total", "skipped_sign_in"],
+    "permission_granted": ["permission"],
+    "problem_raised": ["kind"],
+    "referral_link_copied": [],
+    "signin_completed": ["is_new_account", "method"],
+    "signin_started": ["method"],
+    "task_completed": ["seconds_bucket", "source"],
+    "task_failed": ["reason"],
+    "update_installed": ["from_version", "to_version"],
+    "upgrade_clicked": [],
+}
+
+
 async def test_the_allow_list_is_the_one_table():
     assert set(VALID) == set(spark_events.APP_EVENTS)
+    assert {e: sorted(r) for e, r in spark_events.APP_EVENTS.items()} == ENGINE_TABLE
+    assert all(sorted(VALID[e]) == sorted(r) for e, r in spark_events.APP_EVENTS.items())
+
+
+@pytest.mark.parametrize("osv", ["10.0.26100", "10.0.22631", "10.0.19045", "26.2", "15.1.1"])
+async def test_windows_and_mac_os_versions_pass(osv, ph, ddb):
+    await send("app_opened", osVersion=osv, platform="windows")
+    p = ph.captures[0]["properties"]
+    assert p["os_version"] == osv and p["platform"] == "windows"
+
+
+async def test_a_bad_platform_is_omitted(ph, ddb):
+    await send("app_opened", platform="linux")
+    assert "platform" not in ph.captures[0]["properties"]
 
 
 async def test_unknown_event_is_204_and_sends_nothing(ph, ddb):
@@ -236,7 +282,9 @@ async def test_alias_once_per_install_and_at_most_ten_installs(ph, ddb):
         await send("task_completed", who=A, install=i)
     row = ddb.get_item(Key={"user_id": "user_a"})["Item"]
     assert len(row["os_install_ids"]) == 10 and installs[-1] not in row["os_install_ids"]
-    assert len(ph.aliases) == 10
+    assert len(ph.aliases) == 11  # the 11th install is not stored, but still joins the person
+    await send("task_completed", who=A, install=INSTALL)
+    assert len(ph.aliases) == 11  # an install already linked is not aliased again
 
 
 async def test_signed_in_before_an_account_writes_no_row_and_no_alias(ph, ddb):
@@ -277,6 +325,10 @@ async def test_referral_captures_both_events(ph, ddb):
     assert r.json() == {"applied": True}
     assert [c["distinct_id"] for c in ph.named("referral_applied")] == ["user_a"]
     assert [c["distinct_id"] for c in ph.named("referred_by_applied")] == ["user_b"]
+    assert ph.named("referred_by_applied")[0]["properties"]["$set_once"] == {
+        "spark_channel": "referral",
+        "spark_referrer": "user_a",
+    }
 
 
 async def test_web_signup_referral_events_fire_at_record_and_at_credit(ph, ddb):

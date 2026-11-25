@@ -16,6 +16,8 @@ logger = logging.getLogger(__name__)
 
 PRODUCT = "spark"
 VERSION = re.compile(r"[0-9]{1,4}(\.[0-9]{1,4}){0,3}([-+][0-9A-Za-z.]{1,16})?")
+# An OS version is dotted numbers, each up to five digits: macOS 26.2, Windows 10.0.26100.
+OS_VERSION = re.compile(r"[0-9]{1,5}(\.[0-9]{1,5}){0,3}")
 NS = uuid.uuid5(uuid.NAMESPACE_URL, "lightbulb:spark")
 
 
@@ -37,6 +39,30 @@ def _seconds(v: object) -> bool:
 
 _METHOD = _enum("apple", "google", "email")
 _PROVIDER = _enum("chatgpt", "claude")
+_PROBLEM_KIND = _enum(
+    "permission.accessibility",
+    "permission.screenRecording",
+    "permission.microphone",
+    "permission.fullDiskAccess",
+    "permission.other",
+    "brain.unavailable",
+    "voice.limit",
+    "voice.connection",
+    "hands.helper",
+    "disk.low",
+    "dock",
+    "daemon",
+    "crash",
+    "other",
+    "automation.missed",
+    "automation.blocked",
+    "automation.budget",
+    "automation.notifications",
+    "automation.watch",
+    "automation.failed",
+    "app.version",
+    "account",
+)  # keep equal to ProblemKind in the Spark engine's protocol package
 
 APP_EVENTS: dict[str, dict[str, Callable[[object], bool]]] = {
     "app_first_launch": {},
@@ -50,13 +76,30 @@ APP_EVENTS: dict[str, dict[str, Callable[[object], bool]]] = {
     "onboarding_completed": {"skipped_sign_in": _bool, "seconds_total": _seconds},
     "first_conversation": {},
     "first_tidy": {"outcome": _enum("done", "already_tidy", "declined", "stopped", "failed")},
-    "task_completed": {},
+    "task_completed": {
+        "source": _enum("voice", "typed", "automation"),
+        "seconds_bucket": _enum("lt10", "lt30", "lt120", "lt600", "gte600"),
+    },
     "task_failed": {"reason": _enum("auth", "quota", "rate", "unreachable", "signed_out", "other")},
+    "problem_raised": {"kind": _PROBLEM_KIND},
     "upgrade_clicked": {},
     "manage_subscription_clicked": {},
     "referral_link_copied": {},
     "update_installed": {"from_version": _match(VERSION), "to_version": _match(VERSION)},
 }
+
+
+# The fixed fields every app event body may carry: body key, then the property it becomes and its validator.
+COMMON: dict[str, tuple[str, Callable[[object], bool]]] = {
+    "appVersion": ("app_version", _match(VERSION)),
+    "osVersion": ("os_version", _match(OS_VERSION)),
+    "platform": ("platform", _enum("mac", "windows")),
+}
+
+
+def common_properties(body: dict) -> dict:
+    """`app_version`, `os_version` and `platform` from the body, each only if it passes."""
+    return {prop: body[key] for key, (prop, ok) in COMMON.items() if ok(body.get(key))}
 
 
 def allowed_properties(event: str, properties: object) -> dict:
@@ -79,17 +122,24 @@ def facts(row: dict, now: int) -> dict:
 
 
 def server_event(
-    user_id: str, event: str, key: str, properties: dict | None = None, row: dict | None = None, now: int = 0
+    user_id: str,
+    event: str,
+    key: str,
+    properties: dict | None = None,
+    row: dict | None = None,
+    now: int = 0,
+    set_once: dict | None = None,
 ) -> None:
     """One server-side Spark event on the person, with `facts(row, now)` set on them when a row is given.
     `key` makes the event uuid deterministic, so a retried request or a redelivered webhook is dropped by
-    PostHog. Never raises."""
+    PostHog. `set_once` goes on the person as `$set_once`. Never raises."""
     try:
         product_analytics.capture_product_event(
             distinct_id=user_id,
             event=event,
             properties={**(properties or {}), "product": PRODUCT},
             set_person=facts(row, now) if row is not None else None,
+            set_once=set_once,
             event_uuid=str(uuid.uuid5(NS, f"{event}:{key}")),
         )
     except Exception:  # noqa: BLE001  analytics never fails the caller

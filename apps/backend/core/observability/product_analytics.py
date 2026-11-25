@@ -73,6 +73,7 @@ def capture_product_event(
     event: str,
     properties: dict | None = None,
     set_person: dict | None = None,
+    set_once: dict | None = None,
     event_uuid: str | None = None,
 ) -> None:
     """Capture one PostHog product event keyed on the subscriber's Clerk id.
@@ -100,6 +101,8 @@ def capture_product_event(
     props.setdefault("environment", settings.ENVIRONMENT or "local")
     if set_person:
         props["$set"] = {**props.get("$set", {}), **set_person}
+    if set_once:
+        props["$set_once"] = {**props.get("$set_once", {}), **set_once}
     _send(client, distinct_id, event, props, event_uuid)
 
 

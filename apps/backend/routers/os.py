@@ -383,7 +383,12 @@ async def apply_referral(body: Any = Body(None), auth: AuthContext = Depends(get
         logger.warning("os referral not written for %s: transport", auth.user_id)
         raise HTTPException(status_code=503, detail="referral_unavailable")
     if applied:
-        spark_events.server_event(auth.user_id, "referred_by_applied", auth.user_id)
+        spark_events.server_event(
+            auth.user_id,
+            "referred_by_applied",
+            auth.user_id,
+            set_once={"spark_channel": "referral", "spark_referrer": referrer},
+        )
     return ReferralResponse(applied=applied)
 
 
@@ -552,8 +557,8 @@ def _install_id(value: Any) -> str | None:
 
 
 async def _link_install(user_id: str, install_id: str) -> bool:
-    """Remember the install on the person's existing users row, at most INSTALL_IDS_MAX of them. True only
-    when this call added it."""
+    """Remember the install on the person's existing users row, at most INSTALL_IDS_MAX of them. True when
+    the install is new to the person, stored or not: past the cap it is still joined to them in PostHog."""
     try:
         await run_in_thread(
             _table().update_item,
@@ -562,11 +567,14 @@ async def _link_install(user_id: str, install_id: str) -> bool:
             ConditionExpression="attribute_exists(user_id) AND (attribute_not_exists(os_install_ids) OR "
             "(NOT contains(os_install_ids, :one) AND size(os_install_ids) < :cap))",
             ExpressionAttributeValues={":iid": {install_id}, ":one": install_id, ":cap": INSTALL_IDS_MAX},
+            ReturnValuesOnConditionCheckFailure="ALL_OLD",
         )
     except ClientError as e:
         if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
             logger.warning("os install link not written: %s", e.response["Error"]["Code"])
-        return False
+            return False
+        old = e.response.get("Item")  # low-level shape; absent when the person has no row yet
+        return bool(old) and install_id not in old.get("os_install_ids", {}).get("SS", [])
     except BotoCoreError:
         return False
     return True
@@ -601,10 +609,7 @@ async def post_event(request: Request, auth: AuthContext | None = Depends(get_op
         event = body.get("event")
         if isinstance(event, str) and event in spark_events.APP_EVENTS:
             props = spark_events.allowed_properties(event, body.get("properties"))
-            props |= {"install_id": install_id, "product": spark_events.PRODUCT}
-            for key, prop in (("appVersion", "app_version"), ("osVersion", "os_version")):
-                if isinstance(v := body.get(key), str) and spark_events.VERSION.fullmatch(v):
-                    props[prop] = v
+            props |= {"install_id": install_id, "product": spark_events.PRODUCT} | spark_events.common_properties(body)
             day = time.strftime("%Y-%m-%d", time.gmtime())
             once = str(uuid.uuid5(spark_events.NS, f"app_opened:{install_id}:{day}")) if event == "app_opened" else None
             product_analytics.capture_product_event(

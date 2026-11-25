@@ -16,14 +16,15 @@ import uuid
 from typing import Any, Literal
 
 from botocore.exceptions import BotoCoreError, ClientError
-from fastapi import APIRouter, Body, Depends, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 
 from core.auth import AuthContext, get_human_session, get_optional_human_session
 from core.config import settings
 from core.dynamodb import get_table, is_cancelled, run_in_thread, transact, utc_now_iso
-from core.observability import product_analytics, spark_events
+from core.observability import product_analytics, spark_events, spark_store
+from core.observability.metrics import put_metric
 from core.services import os_billing
 from core.services.rate_bucket import RateBucket
 from core.voice import os_voice
@@ -65,15 +66,20 @@ class AccountResponse(BaseModel):
 class ConfigResponse(BaseModel):
     priceText: str
     trialDays: int
+    worklogScope: Literal["all", "problem"] = "problem"
 
 
 def _price_facts() -> ConfigResponse:
-    return ConfigResponse(priceText=f"${settings.SPARK_PRICE_USD}/month", trialDays=TRIAL_S // DAY_S)
+    scope = "all" if settings.SPARK_WORKLOG_SCOPE == "all" else "problem"
+    return ConfigResponse(
+        priceText=f"${settings.SPARK_PRICE_USD}/month", trialDays=TRIAL_S // DAY_S, worklogScope=scope
+    )
 
 
 @router.get("/config", response_model=ConfigResponse, operation_id="os_config")
 async def get_config() -> ConfigResponse:
-    """Spark's price and trial length, for the sign-in screen before anyone is signed in. Public."""
+    """Spark's price and trial length, for the sign-in screen before anyone is signed in, and the work-log scope
+    the server enforces. Public."""
     return _price_facts()
 
 
@@ -161,7 +167,7 @@ async def get_account(auth: AuthContext = Depends(get_human_session)) -> Account
         nextChargeAt=int(n)
         if row.get("os_subscription_status") in os_billing.LIVE and (n := row.get("os_next_charge_at"))
         else None,
-        **_price_facts().model_dump(),
+        **_price_facts().model_dump(exclude={"worklogScope"}),
     )
 
 
@@ -588,18 +594,16 @@ async def _link_install(user_id: str, install_id: str) -> bool:
     return True
 
 
-@router.post("/event", status_code=204, operation_id="os_event")
-async def post_event(request: Request, auth: AuthContext | None = Depends(get_optional_human_session)) -> Response:
-    """One product event from the app, for PostHog. Anyone may call it: with a valid session bearer the event
-    is the person's, otherwise the install's. Only allow-listed events and properties are sent
-    (`spark_events.APP_EVENTS`). A well-formed body is always 204, sent, dropped or rate-limited alike."""
+async def _capped_body(request: Request, limit: int, code: str) -> tuple[dict, str]:
+    """The JSON object a Spark app post sent and its `installId`: 413 over `limit` bytes (read as a stream, so
+    the size is enforced whatever the header says), 400 `code` for anything that is not an object with one."""
     length = request.headers.get("content-length", "")
-    if length.isdigit() and int(length) > EVENT_MAX_BYTES:
+    if length.isdigit() and int(length) > limit:
         raise HTTPException(status_code=413, detail="too_large")
     raw = b""
     async for chunk in request.stream():
         raw += chunk
-        if len(raw) > EVENT_MAX_BYTES:
+        if len(raw) > limit:
             raise HTTPException(status_code=413, detail="too_large")
     try:
         body = json.loads(raw)
@@ -607,7 +611,16 @@ async def post_event(request: Request, auth: AuthContext | None = Depends(get_op
         body = None
     install_id = _install_id(body.get("installId")) if isinstance(body, dict) else None
     if not install_id:
-        raise HTTPException(status_code=400, detail="invalid_event")
+        raise HTTPException(status_code=400, detail=code)
+    return body, install_id
+
+
+@router.post("/event", status_code=204, operation_id="os_event")
+async def post_event(request: Request, auth: AuthContext | None = Depends(get_optional_human_session)) -> Response:
+    """One product event from the app, for PostHog. Anyone may call it: with a valid session bearer the event
+    is the person's, otherwise the install's. Only allow-listed events and properties are sent
+    (`spark_events.APP_EVENTS`). A well-formed body is always 204, sent, dropped or rate-limited alike."""
+    body, install_id = await _capped_body(request, EVENT_MAX_BYTES, "invalid_event")
     distinct_id = auth.user_id if auth else install_id
     if auth and body.get("event") == "analytics_optout_set":  # privacy: never lost to the rate limit
         on = spark_events.allowed_properties("analytics_optout_set", body.get("properties")).get("on")
@@ -655,4 +668,48 @@ async def post_channel(body: Any = Body(None), auth: AuthContext = Depends(get_h
     channel = body.get("channel") if isinstance(body, dict) else None
     if isinstance(channel, str) and CHANNEL.fullmatch(channel):
         spark_events.server_event(auth.user_id, "channel_applied", auth.user_id, set_once={"spark_channel": channel})
+    return Response(status_code=204)
+
+
+# --- POST /os/log: typed lines and a task's work log, for the Spark store -----------------------------------
+
+LOG_MAX_BYTES = 512_000
+_LOG_PER_USER = RateBucket(10)  # a session posts once per task; a busy one a few times a minute
+
+
+async def _store_log(user_id: str, install_id: str, body: dict, meta: dict) -> None:
+    """The slow part of an upload, after the 204: the opt-out check, the rows (scrubbing runs in a thread, off
+    the event loop) and the puts. Nothing here reaches the app, and no text is logged."""
+    try:
+        if not await spark_store.allowed(user_id):
+            return
+        scope = "all" if settings.SPARK_WORKLOG_SCOPE == "all" else "problem"
+        now_us = time.time_ns() // 1000
+        turns, steps = await run_in_thread(spark_store.log_rows, user_id, install_id, body, scope, now_us, meta)
+        if turns:
+            await spark_store.put_turns(turns)
+        if steps:
+            await spark_store.put_steps(steps)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("os log not stored: %s", type(e).__name__)
+
+
+@router.post("/log", status_code=204, operation_id="os_log")
+async def post_log(
+    request: Request, background: BackgroundTasks, auth: AuthContext = Depends(get_human_session)
+) -> Response:
+    """Typed lines and a settled task's work log, from the app, for the Spark store. Signed in only. Before the
+    204 only cheap work runs: the capped read (413 over LOG_MAX_BYTES), JSON and `installId` (400), the flag and
+    the rate limit. Everything else runs after it (`_store_log`). Any well-formed body is 204, stored or dropped
+    (flag off, opted out, rate limited, a bad part). The user is the caller, never the body.
+    `sessionId` and `task.id` are untrusted labels, checked for shape only and not verified to belong to the
+    caller: any join on session_id or task_id must also match user_id."""
+    body, install_id = await _capped_body(request, LOG_MAX_BYTES, "invalid_log")
+    if not settings.SPARK_STORE_ENABLED:
+        return Response(status_code=204)
+    if not _LOG_PER_USER.allow(auth.user_id):
+        put_metric("os.log_rate_limited")
+        return Response(status_code=204)
+    meta = spark_events.common_properties(body)
+    background.add_task(_store_log, auth.user_id, install_id, body, meta)
     return Response(status_code=204)

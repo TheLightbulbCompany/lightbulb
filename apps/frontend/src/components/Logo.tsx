@@ -73,44 +73,6 @@ export function LogoMark({ className }: { className?: string }) {
   );
 }
 
-/**
- * The holding company mark: the same lamp, lit. Used only where the parent is
- * the subject — the footer, an about page, an investor document. Never a
- * favicon: below 40px the needles fill in and the fan reads as a smudge (§04).
- */
-export function SunriseMark({ className }: { className?: string }) {
-  const rays: React.ReactElement[] = [];
-  // 53 needles, 5° apart, symmetric about vertical — a 260° sweep (§02).
-  for (let i = 0; i < 53; i += 1) {
-    const a = ((-130 + i * 5 - 90) * Math.PI) / 180;
-    const outer = i % 2 === 0 ? 96 : 80;
-    const nx = Math.cos(a);
-    const ny = Math.sin(a);
-    const x1 = (100 + nx * 62 - ny * 1.1).toFixed(2);
-    const y1 = (100 + ny * 62 + nx * 1.1).toFixed(2);
-    const x2 = (100 + nx * 62 + ny * 1.1).toFixed(2);
-    const y2 = (100 + ny * 62 - nx * 1.1).toFixed(2);
-    const tx = (100 + nx * outer).toFixed(2);
-    const ty = (100 + ny * outer).toFixed(2);
-    rays.push(<path key={i} d={`M ${x1},${y1} L ${tx},${ty} L ${x2},${y2} Z`} />);
-  }
-  return (
-    <svg
-      className={["brand-sunrise", className].filter(Boolean).join(" ")}
-      viewBox="0 0 200 200"
-      role="img"
-      aria-label="The Lightbulb Company"
-      focusable="false"
-    >
-      <g fill="var(--brass)">{rays}</g>
-      <path d={GLASS_PATH} fill="var(--cream)" stroke="var(--midnight)" strokeWidth="3" />
-      <Filament stroke="var(--midnight)" />
-      <Collar fill="var(--midnight)" tip="var(--brass)" />
-      <rect x="46" y="184" width="108" height="2.6" fill="var(--brass)" />
-    </svg>
-  );
-}
-
 export function Logo({
   tone = "midnight",
   size = "md",

@@ -15,8 +15,6 @@ const eslintConfig = defineConfig([
     "next-env.d.ts",
     // Playwright generated files
     "test-results/**",
-    // A stale copy of the removed DCV live view's SDK (gitignored), not our source.
-    "public/nice-dcv-web-client-sdk/**",
   ]),
   // CEO A2: prevent the public client bundle from importing admin code.
   // The middleware host gate (CEO A1) keeps unauth'd users out at the edge;

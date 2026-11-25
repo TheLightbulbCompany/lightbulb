@@ -22,9 +22,6 @@ const apiOrigin = (() => {
   }
 })();
 
-// Canvas frames apps: published ones on the apps domain, pre-publish opens on the Vercel preview URL.
-const APPS_DOMAIN = process.env.NEXT_PUBLIC_APPS_DOMAIN || "apps.thelightbulb.company";
-
 // A Clerk publishable key is `pk_(live|test)_<base64 of "<frontend-api-host>$">`,
 // so the instance's own host comes out of the key this build was compiled with —
 // more robust than a literal that silently goes stale. Anything unparseable
@@ -44,10 +41,8 @@ const clerkOrigins = (() => {
 // only reports violations to the console, so we can refine the allowlist from
 // real traffic before switching to an enforcing `Content-Security-Policy`
 // header. PostHog is same-origin (reverse-proxied via /ingest below), so only
-// the cross-origin vendors need listing: Clerk (auth), Stripe (billing),
-// Cloudflare Turnstile (Clerk bot-check), Vercel (analytics scripts), plus our
-// own REST API + AppSync Events realtime endpoint for connect-src.
-// are required until a nonce-based policy is wired (a follow-up before enforcing).
+// the cross-origin vendors need listing: Clerk (auth), Cloudflare Turnstile
+// (Clerk bot-check), Vercel (analytics scripts), plus our own REST API for connect-src.
 //
 // Termly (app.termly.io) needs BOTH script-src and connect-src: the SDK is a
 // cross-origin <script> (components/legal/TermlyEmbed.tsx) which then fetches
@@ -58,7 +53,7 @@ const clerkOrigins = (() => {
 // without these two entries is exactly the trap this note exists to prevent.
 //
 // Only OUR API/Clerk origins are derived above. Every third-party origin below
-// third-party origin below stays a literal on purpose — Stripe, Termly,
+// third-party origin below stays a literal on purpose — Termly, OpenAI,
 // Cloudflare Turnstile, Vercel and PostHog are not ours to rename, and there is
 // nothing to derive them from.
 const reportOnlyCsp = [
@@ -66,18 +61,12 @@ const reportOnlyCsp = [
   "base-uri 'self'",
   "object-src 'none'",
   "frame-ancestors 'self'",
-  `script-src 'self' 'unsafe-inline' 'unsafe-eval' https://js.stripe.com https://connect-js.stripe.com https://*.clerk.accounts.dev ${clerkOrigins.join(" ")} https://challenges.cloudflare.com https://va.vercel-scripts.com https://app.termly.io`,
+  `script-src 'self' 'unsafe-inline' 'unsafe-eval' https://*.clerk.accounts.dev ${clerkOrigins.join(" ")} https://challenges.cloudflare.com https://va.vercel-scripts.com https://app.termly.io`,
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data: blob: https:",
   "font-src 'self' data:",
-  `connect-src 'self' https://*.clerk.accounts.dev ${clerkOrigins.join(" ")} ${apiOrigin} https://api.stripe.com wss://*.appsync-realtime-api.us-east-1.amazonaws.com https://us.i.posthog.com https://us-assets.i.posthog.com https://app.termly.io https://api.openai.com https://*.livekit.cloud wss://*.livekit.cloud`,
-  // blob: is required for <iframe src="blob:...">, the PDF preview path (both
-  // the new FileViewerDialog/FileContentViewer PDF branch and the pre-existing
-  // Teams ArtifactViewerDialog use it) — measured live: without it, Chrome logs
-  // a real `frame-src` CSP violation for a blob-URL iframe even though the
-  // page that created the blob is same-origin. Report-Only means it doesn't
-  // block today, but it would the moment this header is promoted to enforcing.
-  `frame-src 'self' blob: https://js.stripe.com https://connect-js.stripe.com https://hooks.stripe.com https://challenges.cloudflare.com https://*.clerk.accounts.dev ${clerkOrigins.join(" ")} https://*.${APPS_DOMAIN} https://*.vercel.app`,
+  `connect-src 'self' https://*.clerk.accounts.dev ${clerkOrigins.join(" ")} ${apiOrigin} https://us.i.posthog.com https://us-assets.i.posthog.com https://app.termly.io https://api.openai.com`,
+  `frame-src 'self' https://challenges.cloudflare.com https://*.clerk.accounts.dev ${clerkOrigins.join(" ")}`,
   "worker-src 'self' blob:",
   "manifest-src 'self'",
   "form-action 'self'",
@@ -127,10 +116,6 @@ const nextConfig: NextConfig = {
   // protection did nothing (vercel.com/changelog/skew-protection-now-supports-prebuilt-deployments). With it, an old tab's lazy chunks keep resolving
   // against its own deployment until DeployRefresh reloads it.
   deploymentId: BUILD_ID,
-
-  // @lightbulb/shared ships TypeScript source (no build step) — Next must
-  // transpile it like first-party code.
-  transpilePackages: ["@lightbulb/shared"],
 
   // Rewrites barrel imports to direct module paths so one named import doesn't
   // drag in a package's whole surface. Only packages whose barrel actually

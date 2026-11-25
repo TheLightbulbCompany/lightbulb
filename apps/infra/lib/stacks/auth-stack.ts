@@ -15,20 +15,12 @@ export interface AuthSecrets {
 
 export interface AuthStackProps extends cdk.StackProps {
   environment: string;
-  /** Optional initial secret values (for local dev — production sets these manually). */
-  secretValues?: Record<string, string>;
 }
 
 export class AuthStack extends cdk.Stack {
   public readonly secrets: AuthSecrets;
   public readonly kmsKey: kms.Key;
   public readonly paperclipServiceTokenKey: secretsmanager.Secret;
-  public readonly wsInternalSecret: secretsmanager.Secret;
-  public readonly networkProofKey: secretsmanager.Secret;
-  public readonly gogKeyringPassword: secretsmanager.Secret;
-  public readonly metronomeApiKey: secretsmanager.Secret;
-  public readonly metronomeWebhookSecret: secretsmanager.Secret;
-  public readonly sesIngestSecret: secretsmanager.Secret;
   constructor(scope: Construct, id: string, props: AuthStackProps) {
     super(scope, id, props);
 
@@ -45,29 +37,20 @@ export class AuthStack extends cdk.Stack {
       alias: `lightbulb-${env}-general`,
     });
 
-    // Helper to create a CDK-managed secret.
-    // If secretValues is provided (local dev), use that value instead of random generation.
-    // If generateConfig is provided, CDK will generate a random string per the config
-    // on first create (ignored when an initialValue is seeded for local dev).
-    // Optional description overrides the default `Isol8 ${env} ${secretName}` shape.
-    const secretVals = props.secretValues ?? {};
+    // Helper to create a CDK-managed secret. If generateConfig is provided, CDK
+    // generates a random string on first create; otherwise the operator sets the value.
     const createSecret = (
       logicalId: string,
       secretName: string,
       generateConfig?: secretsmanager.SecretStringGenerator,
       description?: string,
     ): secretsmanager.Secret => {
-      const initialValue = secretVals[secretName];
       const make = (id: string, prefix: string) =>
         new secretsmanager.Secret(this, id, {
           secretName: `${prefix}/${env}/${secretName}`,
           description: description ?? `Lightbulb ${env} ${secretName}`,
           encryptionKey: this.kmsKey,
-          ...(initialValue
-            ? { secretStringValue: cdk.SecretValue.unsafePlainText(initialValue) }
-            : generateConfig
-              ? { generateSecretString: generateConfig }
-              : {}),
+          ...(generateConfig ? { generateSecretString: generateConfig } : {}),
         });
 
       // The `Lightbulb` suffix on the logical id is load-bearing, not leftover
@@ -114,106 +97,15 @@ export class AuthStack extends cdk.Stack {
       "Symmetric secret for signing/verifying OpenClaw service-token JWTs (used by paperclip_provisioning + Lambda Authorizer)",
     );
 
-    // Shared secret (header x-lightbulb-ws-internal) that authenticates internal
-    // callers of backend routes the public HTTP API Gateway $default route — which
-    // proxies to the same ALB with no authorizer — can also reach: the EventBridge
-    // connection that posts provision status events (routers/container.py) and one
-    // backend task forwarding a network op to another (routers/network_route.py).
-    // Same CMK + createSecret shape as the service-token key; read by service-stack
-    // (the backend and that connection, which needs a redeploy to pick up a rotation).
-    this.wsInternalSecret = createSecret(
-      "WsInternalSecret",
-      "ws_internal_secret",
-      { passwordLength: 64, excludePunctuation: true },
-      "Shared secret the WebSocket Lambdas attach so the backend /ws/* endpoints can distinguish them from forged public-gateway callers.",
-    );
-
-    // Seeds the Ed25519 key that signs `lightbulb login` proofs (backend network_proof: the
-    // SHA-256 of this string is the private key). Its PUBLIC half is baked into the engine and
-    // handed to each runtime; rotating it signs every computer out (they run lightbulb login).
-    this.networkProofKey = createSecret(
-      "NetworkProofKey",
-      "network_proof_key",
-      { passwordLength: 64, excludePunctuation: true },
-      "Seed of the Ed25519 key that signs lightbulb login proofs. Rotating it signs every computer out.",
-    );
-
-    // Metronome API key, shared by the backend's lifecycle + gating modules
-    // (customer/contract provisioning, top-up funding, the low-balance
-    // webhook's owner resolution, balance display) AND the meter Lambda's
-    // direct usage ingest (BedrockMeterStack imports it by name —
-    // fromSecretNameV2 — so renaming it breaks the meter). The api key is a
-    // SANDBOX token in dev (Metronome is token-scoped: same base URL, the
-    // token decides sandbox vs prod); prod gets a prod token after the sales
-    // engagement.
-    // CDK generates a random placeholder on first create; the operator
-    // overwrites it out-of-band via `aws secretsmanager put-secret-value`
-    // with the real Metronome token. Same CMK as the other auth secrets, so
-    // the backend task role's KmsDecryptForSecrets + wildcard SecretsAccess
-    // already cover read.
-    this.metronomeApiKey = createSecret(
-      "MetronomeApiKey",
-      "metronome_api_key",
-      { passwordLength: 48, excludePunctuation: true },
-      "Metronome API bearer token (sandbox in dev, prod after sales). Overwritten out-of-band with the real token.",
-    );
-    this.metronomeWebhookSecret = createSecret(
-      "MetronomeWebhookSecret",
-      "metronome_webhook_secret",
-      { passwordLength: 48, excludePunctuation: true },
-      "HMAC key for verifying Metronome-Webhook-Signature. Overwritten out-of-band with the value from the Metronome dashboard webhook config.",
-    );
-
-    // Shared secret the SES-ingest Lambda (ses-inbound-stack.ts, prod-stage
-    // only) presents as the X-Lightbulb-SES-Secret header on its POST
-    // to /webhooks/ses-inbound; the backend compares it in constant time (see
-    // routers/ses_inbound.py). Created unconditionally in every env — same
-    // posture as wsInternalSecret — but only ever actually READ
-    // by the prod SesInboundStack (the ingest Lambda posts to the fixed prod
-    // backend hostname regardless of which env's containers minted the
-    // address). Harmless placeholder in envs where the SES stack doesn't
-    // exist. Same CMK as the other auth secrets.
-    this.sesIngestSecret = createSecret(
+    // ponytail: one-deploy pin. Spark does not use this secret, but the retired
+    // lightbulb-prod-ses-inbound stack (not in app.ts, still deployed) imports its
+    // export. Delete it and these lines once that stack is handled.
+    const sesIngestSecret = createSecret(
       "SesIngestSecret",
       "ses_ingest_secret",
       { passwordLength: 64, excludePunctuation: true },
       "Shared secret the SES-ingest Lambda attaches so /webhooks/ses-inbound can distinguish it from a forged caller.",
     );
-
-    // Password the gog CLI's file-keyring backend uses to encrypt/decrypt the
-    // owner's Google OAuth keyring on EFS (GOG_KEYRING_BACKEND=file +
-    // GOG_KEYRING_PASSWORD). The SAME value is injected into both the backend
-    // service (which materializes the keyring by running gog) and every
-    // per-user OpenClaw container (which reads it at runtime).
-    //
-    // CRITICAL: this value must be STABLE forever. If it ever changes, every
-    // keyring already written to EFS becomes undecryptable and owners would
-    // have to re-authorize Google. CDK generates the random string only on
-    // first create (CFN emits just GenerateSecretString and never re-runs it
-    // on stack updates), and we deliberately do NOT enable rotation. Punctuation
-    // is excluded because the value is passed through the container environment,
-    // where shell-special characters would be hazardous.
-    this.gogKeyringPassword = createSecret(
-      "GogKeyringPassword",
-      "gog-keyring-password",
-      { passwordLength: 64, excludePunctuation: true },
-      "Stable password for the gog CLI file-keyring backend (Google OAuth keyring on EFS). Never rotate - rotation orphans every existing keyring.",
-    );
-
-    // ponytail: one-deploy pins. Spark uses none of these six secrets, but the service stack's
-    // deployed template still imports them and deploys after this stack, so CloudFormation refuses
-    // to drop the exports this time. ses_ingest_secret is also imported by lightbulb-prod-ses-inbound,
-    // which is no longer deployed but still exists. Delete them (and these lines) in a follow-up
-    // after one green deploy and after the hand cleanup of the retired stacks.
-    for (const pinned of [
-      this.wsInternalSecret,
-      this.networkProofKey,
-      this.metronomeApiKey,
-      this.metronomeWebhookSecret,
-      this.sesIngestSecret,
-      this.gogKeyringPassword,
-    ]) {
-      this.exportValue(pinned.secretArn);
-    }
+    this.exportValue(sesIngestSecret.secretArn);
   }
 }

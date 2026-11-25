@@ -48,12 +48,6 @@ export class ApiStack extends cdk.Stack {
     // =========================================================================
 
     const httpApiDomain = isProd ? `api.${rootDomain}` : `api-${env}.${rootDomain}`;
-    // Paperclip ("Teams") used to have its own API Gateway custom-domain
-    // mapping here (companyApiDomain → CompanyHttpDomain). It now lives
-    // on Vercel — the frontend project has a host-conditional rewrite
-    // that proxies {env}.company.isol8.co through to /__paperclip_proxy__
-    // on this same API Gateway. No second custom domain, no per-host
-    // dispatch in the backend; the proxy is reached at its normal path.
     const frontendUrl = isProd
       ? `https://${rootDomain}`
       : `https://${env}.${rootDomain}`;
@@ -95,7 +89,7 @@ export class ApiStack extends cdk.Stack {
       name: `lightbulb-${env}-vpc-link`,
       securityGroupIds: [props.albSecurityGroup.securityGroupId],
       subnetIds: props.vpc.selectSubnets({
-        subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS,
+        subnetType: ec2.SubnetType.PRIVATE_ISOLATED,
       }).subnetIds,
     });
 
@@ -112,12 +106,6 @@ export class ApiStack extends cdk.Stack {
         connectionId: vpcLinkV2.ref,
         payloadFormatVersion: "1.0",
         timeoutInMillis: 30000,
-        requestParameters: {
-          // The WAF per-IP rate rule (network-stack.ts) keys on this. `overwrite`
-          // replaces anything the client sent, unlike X-Forwarded-For, which
-          // API Gateway only appends to.
-          "overwrite:header.X-Lightbulb-Client-Ip": "$context.identity.sourceIp",
-        },
       },
     );
 
@@ -196,20 +184,13 @@ export class ApiStack extends cdk.Stack {
         }),
       });
 
-      // The Paperclip ("Teams") public hostname is served via Vercel
-      // rewrites, not a dedicated API Gateway custom domain. Vercel
-      // routes
-      //   {env}.company.isol8.co → api[-{env}].isol8.co/__paperclip_proxy__/...
-      // so the request still arrives at this same API Gateway, just on
-      // the api[-{env}].isol8.co host with the proxy prefix in the URL
-      // path. The DNS A-record for the Paperclip hostname lives in
-      // DnsStack and points at Vercel's anycast IP.
       this.httpApiUrl = `https://${httpApiDomain}`;
     } else {
       this.httpApiUrl = `https://${httpApi.ref}.execute-api.${this.region}.amazonaws.com/${env}`;
     }
 
-    // DynamoDB Gateway Endpoint — free, avoids NAT for DynamoDB traffic
+    // DynamoDB Gateway Endpoint — free, keeps DynamoDB traffic on the AWS network.
+    // It belongs in the network stack, but moving it replaces the endpoint.
     new ec2.GatewayVpcEndpoint(this, "DynamoDbEndpoint", {
       service: ec2.GatewayVpcEndpointAwsService.DYNAMODB,
       vpc: props.vpc,
@@ -219,7 +200,7 @@ export class ApiStack extends cdk.Stack {
     // API Gateway account-level CloudWatch role (ACCOUNT singleton)
     // =========================================================================
     // Access/execution log delivery for every API Gateway in the account —
-    // including the WS stage's accessLogSettings above — silently delivers
+    // including this stage's accessLogSettings above — silently delivers
     // NOTHING when the account-level CloudWatch role is missing or points
     // at a deleted IAM role (the account setting referenced a dangling
     // role and both envs' access-log groups stayed empty despite traffic).

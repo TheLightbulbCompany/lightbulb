@@ -100,15 +100,15 @@ Re-runnable ops tools in `apps/backend/scripts/`:
 environments, dev and prod, and no staging. `apps/infra/lib/domains.ts` is the truth for hostnames; the product
 domain is `thelightbulb.company` in both environments.
 
-The stacks (`apps/infra/lib/stacks/`): network (VPC, ALB, NAT), dns (hosted zone, wildcard cert), auth (Secrets
-Manager and the KMS key), container (the ECS cluster; its AgentCore memory, browser and owner-role resources are
-unused leftovers), service (the backend on ECS Fargate), api (the `api[-dev]` HTTP API on API Gateway, VPC Link V2
+The stacks (`apps/infra/lib/stacks/`): network (VPC, ALB; no NAT), dns (hosted zone, wildcard cert), auth (Secrets
+Manager and the KMS key), container (the ECS cluster and its task-event
+trail), service (the backend on ECS Fargate), api (the `api[-dev]` HTTP API on API Gateway, VPC Link V2
 to the ALB), observability (the backend's alarms), database, and **spark-store** (`spark-store-stack.ts`: an S3
 bucket of Iceberg tables, three Athena workgroups, and one Firehose delivery stream per table).
 
-The database stack holds five DynamoDB tables, named `lightbulb-{env}-{suffix}`: `users` (the Spark account),
-`containers` (voice-session rows, found through `status-index`), `spark-transcripts`, `webhook-event-dedup` (Stripe
-and Clerk) and `admin-actions` (the admin audit log).
+The database stack holds four DynamoDB tables, named `lightbulb-{env}-{suffix}`: `users` (the Spark account),
+`containers` (voice-session rows, found through `status-index`), `spark-transcripts` and `webhook-event-dedup` (Stripe
+and Clerk).
 
 Stacks pass secret names and KMS key ARNs, not objects, to avoid cross-stack KMS grant cycles. Environment
 variables are set by CDK; do not set them by hand.

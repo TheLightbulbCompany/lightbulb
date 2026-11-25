@@ -1,6 +1,6 @@
 import * as cdk from "aws-cdk-lib";
 import * as kms from "aws-cdk-lib/aws-kms";
-import { Match, Template } from "aws-cdk-lib/assertions";
+import { Template } from "aws-cdk-lib/assertions";
 import { DatabaseStack } from "../lib/stacks/database-stack";
 
 function buildStack(environment: "dev" | "prod"): Template {
@@ -16,91 +16,6 @@ function buildStack(environment: "dev" | "prod"): Template {
   return Template.fromStack(databaseStack);
 }
 
-describe("DatabaseStack — admin-actions table", () => {
-  let template: Template;
-  beforeAll(() => {
-    template = buildStack("dev");
-  });
-
-  test("creates isol8-{env}-admin-actions with composite key", () => {
-    template.hasResourceProperties("AWS::DynamoDB::Table", {
-      TableName: "lightbulb-dev-admin-actions",
-      KeySchema: [
-        { AttributeName: "admin_user_id", KeyType: "HASH" },
-        { AttributeName: "timestamp_action_id", KeyType: "RANGE" },
-      ],
-      BillingMode: "PAY_PER_REQUEST",
-    });
-  });
-
-  test("admin-actions has target-timestamp GSI for per-target audit queries", () => {
-    template.hasResourceProperties("AWS::DynamoDB::Table", {
-      TableName: "lightbulb-dev-admin-actions",
-      GlobalSecondaryIndexes: Match.arrayWith([
-        Match.objectLike({
-          IndexName: "target-timestamp-index",
-          KeySchema: [
-            { AttributeName: "target_user_id", KeyType: "HASH" },
-            { AttributeName: "timestamp_action_id", KeyType: "RANGE" },
-          ],
-        }),
-      ]),
-    });
-  });
-
-  test("admin-actions uses customer-managed KMS encryption (matches other tables)", () => {
-    template.hasResourceProperties("AWS::DynamoDB::Table", {
-      TableName: "lightbulb-dev-admin-actions",
-      SSESpecification: Match.objectLike({
-        SSEEnabled: true,
-        SSEType: "KMS",
-      }),
-    });
-  });
-
-  test("admin-actions has point-in-time recovery enabled", () => {
-    template.hasResourceProperties("AWS::DynamoDB::Table", {
-      TableName: "lightbulb-dev-admin-actions",
-      PointInTimeRecoverySpecification: { PointInTimeRecoveryEnabled: true },
-    });
-  });
-
-  test("admin-actions has NO TTL (audit rows kept forever)", () => {
-    // CDK omits the TimeToLiveSpecification entirely when no TTL is set.
-    // Assert it's absent on this specific table.
-    const tables = template.findResources("AWS::DynamoDB::Table", {
-      Properties: { TableName: "lightbulb-dev-admin-actions" },
-    });
-    const tableLogicalIds = Object.keys(tables);
-    expect(tableLogicalIds).toHaveLength(1);
-    const props = tables[tableLogicalIds[0]].Properties;
-    expect(props.TimeToLiveSpecification).toBeUndefined();
-  });
-
-  test("dev environment uses DESTROY removal policy (matches other dev tables)", () => {
-    const tables = template.findResources("AWS::DynamoDB::Table", {
-      Properties: { TableName: "lightbulb-dev-admin-actions" },
-    });
-    const logicalId = Object.keys(tables)[0];
-    expect(tables[logicalId].DeletionPolicy).toBe("Delete");
-  });
-});
-
-describe("DatabaseStack — admin-actions table — prod", () => {
-  let template: Template;
-  beforeAll(() => {
-    template = buildStack("prod");
-  });
-
-  test("prod environment uses RETAIN removal policy", () => {
-    const tables = template.findResources("AWS::DynamoDB::Table", {
-      Properties: { TableName: "lightbulb-prod-admin-actions" },
-    });
-    const logicalId = Object.keys(tables)[0];
-    expect(tables[logicalId].DeletionPolicy).toBe("Retain");
-  });
-});
-
 describe.each(["dev", "prod"] as const)("DatabaseStack — retired orphan tables (%s)", (environment) => {
   test("no construct remains for tables nothing on main reads", () => {
     const names = Object.values(buildStack(environment).findResources("AWS::DynamoDB::Table")).map(
@@ -115,9 +30,16 @@ describe.each(["dev", "prod"] as const)("DatabaseStack — retired orphan tables
       "marketplace-payout-accounts",
       "marketplace-takedowns",
       "marketplace-sellers",
+      "admin-actions",
     ]) {
       expect(names).not.toContain(`lightbulb-${environment}-${suffix}`);
     }
+  });
+});
+
+describe("DatabaseStack — exports", () => {
+  test("publishes no CloudFormation exports (nothing imports them)", () => {
+    expect(buildStack("prod").toJSON().Outputs ?? {}).toEqual({});
   });
 });
 
@@ -130,9 +52,7 @@ describe("DatabaseStack — no join-links table", () => {
 });
 
 describe("DatabaseStack — containers table", () => {
-  test("per-task AgentCore session rows expire by TTL (session_ttl) in dev and prod", () => {
-    // Only `__session__#<owner>#task#<task>` rows carry session_ttl (container_repo): workspace
-    // rows and container rows never do, so the TTL is inert for them.
+  test("Spark voice-session rows expire by TTL (session_ttl) in dev and prod", () => {
     buildStack("dev").hasResourceProperties("AWS::DynamoDB::Table", {
       TableName: "lightbulb-dev-containers",
       TimeToLiveSpecification: { AttributeName: "session_ttl", Enabled: true },

@@ -1,5 +1,5 @@
 import * as cdk from "aws-cdk-lib";
-import { Match, Template } from "aws-cdk-lib/assertions";
+import { Template } from "aws-cdk-lib/assertions";
 import { AuthStack } from "../lib/stacks/auth-stack";
 
 function buildStack(environment: "dev" | "prod"): Template {
@@ -12,32 +12,17 @@ function buildStack(environment: "dev" | "prod"): Template {
   return Template.fromStack(authStack);
 }
 
-describe("AuthStack — gog file-keyring password secret", () => {
+describe("AuthStack secrets", () => {
   const template = buildStack("dev");
 
-  test("creates the gog-keyring-password secret encrypted with the general CMK", () => {
-    template.hasResourceProperties("AWS::SecretsManager::Secret", {
-      Name: "lightbulb/dev/gog-keyring-password",
-      // CDK emits only GenerateSecretString on first create — the random value
-      // is never regenerated on stack updates, keeping the keyring password
-      // stable for the life of the stack.
-      GenerateSecretString: Match.objectLike({
-        PasswordLength: 64,
-        ExcludePunctuation: true,
-      }),
-    });
+  test("keeps ses_ingest_secret, which the retired ses-inbound stack still imports", () => {
+    template.hasResourceProperties("AWS::SecretsManager::Secret", { Name: "lightbulb/dev/ses_ingest_secret" });
   });
 
-  test("does NOT configure rotation on the gog-keyring-password secret", () => {
-    // Rotating this secret would orphan every keyring already written to EFS,
-    // so there must be no RotationSchedule attached to it.
-    template.resourceCountIs("AWS::SecretsManager::RotationSchedule", 0);
-  });
-
-  test("does not retain the retired platform-ops signing secret or export", () => {
+  test("drops the secrets Spark does not use", () => {
     const rendered = JSON.stringify(template.toJSON());
-    expect(rendered).not.toContain("platform_ops_token_key");
-    expect(rendered).not.toContain("PlatformOpsTokenKey");
+    for (const gone of ["gog-keyring-password", "ws_internal_secret", "network_proof_key", "metronome_api_key", "platform_ops_token_key"]) {
+      expect(rendered).not.toContain(gone);
+    }
   });
 });
-

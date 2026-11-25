@@ -86,7 +86,7 @@ describe("deploy.yml prod promotion gate", () => {
   });
 
   it("gates the prod frontend release specifically", () => {
-    // The user-visible half (isol8.co, www, admin). It is a GitHubActionStep,
+    // The user-visible half (the apex, www, admin). It is a GitHubActionStep,
     // so it is gated by patch rather than by stage jobSettings — a separate
     // mechanism, worth its own assertion.
     expect(jobs.has("prod-DeployVercelProd")).toBe(true);
@@ -111,7 +111,7 @@ describe("deploy.yml prod promotion gate", () => {
 });
 
 describe("alarms deploy after the services they watch", () => {
-  it.each(["dev", "prod"])("%s observability needs the %s service deploy (W89 pages on a missing engine target)", (env) => {
+  it.each(["dev", "prod"])("%s observability needs the %s service deploy (its alarms watch the backend service)", (env) => {
     const block = jobBlocks(readFileSync(DEPLOY_YML, "utf8")).get(`${env}-lightbulb-${env}-observability-Deploy`);
     expect(block).toBeDefined();
     expect(block).toContain(`- ${env}-lightbulb-${env}-service-Deploy`);

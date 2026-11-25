@@ -7,7 +7,7 @@ import * as elbv2 from "aws-cdk-lib/aws-elasticloadbalancingv2";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as logs from "aws-cdk-lib/aws-logs";
 import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
-import { allTableArns, resourcePrefix, sparkStoreNames, tableName, tablePrefix } from "../table-names";
+import { resourcePrefix, sparkStoreNames, tableName, tablePrefix } from "../table-names";
 import { Construct } from "constructs";
 import { DEV_SPOT } from "./container-stack";
 import { ROOT_DOMAIN } from "../domains";
@@ -40,7 +40,7 @@ export interface ServiceStackProps extends cdk.StackProps {
   targetGroup: elbv2.IApplicationTargetGroup;
   albSecurityGroup: ec2.ISecurityGroup;
   // NOTE: this stack deliberately takes NO database table constructs. Every
-  // table is reached by NAME (tableName() + the DynamoDbOwnedTables grant): a
+  // table is reached by NAME (SPARK_TABLES + the DynamoDbOwnedTables grant): a
   // construct would create a cross-stack Export, and CloudFormation cannot
   // change an exported value while anything imports it.
   /** Pass secret names (strings) to avoid cross-stack KMS auto-grant cycles. */
@@ -49,6 +49,9 @@ export interface ServiceStackProps extends cdk.StackProps {
   kmsKeyArn: string;
   cluster: ecs.ICluster;
 }
+
+/** The DynamoDB tables the backend reads and writes (DatabaseStack). */
+const SPARK_TABLES = ["users", "containers", "spark-transcripts", "webhook-event-dedup"];
 
 export class ServiceStack extends cdk.Stack {
   public readonly service: ecs.FargateService;
@@ -91,7 +94,8 @@ export class ServiceStack extends cdk.Stack {
       description: `Lightbulb ${env} Fargate task role`,
     });
 
-    // Tables by NAME, one wildcard pair over this env's prefix (no cross-stack export).
+    // Tables by NAME (no cross-stack export), each with its indexes (containers' status-index).
+    const tableArn = (suffix: string) => `arn:aws:dynamodb:${this.region}:${this.account}:table/${tableName(env, suffix)}`;
     this.taskRole.addToPolicy(
       new iam.PolicyStatement({
         sid: "DynamoDbOwnedTables",
@@ -101,14 +105,13 @@ export class ServiceStack extends cdk.Stack {
           "dynamodb:UpdateItem",
           "dynamodb:DeleteItem",
           "dynamodb:Query",
-          "dynamodb:Scan",
           "dynamodb:BatchGetItem",
           "dynamodb:BatchWriteItem",
           "dynamodb:ConditionCheckItem",
           "dynamodb:TransactWriteItems",
           "dynamodb:DescribeTable",
         ],
-        resources: allTableArns(this.region, this.account, env),
+        resources: SPARK_TABLES.flatMap((t) => [tableArn(t), `${tableArn(t)}/index/*`]),
       }),
     );
 
@@ -194,14 +197,15 @@ export class ServiceStack extends cdk.Stack {
       ],
     });
 
-    // Allow execution role to pull secrets for container injection
+    // The execution role pulls exactly the secrets the task definition injects. Secrets Manager
+    // ARNs end in a random six-character suffix, hence the `-*`.
     taskExecutionRole.addToPolicy(
       new iam.PolicyStatement({
         sid: "SecretsManagerForEcs",
         actions: ["secretsmanager:GetSecretValue"],
-        resources: [
-          `arn:aws:secretsmanager:${this.region}:${this.account}:secret:lightbulb/${env}/*`,
-        ],
+        resources: Object.values(props.secretNames).map(
+          (name) => `arn:aws:secretsmanager:${this.region}:${this.account}:secret:${name}-*`,
+        ),
       }),
     );
 
@@ -307,8 +311,9 @@ export class ServiceStack extends cdk.Stack {
     const taskDef = new ecs.FargateTaskDefinition(this, "TaskDef", {
       family: `lightbulb-${env}-backend`,
       runtimePlatform: backendRuntimePlatform,
-      cpu: env === "prod" ? 1024 : 512,
-      memoryLimitMiB: 2048,
+      // Prod ran at under 1% CPU and ~210 MB on 1 vCPU / 2 GB (7-day average, 2026-11-25).
+      cpu: 512,
+      memoryLimitMiB: env === "prod" ? 1024 : 2048,
       taskRole: this.taskRole,
       executionRole: taskExecutionRole,
     });

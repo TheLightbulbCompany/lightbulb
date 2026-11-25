@@ -66,20 +66,23 @@ describe('decideCanonicalHostRedirect (SEO host consolidation)', () => {
 });
 
 describe('decideAdminHostRouting (admin host gate)', () => {
-  it('redirects an old /admin/<path> link on an admin host to /<path>', () => {
+  // Owner, 2026-11-25: old links never redirect, they are a 404.
+  it('returns 404 for an old /admin/<path> link on an admin host', () => {
     expect(
       decideAdminHostRouting('admin.thelightbulb.company', '/admin/spark', ADMIN_HOSTS),
-    ).toEqual({ kind: 'redirect', to: '/spark' });
+    ).toEqual({ kind: 'not_found' });
   });
-  it('redirects /admin on an admin host to /', () => {
+  it('returns 404 for /admin on an admin host', () => {
     expect(
       decideAdminHostRouting('admin.thelightbulb.company', '/admin', ADMIN_HOSTS),
-    ).toEqual({ kind: 'redirect', to: '/' });
+    ).toEqual({ kind: 'not_found' });
   });
-  it('redirects /voice (the sign-in fallback) on an admin host to /', () => {
-    expect(
-      decideAdminHostRouting('admin.thelightbulb.company', '/voice', ADMIN_HOSTS),
-    ).toEqual({ kind: 'redirect', to: '/' });
+  it('never answers with a redirect, on any host or path', () => {
+    for (const host of ['admin.thelightbulb.company', 'thelightbulb.company', 'evil.example', null]) {
+      for (const path of ['/', '/admin', '/admin/users', '/spark', '/voice', '/chat', '/sign-in']) {
+        expect(decideAdminHostRouting(host, path, ADMIN_HOSTS).kind).not.toBe('redirect');
+      }
+    }
   });
   it('rewrites the root of an admin host to /admin', () => {
     expect(
@@ -122,8 +125,8 @@ describe('decideAdminHostRouting (admin host gate)', () => {
 
   it('allows admin.localhost:3000 (default admin host) for local dev', () => {
     expect(
-      decideAdminHostRouting('admin.localhost:3000', '/admin/users', ADMIN_HOSTS),
-    ).toEqual({ kind: 'redirect', to: '/users' });
+      decideAdminHostRouting('admin.localhost:3000', '/users', ADMIN_HOSTS),
+    ).toEqual({ kind: 'rewrite', to: '/admin/users' });
   });
 
   it('treats null/missing host as non-admin (404 on /admin)', () => {
@@ -147,8 +150,8 @@ describe('decideAdminHostRouting (admin host gate)', () => {
 
   it('is case-insensitive on host comparison', () => {
     expect(
-      decideAdminHostRouting('ADMIN.THELIGHTBULB.COMPANY', '/admin/users', ADMIN_HOSTS),
-    ).toEqual({ kind: 'redirect', to: '/users' });
+      decideAdminHostRouting('ADMIN.THELIGHTBULB.COMPANY', '/users', ADMIN_HOSTS),
+    ).toEqual({ kind: 'rewrite', to: '/admin/users' });
   });
 
   // ---------------------------------------------------------------------------

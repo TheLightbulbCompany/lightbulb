@@ -38,7 +38,6 @@ const ADMIN_HOSTS = parseAdminHosts(process.env.NEXT_PUBLIC_ADMIN_HOSTS);
 export type AdminHostDecision =
   | { kind: "passthrough" }
   | { kind: "not_found" }
-  | { kind: "redirect"; to: string }
   | { kind: "rewrite"; to: string };
 
 // Paths that must passthrough on admin hosts instead of being rewritten under
@@ -57,9 +56,10 @@ function isAdminHostPassthroughPath(pathname: string): boolean {
  * Defense in depth (CEO A1): unknown hosts hitting `/admin*` get a 404, not a
  * 403 — we don't want host-header probes to confirm the path even exists.
  * On an admin host the admin lives at the root: `/<path>` is rewritten to
- * `/admin/<path>` (the address bar keeps the short path) and the old
- * `/admin/<path>` links redirect to `/<path>`. Clerk auth paths, Next
- * internals and API routes are left alone (see isAdminHostPassthroughPath).
+ * `/admin/<path>` (the address bar keeps the short path). The old
+ * `/admin/<path>` links are a 404 there too: old links never redirect
+ * (owner, 2026-11-25). Clerk auth paths, Next internals and API routes are
+ * left alone (see isAdminHostPassthroughPath).
  */
 export function decideAdminHostRouting(
   host: string | null | undefined,
@@ -70,15 +70,8 @@ export function decideAdminHostRouting(
   const isAdminHost = adminHosts.has(normalizedHost);
   const isAdminPath = pathname === "/admin" || pathname.startsWith("/admin/");
 
-  if (isAdminPath && !isAdminHost) {
+  if (isAdminPath) {
     return { kind: "not_found" };
-  }
-  if (isAdminHost && isAdminPath) {
-    return { kind: "redirect", to: pathname.slice("/admin".length) || "/" };
-  }
-  // The sign-in/sign-up pages fall back to /voice, which is not an admin page.
-  if (isAdminHost && pathname === "/voice") {
-    return { kind: "redirect", to: "/" };
   }
   if (isAdminHost && !isAdminHostPassthroughPath(pathname)) {
     return { kind: "rewrite", to: pathname === "/" ? "/admin" : `/admin${pathname}` };
@@ -125,11 +118,6 @@ const _clerkMiddleware = clerkMiddleware(async (auth, req) => {
 
   if (decision.kind === "not_found") {
     return new NextResponse(null, { status: 404 });
-  }
-  if (decision.kind === "redirect") {
-    const url = req.nextUrl.clone();
-    url.pathname = decision.to;
-    return NextResponse.redirect(url, 308);
   }
   if (decision.kind === "rewrite") {
     const url = req.nextUrl.clone();

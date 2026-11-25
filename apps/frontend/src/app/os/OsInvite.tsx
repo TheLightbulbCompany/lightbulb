@@ -7,19 +7,23 @@ import { useEffect, useRef, useState } from "react";
 import { capture } from "@/lib/analytics";
 import { useApi } from "@/lib/api";
 
-import { CODE, SparkGet, useOnPhone } from "./SparkDownload";
+import { CHANNEL, CODE, SparkGet, useOnPhone } from "./SparkDownload";
 
 export const SOON = "Download coming soon.";
 
 // The download button (or "coming soon" until the installer is published), and on a referral link
 // (`/os?ref=CODE`) the invite: a signed-out visitor creates their account here, and a signed-in one has
-// the invite recorded (POST /os/referral). The Spark account itself is created by the Mac app (the first
+// the invite recorded (POST /os/channel for `?c=CODE`, then POST /os/referral). The Spark account itself is created by the Mac app (the first
 // account read starts the trial), so this page never calls the account route.
 export function OsInvite({ ready, source }: { ready: boolean; source?: string }) {
-  const code = useSearchParams()?.get("ref") ?? "";
+  const params = useSearchParams();
+  const ref = params?.get("ref") ?? "";
+  const c = params?.get("c") ?? "";
+  const code = CODE.test(ref) ? ref : "";
+  const channel = CHANNEL.test(c) ? c : "";
   const download = <DownloadBlock ready={ready} source={source} />;
-  if (!CODE.test(code)) return download;
-  return <Invite code={code} ready={ready} download={download} />;
+  if (!code && !channel) return download;
+  return <Invite code={code} channel={channel} ready={ready} download={download} />;
 }
 
 // The plain hero: also the Suspense fallback, so the button is in the server HTML before the invite check.
@@ -31,14 +35,14 @@ export function DownloadBlock({ ready, source }: { ready: boolean; source?: stri
   );
 }
 
-function Invite({ code, ready, download }: { code: string; ready: boolean; download: React.ReactNode }) {
+function Invite({ code, channel, ready, download }: { code: string; channel: string; ready: boolean; download: React.ReactNode }) {
   const { isLoaded, isSignedIn } = useAuth();
   const api = useApi();
   const onPhone = useOnPhone();
   const [recorded, setRecorded] = useState(false);
   const sent = useRef(false);
   const started = useRef(false);
-  const here = `/os?ref=${code}`;
+  const here = `/os?${new URLSearchParams({ ...(code && { ref: code }), ...(channel && { c: channel }) })}`;
 
   useEffect(() => {
     if (!isLoaded) return;
@@ -51,12 +55,13 @@ function Invite({ code, ready, download }: { code: string; ready: boolean; downl
     if (sent.current) return;
     sent.current = true;
     // The answer does not change what the page shows; a failure still shows the download.
-    api
-      .post("/os/referral", { code })
+    // The channel goes first: the first set-once wins, so a creator code beats "referral".
+    (channel ? api.post("/os/channel", { channel }).catch(() => undefined) : Promise.resolve())
+      .then(() => (code ? api.post("/os/referral", { code }) : undefined))
       .then(() => capture("spark_invite_signup_completed"))
       .catch(() => undefined)
       .finally(() => setRecorded(true));
-  }, [isLoaded, isSignedIn, api, code]);
+  }, [isLoaded, isSignedIn, api, code, channel]);
 
   if (!isLoaded) return null;
   if (!isSignedIn) {

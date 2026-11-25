@@ -9,6 +9,8 @@ import "./spark-phone.css";
 // A Spark referral code: the referrer's Clerk user id without its `user_` prefix. Here, not in OsInvite,
 // so the site menu can import this file without the invite's sign-up form.
 export const CODE = /^[A-Za-z0-9]{1,64}$/;
+// A creator channel code (`?c=yt-abc`); the backend validates the same pattern.
+export const CHANNEL = /^[a-z0-9-]{2,32}$/;
 
 // Hovering or focusing the button lights the page's bulb (decoration; no listener on the short page).
 const light = (on: boolean) => window.dispatchEvent(new CustomEvent("spark:light", { detail: on }));

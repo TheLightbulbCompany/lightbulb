@@ -66,20 +66,15 @@ describe('decideCanonicalHostRedirect (SEO host consolidation)', () => {
 });
 
 describe('decideAdminHostRouting (admin host gate)', () => {
-  it('redirects an old /admin/<path> link on an admin host to /<path>', () => {
-    expect(
-      decideAdminHostRouting('admin.thelightbulb.company', '/admin/spark', ADMIN_HOSTS),
-    ).toEqual({ kind: 'redirect', to: '/spark' });
-  });
-  it('redirects /admin on an admin host to /', () => {
-    expect(
-      decideAdminHostRouting('admin.thelightbulb.company', '/admin', ADMIN_HOSTS),
-    ).toEqual({ kind: 'redirect', to: '/' });
-  });
-  it('redirects /voice (the sign-in fallback) on an admin host to /', () => {
-    expect(
-      decideAdminHostRouting('admin.thelightbulb.company', '/voice', ADMIN_HOSTS),
-    ).toEqual({ kind: 'redirect', to: '/' });
+  // Owner, 2026-11-25: old links never redirect, they are a 404. The host does not matter.
+  it.each([
+    ['admin.thelightbulb.company', '/admin/spark'],
+    ['admin.thelightbulb.company', '/admin'],
+    ['app.thelightbulb.company', '/admin/users'],
+    ['attacker.example.com', '/admin'],
+    [null, '/admin'],
+  ])('returns 404 for an /admin path (host %s, path %s)', (host, path) => {
+    expect(decideAdminHostRouting(host, path, ADMIN_HOSTS)).toEqual({ kind: 'not_found' });
   });
   it('rewrites the root of an admin host to /admin', () => {
     expect(
@@ -102,34 +97,16 @@ describe('decideAdminHostRouting (admin host gate)', () => {
     }
   });
 
-  it('returns 404 for an /admin path on a non-admin host', () => {
-    expect(
-      decideAdminHostRouting('app.thelightbulb.company', '/admin/users', ADMIN_HOSTS),
-    ).toEqual({ kind: 'not_found' });
-  });
-
   it('rewrites a non-admin path on an admin host under /admin', () => {
     expect(
       decideAdminHostRouting('admin.thelightbulb.company', '/chat', ADMIN_HOSTS),
     ).toEqual({ kind: 'rewrite', to: '/admin/chat' });
   });
 
-  it('returns 404 for /admin on an unknown random host (defense in depth)', () => {
-    expect(
-      decideAdminHostRouting('attacker.example.com', '/admin', ADMIN_HOSTS),
-    ).toEqual({ kind: 'not_found' });
-  });
-
   it('allows admin.localhost:3000 (default admin host) for local dev', () => {
     expect(
-      decideAdminHostRouting('admin.localhost:3000', '/admin/users', ADMIN_HOSTS),
-    ).toEqual({ kind: 'redirect', to: '/users' });
-  });
-
-  it('treats null/missing host as non-admin (404 on /admin)', () => {
-    expect(
-      decideAdminHostRouting(null, '/admin/users', ADMIN_HOSTS),
-    ).toEqual({ kind: 'not_found' });
+      decideAdminHostRouting('admin.localhost:3000', '/users', ADMIN_HOSTS),
+    ).toEqual({ kind: 'rewrite', to: '/admin/users' });
   });
 
   it('passes through public hosts on public paths', () => {
@@ -147,18 +124,11 @@ describe('decideAdminHostRouting (admin host gate)', () => {
 
   it('is case-insensitive on host comparison', () => {
     expect(
-      decideAdminHostRouting('ADMIN.THELIGHTBULB.COMPANY', '/admin/users', ADMIN_HOSTS),
-    ).toEqual({ kind: 'redirect', to: '/users' });
+      decideAdminHostRouting('ADMIN.THELIGHTBULB.COMPANY', '/users', ADMIN_HOSTS),
+    ).toEqual({ kind: 'rewrite', to: '/admin/users' });
   });
 
-  // ---------------------------------------------------------------------------
-  // Sign-in / sign-up passthrough on admin hosts.
-  // Bug: AdminLayout server-component redirects unauth users to /sign-in.
-  // The admin-host gate previously bounced /sign-in back to /admin, which
-  // immediately triggered AdminLayout's redirect to /sign-in again → infinite
-  // 307 loop (ERR_TOO_MANY_REDIRECTS). Clerk auth paths must passthrough so
-  // the admin host can complete sign-in inline.
-  // ---------------------------------------------------------------------------
+  // Clerk's auth paths pass through, or AdminLayout's bounce to /sign-in would loop.
 
   it('passes through /sign-in on admin hosts so AdminLayout can complete auth', () => {
     expect(
@@ -180,14 +150,6 @@ describe('decideAdminHostRouting (admin host gate)', () => {
     expect(
       decideAdminHostRouting('admin.thelightbulb.company', '/sign-up/verify-email-address', ADMIN_HOSTS),
     ).toEqual({ kind: 'passthrough' });
-  });
-
-  it('still rewrites truly off-admin paths (e.g. /chat) on admin hosts', () => {
-    // Any non-auth path is served from under /admin (the old gate redirected
-    // it to /admin instead).
-    expect(
-      decideAdminHostRouting('admin.thelightbulb.company', '/chat', ADMIN_HOSTS),
-    ).toEqual({ kind: 'rewrite', to: '/admin/chat' });
   });
 });
 

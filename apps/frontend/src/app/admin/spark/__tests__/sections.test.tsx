@@ -81,7 +81,7 @@ describe("spark sections", () => {
     );
     expect(screen.getByText("MRR at list price")).toBeTruthy();
     expect(screen.getByText("$40")).toBeTruthy();
-    expect(screen.getByText("1 / 4 (25%)")).toBeTruthy();
+    expect(screen.getAllByText("1 / 4 (25%)")).toHaveLength(2); // trial to paid, under 5 min
     expect(screen.getByText("top@x.co")).toBeTruthy();
     expect(screen.getByText("$15.00")).toBeTruthy();
     expect(screen.getAllByText(/estimate/).length).toBeGreaterThan(0);

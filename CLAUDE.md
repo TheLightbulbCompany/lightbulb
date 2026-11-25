@@ -57,7 +57,7 @@ cd apps/frontend && pnpm test
   backend's `require_platform_admin` admits only the Clerk user ids in `PLATFORM_ADMIN_USER_IDS`.
 - **The network CLI's pages:** `/network`, `/j`, `/docs`, and `/install.sh`, which redirects to the CLI repo's
   latest installer.
-- Legal pages (`/terms`, `/privacy` and the rest), `/support`, `/sign-in`, `/sign-up`.
+- Legal pages (`/terms`, `/privacy` and the rest), `/support` (a mailto link to `support@thelightbulb.company`; no form, and the backend sends no mail), `/sign-in`, `/sign-up`.
 - Marketing facts for Spark: `.agents/product-marketing.md`. Banned copy words:
   `src/content/__tests__/bannedCopy.ts`.
 - Colour: read `src/app/globals.css` before you describe a colour; no colour literals outside the exemptions in
@@ -84,8 +84,7 @@ ORM. `core/config.py` holds the settings.
 
 Besides those, the backend has only: the Stripe webhook (`POST /api/v1/billing/webhooks/stripe`, Spark
 subscriptions), the Clerk webhook (`POST /api/v1/webhooks/clerk`: `user.created` saves the person; `user.deleted`
-cancels their subscription and deletes their voice data), the support form (`POST /api/v1/support/tickets`, mailed
-through SES), the admin routes (`GET /api/v1/admin/me`, `GET /api/v1/ops/spark`), `/health`, and the voice-session
+cancels their subscription and deletes their voice data), the admin routes (`GET /api/v1/admin/me`, `GET /api/v1/ops/spark`), `/health`, and the voice-session
 sweeper (`os_voice_sweeper`, started in `main.py`'s lifespan).
 
 `PAPERCLIP_SERVICE_TOKEN_KEY` is a leftover name, but it is live: it signs Spark's checkout and portal links.

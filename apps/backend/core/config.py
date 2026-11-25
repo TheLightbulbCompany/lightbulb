@@ -1,6 +1,5 @@
 import logging
 import os
-from urllib.parse import urlparse
 
 from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings
@@ -75,11 +74,6 @@ class Settings(BaseSettings):
     PUBLIC_API_BASE: str = "http://localhost:8000"
 
     @property
-    def frontend_host(self) -> str:
-        """Hostname FRONTEND_URL is served from (e.g. ``dev.thelightbulb.company``)."""
-        return (urlparse(self.FRONTEND_URL or "").hostname or "").lower()
-
-    @property
     def cors_origins_list(self) -> list[str]:
         """Parse CORS_ORIGINS as comma-separated list."""
         return [origin.strip() for origin in self.CORS_ORIGINS.split(",") if origin.strip()]
@@ -146,15 +140,6 @@ class Settings(BaseSettings):
     PAPERCLIP_SERVICE_TOKEN_KEY: str = ""
     # Public URL of the frontend (e.g. https://dev.thelightbulb.company).
     FRONTEND_URL: str = "https://dev.thelightbulb.company"
-
-    # --- Support-ticket mail (core/services/support_ticket.py) over SES ---
-    # Sending is gated on AGENT_EMAIL_DOMAIN, the verified SES domain; empty sends nothing.
-    AGENT_EMAIL_DOMAIN: str = ""
-    # SES configuration set stamped on every send; empty stamps none.
-    AGENT_MAIL_CONFIGURATION_SET: str = ""
-    # The support inbox tickets are delivered to, and the identity they come from.
-    EMAIL_SUPPORT_ADDRESS: str = "support@thelightbulb.company"
-    EMAIL_FROM_TICKETS: str = "Lightbulb Support <tickets@thelightbulb.company>"
 
     @field_validator("CLERK_ISSUER")
     @classmethod

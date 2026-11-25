@@ -25,7 +25,6 @@ from routers import (
     ops,
     os as os_router,
     os_billing as os_billing_router,
-    support_tickets,
     webhooks,
 )
 from starlette.types import ASGIApp, Receive, Scope, Send
@@ -251,8 +250,6 @@ app.include_router(os_billing_router.router, prefix="/api/v1/os", tags=["os"])
 app.include_router(webhooks.router, prefix="/api/v1/webhooks", tags=["webhooks"])
 # Stripe webhook (Spark subscriptions) at /api/v1/billing/webhooks/stripe
 app.include_router(billing.router, prefix="/api/v1/billing", tags=["billing"])
-# The site's /support page
-app.include_router(support_tickets.router, prefix="/api/v1/support", tags=["support"])
 # Platform-admin console: /admin/me and the Spark metrics tab (/ops/spark).
 app.include_router(admin.router, prefix="/api/v1")
 app.include_router(ops.router, prefix="/api/v1/ops", tags=["ops"])

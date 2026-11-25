@@ -5,7 +5,6 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
 const captureException = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/analytics", () => ({ captureException }));
-vi.mock("@/components/support/SupportTicketDialog", () => ({ SupportTicketDialog: () => null }));
 
 import { ErrorBoundary, REPORT_DELAY_MS } from "@/components/ErrorBoundary";
 
@@ -44,7 +43,7 @@ it("a first render that throws once is retried silently, and still reported with
   );
 });
 
-it("a second throw shows the screen, with Report this error, and both are reported", () => {
+it("a second throw shows the screen, with an email link to support, and both are reported", () => {
   function Boom(): never {
     throw new Error("always");
   }
@@ -54,7 +53,7 @@ it("a second throw shows the screen, with Report this error, and both are report
     </ErrorBoundary>,
   );
   expect(screen.getByText("Something went wrong")).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "Report this error" })).toBeInTheDocument();
+  expect(screen.getByRole("link", { name: "Email support" })).toHaveAttribute("href", "mailto:support@thelightbulb.company");
   vi.advanceTimersByTime(REPORT_DELAY_MS);
   expect(captureException).toHaveBeenCalledTimes(2);
 });

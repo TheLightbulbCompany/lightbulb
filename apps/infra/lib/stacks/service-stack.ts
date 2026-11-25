@@ -10,7 +10,7 @@ import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
 import { allTableArns, resourcePrefix, sparkStoreNames, tableName, tablePrefix } from "../table-names";
 import { Construct } from "constructs";
 import { DEV_SPOT } from "./container-stack";
-import { PLATFORM_MAIL_DOMAIN, ROOT_DOMAIN } from "../domains";
+import { ROOT_DOMAIN } from "../domains";
 
 /**
  * Secret name strings (NOT ISecret objects) to avoid cross-stack dependency
@@ -36,8 +36,6 @@ export interface ServiceStackProps extends cdk.StackProps {
   environment: string;
   /** Product root domain (see lib/domains.ts). Defaults to ROOT_DOMAIN. */
   rootDomain?: string;
-  /** Domain the support-ticket mail is sent from: the SES domain identity. Defaults to PLATFORM_MAIL_DOMAIN. */
-  platformMailDomain?: string;
   vpc: ec2.IVpc;
   targetGroup: elbv2.IApplicationTargetGroup;
   albSecurityGroup: ec2.ISecurityGroup;
@@ -50,8 +48,6 @@ export interface ServiceStackProps extends cdk.StackProps {
   /** Pass as string ARN to avoid cross-stack dependency cycle. */
   kmsKeyArn: string;
   cluster: ecs.ICluster;
-  /** Verified SES domain support tickets are sent under; empty sends nothing. */
-  agentEmailDomain?: string;
 }
 
 export class ServiceStack extends cdk.Stack {
@@ -63,7 +59,6 @@ export class ServiceStack extends cdk.Stack {
 
     const env = props.environment;
     const rootDomain = props.rootDomain ?? ROOT_DOMAIN;
-    const platformMailDomain = props.platformMailDomain ?? PLATFORM_MAIL_DOMAIN;
 
     // -------------------------------------------------------------------------
     // Docker Image Asset (built & pushed by CDK Pipeline)
@@ -185,21 +180,6 @@ export class ServiceStack extends cdk.Stack {
       roles: [this.taskRole],
     });
 
-    // Support tickets go out through SES (core/services/ses_email.py) under the mail domain's
-    // identity, which only exists where the prod SES stack created it. Sends are gated on
-    // AGENT_EMAIL_DOMAIN being set.
-    new iam.ManagedPolicy(this, "BackendSesSend", {
-      managedPolicyName: `lightbulb-${env}-backend-ses-send`,
-      roles: [this.taskRole],
-      statements: [
-        new iam.PolicyStatement({
-          sid: "AgentMailSesSend",
-          actions: ["ses:SendEmail", "ses:SendRawEmail"],
-          resources: [`arn:aws:ses:${this.region}:${this.account}:identity/${platformMailDomain}`],
-        }),
-      ],
-    });
-
     // -------------------------------------------------------------------------
     // Task Execution Role
     // -------------------------------------------------------------------------
@@ -305,10 +285,6 @@ export class ServiceStack extends cdk.Stack {
       // PostHog project (phc_) INGESTION key for server-side capture. Write-only and public (the
       // same key the frontend ships), so it lives in the plain env block, NOT secrets.
       POSTHOG_PROJECT_WRITE_KEY: "phc_nzqnGGPwHfrKycptH3TViSAo3uaxT8CHAXovvHnBGEma",
-      // The verified SES domain support tickets are sent under; empty sends nothing.
-      AGENT_EMAIL_DOMAIN: props.agentEmailDomain ?? "",
-      EMAIL_SUPPORT_ADDRESS: `support@${platformMailDomain}`,
-      EMAIL_FROM_TICKETS: `Lightbulb Support <tickets@${platformMailDomain}>`,
     };
 
     const secret = (envName: string, id: string, name: string) =>

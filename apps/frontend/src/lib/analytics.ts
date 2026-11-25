@@ -19,7 +19,7 @@
  * for tests.
  *
  * What belongs here:
- *   - User intents (spark_download_clicked, support_ticket_submitted)
+ *   - User intents (spark_download_clicked)
  *   - User-visible outcomes (spark_invite_signup_completed)
  *   - The React Provider wrapper (``Provider``) for the app's root layout
  *   - identify / reset / pageview / init bookkeeping for PostHogProvider
@@ -68,8 +68,7 @@ export type AnalyticsEvent =
   | "spark_download_clicked"
   | "spark_invite_signup_completed"
   | "spark_invite_signup_started"
-  | "support_contact_clicked"
-  | "support_ticket_submitted";
+  | "support_contact_clicked";
 
 /**
  * Type exposing the ``__loaded`` flag PostHog sets after ``init()``

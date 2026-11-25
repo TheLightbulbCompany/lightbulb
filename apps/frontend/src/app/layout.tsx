@@ -7,7 +7,6 @@ import { DeployRefresh } from "@/components/DeployRefresh";
 import { InAppNavTracker } from "@/components/legal/BackButton";
 import { PostHogProvider } from "@/components/PostHogProvider";
 import { VercelAnalytics } from "@/components/VercelAnalytics";
-import { SupportProvider } from "@/components/support/SupportProvider";
 import { clerkAppearance } from "@/lib/clerkAppearance";
 import { SITE_URL } from "@/lib/domain";
 import { OG_IMAGE, SITE_DESCRIPTION, SITE_TITLE } from "@/lib/seo";
@@ -87,10 +86,8 @@ export default function RootLayout({
           <PostHogProvider>
             <ErrorBoundary>
               <DeployRefresh />
-              <SupportProvider>
-                <InAppNavTracker />
-                {children}
-              </SupportProvider>
+              <InAppNavTracker />
+              {children}
             </ErrorBoundary>
           </PostHogProvider>
           <VercelAnalytics />

@@ -353,15 +353,15 @@ async def _lease(sid: str, at: int, expression: str = "", values: dict | None = 
     return out["Attributes"]
 
 
-async def _release(sid: str, attach_failed: bool = False) -> None:
-    """Free the lease so the next sweep re-attaches; an attach failure is counted on the row."""
+async def _release(sid: str) -> None:
+    """Free the lease so the next sweep re-attaches."""
     with contextlib.suppress(ClientError):
         await run_in_thread(
             _table().update_item,
             Key=_key(sid),
-            UpdateExpression="REMOVE leaseOwner, leaseUntil" + (" ADD attachFailures :one" if attach_failed else ""),
+            UpdateExpression="REMOVE leaseOwner, leaseUntil",
             ConditionExpression="leaseOwner = :me",
-            ExpressionAttributeValues={":me": TASK_ID} | ({":one": 1} if attach_failed else {}),
+            ExpressionAttributeValues={":me": TASK_ID},
         )
 
 
@@ -397,8 +397,6 @@ async def _tick(ws, s: dict) -> bool:
     for field in ("expiresAt", "closeReason"):
         if s.get(field):
             expression, values = f"{expression}, {field} = :{field}", values | {f":{field}": s[field]}
-    if s.pop("attachFailures", None):
-        expression += " REMOVE attachFailures"
     if (row := await _lease(s["sessionId"], at, expression, values)) is None:
         return False
     s["closeRequested"] = row.get("closeRequested")
@@ -602,7 +600,7 @@ async def run_sideband(sid: str) -> None:
                 if s.get("closeReason") or await _due(s, now()):  # due, and this attempt to close it failed
                     await _reap_unconfirmed(sid, int(s["usageSeconds"]))
                 else:
-                    await _release(sid, attach_failed=True)
+                    await _release(sid)
                 return
         except websockets.ConnectionClosed:
             logger.info("os voice session %s: sideband dropped", sid)

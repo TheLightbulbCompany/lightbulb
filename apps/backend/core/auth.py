@@ -56,7 +56,7 @@ async def _get_cached_jwks(jwks_url: str) -> dict:
 
 @dataclass
 class AuthContext:
-    """Structured auth context from JWT claims. The tenant is `user_id` (see `resolve_owner_id`): no claim in a
+    """Structured auth context from JWT claims. The tenant is `user_id`: no claim in a
     token names another tenant."""
 
     user_id: str
@@ -72,14 +72,6 @@ class AuthContext:
     verified_issuer: str | None = None
     # A first-party Clerk session token (`_session_token`); `get_human_session` refuses any other.
     human_session: bool = False
-
-
-def resolve_owner_id(auth: AuthContext) -> str:
-    """The tenant is the person: the token's `sub`, for a first-party Clerk session only. An OAuth access token or a
-    JWT-template token is a weaker credential and has no tenant (403)."""
-    if not auth.human_session:
-        raise HTTPException(status_code=403, detail={"code": "session_required"})
-    return auth.user_id
 
 
 def _find_rsa_key(jwks: dict, kid: str) -> dict | None:
@@ -222,20 +214,6 @@ async def get_optional_human_session(
         return await get_human_session(credentials)
     except HTTPException:
         return None
-
-
-# Email domains that identify team members, for analytics tagging ONLY
-# (run_analytics' internal-owner flag). This is NOT an access check: any
-# self-registered Clerk account can carry one of these addresses, so platform
-# admin is ``PLATFORM_ADMIN_USER_IDS`` (see ``require_platform_admin``).
-_PLATFORM_ADMIN_EMAIL_DOMAINS: tuple[str, ...] = ("@thelightbulb.company",)
-
-
-def is_internal_email(email: str | None) -> bool:
-    """True when *email* looks like a team member's, for run-analytics tagging.
-    Grants nothing: never use it to authorize a request."""
-    normalized = (email or "").lower()
-    return normalized.endswith(_PLATFORM_ADMIN_EMAIL_DOMAINS)
 
 
 def require_platform_admin(auth: AuthContext = Depends(get_current_user)) -> AuthContext:

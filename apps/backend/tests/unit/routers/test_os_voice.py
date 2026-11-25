@@ -657,10 +657,9 @@ async def test_an_attach_refusal(ddb, clock, openai, metrics, monkeypatch, error
         return
     # OpenAI may still have it: counted, loud, and the lease is free for the next sweep
     assert metrics == [("os_voice.sideband.attach_failed", dims)]
-    assert rec(ddb, sid)["attachFailures"] == 1 and "leaseOwner" not in rec(ddb, sid)
+    assert "leaseOwner" not in rec(ddb, sid)
     await os_voice.sweep_once()
     await until(idle)
-    assert rec(ddb, sid)["attachFailures"] == 2
     attempts = []
     monkeypatch.setattr(os_voice, "_connect", lambda url, **kw: attempts.append(url) or refuse(url))
     clock[0] += os_voice.MAX_SESSION_S  # due: the sweep tries once to attach and close it, which fails

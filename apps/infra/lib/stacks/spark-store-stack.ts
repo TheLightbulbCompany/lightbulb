@@ -11,6 +11,12 @@ import { sparkStoreNames } from "../table-names";
 export interface SparkStoreStackProps extends cdk.StackProps {
   environment: string;
   kmsKey: kms.IKey;
+  /**
+   * The Iceberg tables exist in this environment (scripts/spark_store_ddl.py has run there).
+   * Firehose reads the table when a stream is created and fails the stack without it, so the
+   * streams are only built once this is true.
+   */
+  tablesExist: boolean;
 }
 
 const GB = 1024 ** 3;
@@ -126,10 +132,8 @@ export class SparkStoreStack extends cdk.Stack {
     );
 
     // One DirectPut stream per Iceberg table (never two on one table: Iceberg commits conflict).
-    // Creating a stream does not need the table to exist (Firehose only checks it at create time
-    // when UniqueKeys are set), so prod gets its streams before the prod DDL has run.
     // Firehose will not create the log streams, so they are created here, one per table.
-    const tables = ["turns", "task_steps", "events"];
+    const tables = props.tablesExist ? ["turns", "task_steps", "events"] : [];
     tables.forEach((table, i) => {
       const logStream = new logs.LogStream(this, `${table}LogStream`, {
         logGroup,

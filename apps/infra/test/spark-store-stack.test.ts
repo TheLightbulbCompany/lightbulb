@@ -3,12 +3,25 @@ import * as kms from "aws-cdk-lib/aws-kms";
 import { Match, Template } from "aws-cdk-lib/assertions";
 import { SparkStoreStack } from "../lib/stacks/spark-store-stack";
 
-function build(environment: "dev" | "prod"): Template {
+function build(environment: "dev" | "prod", tablesExist = true): Template {
   const app = new cdk.App();
   const env = { account: "877352799272", region: "us-east-1" };
   const key = new kms.Key(new cdk.Stack(app, `Support-${environment}`, { env }), "KmsKey");
-  return Template.fromStack(new SparkStoreStack(app, `Spark-${environment}`, { env, environment, kmsKey: key }));
+  return Template.fromStack(
+    new SparkStoreStack(app, `Spark-${environment}`, { env, environment, kmsKey: key, tablesExist }),
+  );
 }
+
+// Firehose fails the whole stack when it creates a stream for a table that does not exist yet
+// (production run 45707783131), so an environment without its tables gets everything but the streams.
+test("without the tables: no delivery streams, the rest of the stack is there", () => {
+  const t = build("prod", false);
+  t.resourceCountIs("AWS::KinesisFirehose::DeliveryStream", 0);
+  t.resourceCountIs("AWS::Logs::LogStream", 0);
+  t.resourceCountIs("AWS::S3::Bucket", 1);
+  t.resourceCountIs("AWS::Athena::WorkGroup", 3);
+  t.hasResourceProperties("AWS::IAM::Role", { RoleName: "lightbulb-prod-spark-firehose" });
+});
 
 describe.each(["dev", "prod"] as const)("SparkStoreStack %s", (environment) => {
   const t = build(environment);

@@ -625,7 +625,13 @@ async def post_event(request: Request, auth: AuthContext | None = Depends(get_op
             props = spark_events.allowed_properties(event, body.get("properties"))
             props |= {"install_id": install_id, "product": spark_events.PRODUCT} | spark_events.common_properties(body)
             day = time.strftime("%Y-%m-%d", time.gmtime())
-            once = str(uuid.uuid5(spark_events.NS, f"app_opened:{install_id}:{day}")) if event == "app_opened" else None
+            # PostHog drops a repeated uuid: app_opened once a day, a stop once per task, a feature once a day.
+            key = {
+                "app_opened": f"app_opened:{install_id}:{day}",
+                "task_stopped": f"task_stopped:{props.get('task_id')}" if "task_id" in props else None,
+                "feature_used": f"feature_used:{install_id}:{day}:{props['feature']}" if "feature" in props else None,
+            }.get(event)
+            once = str(uuid.uuid5(spark_events.NS, key)) if key else None
             set_once = (
                 {"spark_heard_from": props["choice"]} if event == "heard_from_answered" and "choice" in props else None
             )

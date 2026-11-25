@@ -27,7 +27,8 @@ const DATA: SparkData = {
     problem_kinds: [{ key: "crash", count: 1 }],
   },
   brain_unavailable_installs_24h: 2,
-  funnel: [{ step: "first launch", k: 4 }],
+  funnel: [{ step: "first launch", k: 4, n: 4 }],
+  truncated: false,
   downloads: [{ key: "hero", count: 7 }],
   channels: [{ channel: "referral", activated_24h: { k: 1, n: 2 } }],
   people: [

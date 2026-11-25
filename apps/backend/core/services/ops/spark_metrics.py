@@ -27,15 +27,13 @@ from core.services.ops.growth import _hogql_filter, _monday, _parse_ts, _utc_dat
 WEEKS = 12
 INSTALL_DAYS = 84  # install scan window (12 weeks); event scans use 90d so day-29 follow-ups fit
 OK_TTL_S, FAIL_TTL_S = 300, 60
+INSTALL_CAP = 5000
+D7_LABEL = "activated d7 (installs 7d+ old)"
 STEPS = ("signin", "brain", "permission", "onboarding", "first task", "activated d7", "subscribed")
 
 _SAFE_ID = re.compile(r"^[A-Za-z0-9_\-]+$")
 _UTC_DAY = "toDate(toTimeZone(timestamp, 'UTC'))"
 _UTC_WEEK = "toStartOfWeek(toTimeZone(timestamp, 'UTC'), 1)"
-_CHANNEL = (
-    "coalesce(nullIf(toString(person.properties.spark_channel), ''),"
-    " nullIf(toString(person.properties.$initial_utm_source), ''), 'unknown')"
-)
 
 
 def _internal_filter() -> str:
@@ -87,7 +85,7 @@ def build_queries() -> dict[str, str]:
         "installs": f"""
             select l.launch, l.platform, l.version,
               argMaxIf(toString(e.properties.provider), e.timestamp, e.event = 'brain_chosen' and {after}),
-              l.channel, l.email,
+              p.channel, coalesce(p.email, ''),
               countIf(e.event = 'signin_completed' and {after}),
               countIf(e.event = 'brain_chosen' and {after}),
               countIf(e.event = 'permission_granted' and toString(e.properties.permission) = 'accessibility' and {after}),
@@ -99,16 +97,19 @@ def build_queries() -> dict[str, str]:
               countIf(e.event = 'subscription_started' and toString(e.properties.product) = 'spark' and {after}),
               toString(maxIf({e_day}, {h} and {after}))
             from (select person_id, min(timestamp) as launch,
-                    argMin({plat}, timestamp) as platform, argMin({ver}, timestamp) as version,
-                    any({_CHANNEL}) as channel, any(coalesce(toString(person.properties.email), '')) as email
-                  from events where event = 'app_first_launch' and {w} and timestamp >= now() - interval {INSTALL_DAYS} day
-                  group by person_id) as l
+                    argMin({plat}, timestamp) as platform, argMin({ver}, timestamp) as version
+                  from events where event = 'app_first_launch' and {w}
+                  group by person_id having launch >= now() - interval {INSTALL_DAYS} day) as l
+            left join (select id, toString(properties.email) as email,
+                         coalesce(nullIf(toString(properties.spark_channel), ''),
+                                  nullIf(toString(properties.$initial_utm_source), ''), 'unknown') as channel
+                       from persons) as p on p.id = l.person_id
             left join (select person_id, event, timestamp, properties from events
                        where event in ('signin_completed', 'brain_chosen', 'permission_granted', 'onboarding_completed',
                                        'task_completed', 'subscription_started')
                          and {w} and timestamp >= now() - interval 90 day) as e on l.person_id = e.person_id
-            group by l.person_id, l.launch, l.platform, l.version, l.channel, l.email
-            order by l.launch desc limit 5000""",
+            group by l.person_id, l.launch, l.platform, l.version, p.channel, p.email
+            order by l.launch desc limit {INSTALL_CAP}""",
         # Task success = human task_completed / (human task_completed + task_failed): weekly by platform,
         # by app_version (30d) and by brain provider (30d; latest brain_chosen per person, any age <= 180d).
         "success_weekly": f"""
@@ -152,6 +153,7 @@ def derive(rows: dict[str, list], now: datetime) -> dict:
 
     people, cohorts, channels = [], {}, {}
     funnel = [0] * (len(STEPS) + 1)  # [launches, then STEPS]
+    d7_base = 0  # installs 7d+ old (30d window): the denominator of the d7 step
     for r in rows["installs"]:
         launch = _parse_ts(r[0])
         platform, version, provider, channel, email = r[1], r[2], r[3] or "unknown", r[4], r[5]
@@ -164,6 +166,7 @@ def derive(rows: dict[str, list], now: datetime) -> dict:
         reached = [bool(x) for x in reached]
         if age <= timedelta(days=30):
             funnel[0] += 1
+            d7_base += d7_old
             for i, ok in enumerate(reached):
                 funnel[i + 1] += ok
         if age <= timedelta(days=60):
@@ -246,7 +249,11 @@ def derive(rows: dict[str, list], now: datetime) -> dict:
         "brain_unavailable_installs_24h": sum(
             int(i) for e, k, _, i in rows["problems"] if e == "problem_raised" and k == "brain.unavailable"
         ),
-        "funnel": [{"step": s, "k": k} for s, k in zip(("first launch", *STEPS), funnel)],
+        "funnel": [
+            {"step": s, "k": k, "n": funnel[0]} if s != "activated d7" else {"step": D7_LABEL, "k": k, "n": d7_base}
+            for s, k in zip(("first launch", *STEPS), funnel)
+        ],
+        "truncated": len(rows["installs"]) >= INSTALL_CAP,
         "downloads": [{"key": str(k), "count": int(n)} for k, n in rows["downloads"]],
         "channels": [
             {"channel": c, "activated_24h": kn(k, n)} for c, (k, n) in sorted(channels.items(), key=lambda x: -x[1][1])

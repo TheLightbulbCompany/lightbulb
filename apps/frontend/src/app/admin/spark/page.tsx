@@ -36,6 +36,9 @@ export default async function AdminSparkPage() {
 
       {data ? (
         <>
+          {data.truncated ? (
+            <p className="text-xs text-amber-600">Install list hit its 5000-row cap; older installs are missing.</p>
+          ) : null}
           <Headline data={data} />
           <People data={data} />
           <div className="grid gap-6 xl:grid-cols-2">

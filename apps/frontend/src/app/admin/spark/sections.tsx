@@ -31,7 +31,7 @@ export function Headline({ data }: { data: SparkData }) {
 export function Funnel({ data }: { data: SparkData }) {
   return (
     <Card title="Funnel: installs in the last 30 days reaching each step">
-      <Table head={["Step", "Installs"]} rows={data.funnel.map((f) => [f.step, f.k])} />
+      <Table head={["Step", "Installs"]} rows={data.funnel.map((f) => [f.step, kn(f)])} />
       <p className="mt-2 text-xs text-muted-foreground">
         Download clicks (anonymous web traffic, not a step):{" "}
         {data.downloads.map((d) => `${d.key} ${d.count}`).join(", ") || "none"}. Channel attribution for non-referred

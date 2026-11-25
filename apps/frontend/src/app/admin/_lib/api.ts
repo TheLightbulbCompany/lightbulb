@@ -593,7 +593,6 @@ export async function getGrowth(token: string): Promise<OpsEnvelope<GrowthData> 
   return adminFetch<OpsEnvelope<GrowthData>>(token, "/ops/growth");
 }
 
-/** Any field is null when its query failed (or, for health / problem_raised, the event was never seen). */
 /** k of n; n = 0 renders as a dash. */
 export interface Kn {
   k: number;
@@ -632,7 +631,9 @@ export interface SparkData {
     problem_kinds: { key: string; count: number }[];
   };
   brain_unavailable_installs_24h: number;
-  funnel: { step: string; k: number }[];
+  funnel: { step: string; k: number; n: number }[];
+  /** installs query hit its row cap; older installs are missing. */
+  truncated: boolean;
   downloads: { key: string; count: number }[];
   channels: { channel: string; activated_24h: Kn }[];
   people: SparkPerson[];

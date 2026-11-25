@@ -146,6 +146,8 @@ def test_funnel_people_and_furthest_step():
     )
     d = sm.derive(_rows(installs=[row, install(NOW - timedelta(days=1))]), NOW)
     assert [f["k"] for f in d["funnel"]] == [2, 1, 1, 1, 1, 1, 1, 0]
+    assert [f["n"] for f in d["funnel"]] == [2, 2, 2, 2, 2, 2, 1, 2]  # d7 step: only installs 7d+ old
+    assert d["funnel"][6]["step"] == "activated d7 (installs 7d+ old)" and d["truncated"] is False
     p = d["people"][0]
     assert p["furthest"] == "activated d7" and p["last_task"] == "2026-11-20" and p["channel"] == "referral"
     assert d["people"][1]["furthest"] == "first launch" and d["people"][1]["last_task"] is None
@@ -207,3 +209,10 @@ async def test_any_failed_query_means_no_figures_and_is_cached_briefly():
     assert data is None and state == "partial" and errors == [{"domain": "posthog:downloads", "reason": "timeout"}]
     assert mock.await_count == calls  # failure served from the 60s cache
     assert sm._cache[0] - __import__("time").monotonic() <= sm.FAIL_TTL_S
+
+
+def test_truncated_flag_at_row_cap_and_installs_query_shape():
+    rows = [install(NOW - timedelta(days=1))] * sm.INSTALL_CAP
+    assert sm.derive(_rows(installs=rows), NOW)["truncated"] is True
+    q = sm.build_queries()["installs"]
+    assert "having launch >= now() - interval 84 day" in q and "from persons" in q and "person.properties" not in q

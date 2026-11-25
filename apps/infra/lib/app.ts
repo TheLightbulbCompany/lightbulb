@@ -46,36 +46,13 @@ const bindDevHostToPreview = (host: string) => ({
 // a recursive rm at the start of every run (install-pnpm/run.ts). Two jobs
 // setting pnpm up at the same moment race that removal and one dies with
 // "ENOTEMPTY: directory not empty, rmdir '/home/prasiddha/setup-pnpm/...'".
-// Structural rather than a rare interleaving: DeployVercelProd and
-// DeployCompanyProd share a `needs` set, so they start in the same second --
-// both at 07:12:17Z in run 33239214668, where VercelProd was the one that died.
-// `runner.temp` is per-runner-instance, so it keeps them apart. Same fix that
+// // `runner.temp` is per-runner-instance, so it keeps them apart. Same fix that
 // frontend-ci.yml and mobile-ci.yml already carry.
 const setupPnpmStep = () => ({
   name: "Setup pnpm",
   uses: "pnpm/action-setup@v6",
   with: { dest: "${{ runner.temp }}/setup-pnpm" },
 });
-
-// The holding-company site (apps/company, thelightbulb.company) is a second
-// Vercel project: same token and org, its own project id. Like the frontend,
-// its Root Directory (apps/company) is a PROJECT SETTING on Vercel and the CLI
-// runs from the repo root — building inside apps/company instead makes the
-// output trace pnpm's store at a path relative to the app, and
-// `vercel deploy --prebuilt` then fails with "File does not exist:
-// node_modules/.pnpm/…" (reproduced 2026-08-29).
-const companyVercelEnv = { ...vercelEnv, VERCEL_PROJECT_ID: "${{ secrets.VERCEL_PROJECT_ID_COMPANY }}" };
-// The product took the apex (2026-10); the holding-company page lives on `about.`.
-const COMPANY_DOMAIN = "about.thelightbulb.company";
-const companyVercelSteps = (prod: boolean) => [
-  // Vercel needs no git credentials; do not leave the token in the checkout.
-  { name: "Checkout", uses: "actions/checkout@v7", with: { "persist-credentials": false } },
-  setupPnpmStep(),
-  { name: "Setup Node.js", uses: "actions/setup-node@v7", with: { "node-version": "20", cache: "pnpm" } },
-  { name: "Install Vercel CLI", run: "npm install -g vercel@63.1.0" },
-  { name: "Pull Vercel Settings", run: `vercel pull --yes${prod ? " --environment=production" : ""} --token=$VERCEL_TOKEN`, env: companyVercelEnv },
-  { name: "Build Company Site", run: `vercel build${prod ? " --prod" : ""} --token=$VERCEL_TOKEN`, env: companyVercelEnv },
-];
 
 // cdk-pipelines-github's `Runner` has a private constructor and its only
 // self-hosted factory force-prepends the `self-hosted` label, so there is no
@@ -284,13 +261,6 @@ pipeline.addStageWithGitHubOptions(devStage, {
         },
       ],
     }),
-    // The holding-company site. Preview only in dev.
-    new GitHubActionStep("DeployCompanyDev", {
-      jobSteps: [
-        ...companyVercelSteps(false),
-        { name: "Deploy to Vercel (Preview)", run: "vercel deploy --prebuilt --archive=tgz --token=$VERCEL_TOKEN", env: companyVercelEnv },
-      ],
-    }),
   ],
 });
 
@@ -414,29 +384,6 @@ pipeline.addStageWithGitHubOptions(prodStage, {
         },
       ],
     }),
-    // Gated by the same JsonPatch mechanism as DeployVercelProd (below).
-    new GitHubActionStep("DeployCompanyProd", {
-      jobSteps: [
-        ...companyVercelSteps(true),
-        {
-          name: "Deploy to Vercel (Production)",
-          id: "company-deploy-prod",
-          run: 'DEPLOY_URL=$(vercel deploy --prebuilt --archive=tgz --prod --token=$VERCEL_TOKEN) && echo "DEPLOY_URL=$DEPLOY_URL" >> $GITHUB_OUTPUT',
-          env: companyVercelEnv,
-        },
-        // Register before aliasing — the same SSO-wall trap as the product apex.
-        {
-          name: `Register ${COMPANY_DOMAIN} project domain`,
-          run: `vercel domains add ${COMPANY_DOMAIN} company --force --token="$VERCEL_TOKEN"`,
-          env: companyVercelEnv,
-        },
-        {
-          name: `Alias to ${COMPANY_DOMAIN}`,
-          run: `vercel alias \${{ steps.company-deploy-prod.outputs.DEPLOY_URL }} ${COMPANY_DOMAIN} --token=$VERCEL_TOKEN`,
-          env: companyVercelEnv,
-        },
-      ],
-    }),
   ],
 });
 
@@ -467,7 +414,6 @@ pipeline.workflowFile.patch(
   // it cannot land on the wrong job: rename the step and RFC 6902 fails to
   // resolve the path and synth throws, rather than gating something else.
   JsonPatch.add("/jobs/prod-DeployVercelProd/if", PROD_PROMOTE_IF),
-  JsonPatch.add("/jobs/prod-DeployCompanyProd/if", PROD_PROMOTE_IF),
 
   // Queue pending runs instead of evicting them.
   //

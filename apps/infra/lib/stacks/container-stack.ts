@@ -74,6 +74,9 @@ export class ContainerStack extends cdk.Stack {
     const config = ENV_CONFIG[props.environment] ?? ENV_CONFIG.dev;
 
 
+    // Kept only for the boundary policy below (its Litestream grant is unchanged until the follow-up).
+    const litestreamBucketName = `lightbulb-${props.environment}-openclaw-replicas`;
+
     // THE PLATFORM ECS cluster — the backend Fargate service (service-stack)
     // runs on it. Nothing per-user does
     // any more. Container Insights stays off: it is ~15 metrics per service, and

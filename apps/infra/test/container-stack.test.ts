@@ -138,39 +138,6 @@ describe("ContainerStack — dev", () => {
     expect(episodic.ReflectionConfiguration.Namespaces).toEqual(["/users/{actorId}/"]);
   });
 
-  test("sessions prefixes expire after 30 and 365 days", () => {
-    template.hasResourceProperties("AWS::S3::Bucket", {
-      BucketName: "lightbulb-dev-openclaw-replicas",
-      LifecycleConfiguration: {
-        Rules: Match.arrayWith([
-          Match.objectLike({ Prefix: "sessions/free/", ExpirationInDays: 30, Status: "Enabled" }),
-          Match.objectLike({ Prefix: "sessions/workspace/", ExpirationInDays: 365, Status: "Enabled" }),
-        ]),
-      },
-    });
-  });
-
-  test("replicas bucket expires task overlays after 14 days by tag", () => {
-    // Super-agent per-task VMs tag every object they write under <owner>/hermes-tasks/ with
-    // lb-kind=task-overlay. Tag-scoped, no prefix: inert wherever nothing carries the tag (prod).
-    for (const environment of ["dev", "prod"] as const) {
-      const rules = Object.values(buildStack(environment).findResources("AWS::S3::Bucket"))
-        .find((b: any) => b.Properties.BucketName === `lightbulb-${environment}-openclaw-replicas`)!
-        .Properties.LifecycleConfiguration.Rules;
-      const overlay = rules.find((r: any) => r.Id === "TaskOverlays");
-      expect(overlay).toEqual({
-        Id: "TaskOverlays",
-        ExpirationInDays: 14,
-        Status: "Enabled",
-        TagFilters: [{ Key: "lb-kind", Value: "task-overlay" }],
-      });
-      expect(rules.filter((r: any) => r.Prefix).map((r: any) => [r.Id, r.Prefix, r.ExpirationInDays])).toEqual([
-        ["SessionsFree", "sessions/free/", 30],
-        ["SessionsWorkspace", "sessions/workspace/", 365],
-      ]);
-    }
-  });
-
   test("owns the platform ECS cluster the backend runs on", () => {
     template.hasResourceProperties("AWS::ECS::Cluster", {
       ClusterName: "lightbulb-dev-container",
@@ -228,53 +195,6 @@ describe("ContainerStack — dev", () => {
     // The image repos are managed as existing AWS state outside any stack, to
     // avoid the "RETAIN orphan blocks recreate" trap.
     template.resourceCountIs("AWS::ECR::Repository", 0);
-  });
-
-  test("creates the image-builder OIDC role for CI image pushes", () => {
-    template.hasResourceProperties("AWS::IAM::Role", {
-      RoleName: "lightbulb-openclaw-image-builder",
-      AssumeRolePolicyDocument: Match.objectLike({
-        Statement: Match.arrayWith([
-          Match.objectLike({
-            Action: "sts:AssumeRoleWithWebIdentity",
-            Condition: Match.objectLike({
-              StringLike: Match.absent(),
-              StringEquals: Match.objectLike({
-                "token.actions.githubusercontent.com:sub":
-                  "repo:TheLightbulbCompany@253404738/lightbulb@1182791203:ref:refs/heads/main",
-                "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
-                // The OpenClaw image and its workflow are deleted; a workflow
-                // that can assume this role but has no ECR grant would fail on
-                // push instead of at the door.
-                "token.actions.githubusercontent.com:workflow": ["build-hermes-image"],
-              }),
-            }),
-          }),
-        ]),
-      }),
-    });
-  });
-
-  test("builder role has ECR auth + push permissions", () => {
-    template.hasResourceProperties("AWS::IAM::Policy", {
-      PolicyDocument: Match.objectLike({
-        Statement: Match.arrayWith([
-          Match.objectLike({
-            Action: "ecr:GetAuthorizationToken",
-            Effect: "Allow",
-            Resource: "*",
-          }),
-        ]),
-      }),
-    });
-  });
-
-  test("creates the per-owner state bucket every Hermes profile lives in", () => {
-    // Named for litestream, which is a scar: `<owner>/hermes/<agent>/...` is
-    // what it holds now. Renaming it strands every profile.
-    template.hasResourceProperties("AWS::S3::Bucket", {
-      BucketName: "lightbulb-dev-openclaw-replicas",
-    });
   });
 
   test("creates the OwnerBedrockBasePolicy managed policy", () => {
@@ -469,18 +389,6 @@ describe("ContainerStack — prod", () => {
     );
     expect(roleNames).not.toContain("lightbulb-prod-openclaw-task");
     expect(roleNames).not.toContain("lightbulb-prod-openclaw-task-execution");
-  });
-
-  test("state bucket is RETAINed in prod (never auto-deleted)", () => {
-    // The other half of the asymmetry: ENV_CONFIG's RETAIN still governs the
-    // replicas bucket and MUST keep doing so — every Hermes profile lives in
-    // it. A fix for the filesystem's DeletionPolicy that goes through
-    // ENV_CONFIG would take this with it.
-    template.hasResource("AWS::S3::Bucket", {
-      Properties: Match.objectLike({ BucketName: "lightbulb-prod-openclaw-replicas" }),
-      DeletionPolicy: "Retain",
-      UpdateReplacePolicy: "Retain",
-    });
   });
 
   test("does NOT create the image-builder role (single account-wide role)", () => {

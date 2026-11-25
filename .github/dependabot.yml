@@ -7,7 +7,6 @@ updates:
     directories:
       - /
       - /apps/infra
-      - /apps/infra/lambda/openrouter-gate
     schedule: { interval: weekly }
     open-pull-requests-limit: 5
     groups:
@@ -16,7 +15,6 @@ updates:
   - package-ecosystem: uv
     directories:
       - /apps/backend
-      - /apps/huddle-agent
     schedule: { interval: weekly }
     open-pull-requests-limit: 5
     # Library majors are deliberate migrations, not bot merges.

@@ -401,6 +401,9 @@ export class NetworkStack extends cdk.Stack {
       defaultTargetGroups: [engineTargetGroup],
     });
     this.exportValue(engineTargetGroup.targetGroupArn);
+    // Same pin: the deployed api (bv- door) and service stacks import the ALB's ARN and DNS name.
+    this.exportValue(alb.loadBalancerArn);
+    this.exportValue(alb.loadBalancerDnsName);
     this.exportValue(engineTargetGroup.targetGroupFullName);
 
     return { alb, targetGroup, engineTargetGroup, httpListenerArn: httpListener.listenerArn, httpsListenerArn };

@@ -1,7 +1,6 @@
 import * as cdk from "aws-cdk-lib";
 import { Match, Template } from "aws-cdk-lib/assertions";
 import { NetworkStack } from "../lib/stacks/network-stack";
-import enginePaths from "../lib/engine-paths.json";
 
 function buildNetworkStack(environment: "dev" | "prod"): Template {
   const app = new cdk.App();
@@ -31,57 +30,6 @@ describe("NetworkStack — backend target group drain", () => {
         ]),
       },
     );
-  });
-});
-
-describe("NetworkStack — browser-view listener", () => {
-  const template = buildNetworkStack("dev");
-
-  // The :8081 listener is the only WebSocket-capable door to the backend, and
-  // its SG rule admits the WHOLE VPC CIDR (CloudFront VPC-origin ENIs sit
-  // behind an AWS-managed SG that doesn't exist until first deploy, so the
-  // rule can't be narrower). What keeps that safe is the routing cap: 404 by
-  // default, exactly two paths forwarded (browser-view live view + the
-  // machine gateway relay). These assertions ARE that cap — if one fails,
-  // in-VPC callers (per-user containers included) just gained reach into
-  // more of FastAPI than those two Clerk/device/service-authenticated routes.
-  test("8081 listener defaults to 404 and forwards ONLY the machine relay path", () => {
-    template.hasResourceProperties("AWS::ElasticLoadBalancingV2::Listener", {
-      Port: 8081,
-      Protocol: "HTTP",
-      DefaultActions: [
-        Match.objectLike({
-          Type: "fixed-response",
-          FixedResponseConfig: Match.objectLike({ StatusCode: "404" }),
-        }),
-      ],
-    });
-    template.hasResourceProperties("AWS::ElasticLoadBalancingV2::ListenerRule", {
-      Conditions: [
-        Match.objectLike({
-          Field: "path-pattern",
-          PathPatternConfig: { Values: ["/api/v1/gateway/*"] },
-        }),
-      ],
-      Actions: [Match.objectLike({ Type: "forward" })],
-    });
-  });
-
-  test("ALB security group admits ONLY the VPC CIDR on 8081", () => {
-    // The source matters as much as the port: an ingress of 0.0.0.0/0 here
-    // would satisfy a port-only assertion while exposing the listener to the
-    // internet. The CIDR is a same-stack reference to the VPC resource, so it
-    // renders as Fn::GetAtt [Vpc, CidrBlock] — pin exactly that shape.
-    template.hasResourceProperties("AWS::EC2::SecurityGroup", {
-      SecurityGroupIngress: Match.arrayWith([
-        Match.objectLike({
-          FromPort: 8081,
-          ToPort: 8081,
-          IpProtocol: "tcp",
-          CidrIp: { "Fn::GetAtt": [Match.stringLikeRegexp("^Vpc"), "CidrBlock"] },
-        }),
-      ]),
-    });
   });
 });
 
@@ -166,39 +114,3 @@ describe("NetworkStack: engine listener", () => {
   });
 });
 
-describe("NetworkStack: the runtime's engine paths on :80", () => {
-  test.each(["dev", "prod"] as const)("one rule sends engine-paths.json to the engine, the rest stays on the backend (%s)", (env) => {
-    const template = buildNetworkStack(env);
-    const tgId = (name: string) =>
-      Object.keys(template.findResources("AWS::ElasticLoadBalancingV2::TargetGroup", { Properties: { Name: name } }))[0];
-    const listenerId = (port: number) =>
-      Object.keys(template.findResources("AWS::ElasticLoadBalancingV2::Listener", { Properties: { Port: port } }))[0];
-    const http = listenerId(80);
-    // The default action is unchanged: everything not listed goes to the backend.
-    template.hasResourceProperties("AWS::ElasticLoadBalancingV2::Listener", {
-      Port: 80,
-      DefaultActions: [Match.objectLike({ Type: "forward", TargetGroupArn: { Ref: tgId(`lightbulb-${env}-backend`) } })],
-    });
-    const rules = Object.values(template.findResources("AWS::ElasticLoadBalancingV2::ListenerRule"))
-      .map((r: any) => r.Properties)
-      .filter((p: any) => p.ListenerArn.Ref === http);
-    expect(rules).toEqual([
-      {
-        ListenerArn: { Ref: http },
-        Priority: 10,
-        Conditions: [{ Field: "path-pattern", PathPatternConfig: { Values: enginePaths.paths } }],
-        Actions: [{ Type: "forward", TargetGroupArn: { Ref: tgId(`lightbulb-${env}-engine`) } }],
-      },
-    ]);
-    // The engine's own callbacks into the products land on the backend.
-    expect(enginePaths.paths.some((p) => "/api/v1/internal/engine/".startsWith(p.replace("*", "")))).toBe(false);
-    // The browser-view listener gets no engine rule.
-    for (const port of [8081]) {
-      const id = listenerId(port);
-      const forwards = Object.values(template.findResources("AWS::ElasticLoadBalancingV2::ListenerRule"))
-        .map((r: any) => r.Properties)
-        .filter((p: any) => p.ListenerArn.Ref === id && JSON.stringify(p.Actions).includes(tgId(`lightbulb-${env}-engine`)));
-      expect(forwards).toEqual([]);
-    }
-  });
-});

@@ -87,7 +87,7 @@ def capture_product_event(
     break the billing path.
     """
     client = _client_or_none()
-    if client is None or not distinct_id:
+    if not distinct_id:
         return
     props = dict(properties or {})
     # Super-property so dev and prod are separable in the shared PostHog project.
@@ -100,7 +100,23 @@ def capture_product_event(
         props["$set"] = {**props.get("$set", {}), **set_person}
     if set_once:
         props["$set_once"] = {**props.get("$set_once", {}), **set_once}
-    _send(client, distinct_id, event, props, event_uuid)
+    if client is not None:
+        _send(client, distinct_id, event, props, event_uuid)
+    if props.get("product") == "spark":
+        _tee_to_store(distinct_id, event, props, event_uuid)
+
+
+def _tee_to_store(distinct_id: str, event: str, props: dict, event_uuid: str | None) -> None:
+    """Spark events also go to the data store (opt-out checked there), without the person facts. Never raises."""
+    try:
+        from core.observability import spark_store
+
+        data = {k: v for k, v in props.items() if k not in ("$set", "$set_once")}
+        spark_store.put_event(
+            distinct_id, spark_store.user_of(distinct_id), data.get("install_id"), event, data, event_uuid=event_uuid
+        )
+    except Exception:  # noqa: BLE001 -- the store must never break a caller
+        logger.warning("spark store tee failed (event=%s)", event, exc_info=True)
 
 
 def alias_product_person(*, person_id: str, anonymous_id: str) -> None:

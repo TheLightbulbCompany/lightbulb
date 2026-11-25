@@ -638,6 +638,8 @@ async def post_event(request: Request, auth: AuthContext | None = Depends(get_op
             product_analytics.capture_product_event(
                 distinct_id=distinct_id, event=event, properties=props, event_uuid=once, set_once=set_once
             )
+            if auth and event == "task_started" and settings.SPARK_STORE_ENABLED and "task_id" in props:
+                os_voice.spawn(os_voice.mark_task(auth.user_id, props["task_id"]))  # a valid id: allowed_properties
     except Exception:  # noqa: BLE001  analytics never fails the app
         logger.warning("os event not captured", exc_info=True)
     return Response(status_code=204)

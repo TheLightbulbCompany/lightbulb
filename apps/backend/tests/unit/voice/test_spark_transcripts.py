@@ -1,7 +1,9 @@
 """Spark voice transcripts: the sideband turns GPT-Live transcript deltas into one saved item per turn, only
 when SPARK_TRANSCRIPTS_ENABLED is on; a failed write never touches the session; account deletion removes them."""
 
+import asyncio
 import json
+import uuid
 
 import boto3
 import pytest
@@ -9,6 +11,7 @@ from moto import mock_aws
 
 from core import dynamodb
 from core.config import settings
+from core.observability import spark_events, spark_store
 from core.voice import os_voice
 from scripts import spark_transcripts
 
@@ -279,3 +282,213 @@ def test_the_script_hides_the_user_id():
     item = {"user_id": "user_a", "sk": f"1800000000#{SID}#1", "sessionId": SID, "role": "user", "text": "hi"}
     out = spark_transcripts.render([item])
     assert "user_a" not in out and spark_transcripts.person("user_a") in out and "user: hi" in out
+
+
+# --- the Spark data store dual-write ----------------------------------------------------------------------
+
+
+@pytest.fixture
+def stored(table, on, monkeypatch):
+    """Store on; `put_turns` is a recorder. Returns the list of row batches it was given."""
+    monkeypatch.setattr(settings, "SPARK_STORE_ENABLED", True)
+    calls = []
+
+    async def put_turns(batch):
+        calls.append(batch)
+
+    monkeypatch.setattr(spark_store, "put_turns", put_turns)
+    return calls
+
+
+async def settle():
+    await asyncio.gather(*(t for t in os_voice._BACKGROUND if t.get_loop() is asyncio.get_running_loop()))
+
+
+def store_state(**kw):
+    return (
+        state()
+        | {"storeOk": True, "taskId": "dlg_abcdefghij12", "client": {"platform": "mac", "appVersion": "2.1.1"}}
+        | kw
+    )
+
+
+async def test_a_saved_turn_is_also_handed_to_the_store_once(stored, table):
+    s = store_state()
+    await hear(s, ("user", "Text Sam, my code is 482913", 1000))
+    await os_voice._flush(s)
+    await settle()
+    assert stored == [
+        [
+            {
+                "row_id": str(uuid.uuid5(spark_events.NS, f"{SID}:1000:user")),
+                "ts": (1_800_000_000 * 1000 + 1000) * 1000,
+                "user_id": "user_a",
+                "session_id": SID,
+                "task_id": "dlg_abcdefghij12",
+                "role": "person",
+                "source": "voice",
+                "text": "Text Sam, my code is [code]",
+                "platform": "mac",
+                "app_version": "2.1.1",
+            }
+        ]
+    ]
+    assert [r["text"] for r in rows(table)] == ["Text Sam, my code is 482913"]  # the DynamoDB item is untouched
+
+
+async def test_spark_turns_are_role_spark_and_text_is_cut_to_8000(stored):
+    s = store_state()
+    await hear(s, ("spark", "y" * 9000))
+    await os_voice._flush(s)
+    await settle()
+    (row,) = stored[0]
+    assert row["role"] == "spark" and len(row["text"]) == 8000
+
+
+async def test_no_task_or_client_gives_nulls(stored):
+    s = state() | {"storeOk": True}
+    await hear(s, ("user", "hi"))
+    await os_voice._flush(s)
+    await settle()
+    (row,) = stored[0]
+    assert (row["task_id"], row["platform"], row["app_version"]) == (None, None, None)
+
+
+@pytest.mark.parametrize(
+    "setup",
+    [
+        pytest.param(lambda s: s.pop("storeOk"), id="no storeOk"),
+        pytest.param(lambda s: s.update(storeOk=False), id="storeOk false"),
+        pytest.param(lambda s: s.update(client={"analytics": False}), id="analytics off"),
+    ],
+)
+async def test_nothing_is_stored_when_the_session_may_not(stored, setup):
+    s = store_state()
+    setup(s)
+    await hear(s, ("user", "private"))
+    await os_voice._flush(s)
+    await settle()
+    assert stored == []
+
+
+async def test_flag_off_stores_nothing(stored, monkeypatch):
+    monkeypatch.setattr(settings, "SPARK_STORE_ENABLED", False)
+    s = store_state()
+    await hear(s, ("user", "hi"))
+    await os_voice._flush(s)
+    await settle()
+    assert stored == []
+
+
+async def test_no_transcript_stores_nothing(stored):
+    s = store_state()
+    await hear(s, ("user", "held"))
+    s["noTranscript"] = True
+    await os_voice._flush(s)
+    await settle()
+    assert stored == []
+
+
+async def test_a_turn_the_dynamodb_transaction_refused_is_not_stored(stored, table):
+    table.meta.client.put_item(
+        TableName=dynamodb.table_name("users"), Item={"user_id": "user_a", "os_analytics_off": True}
+    )
+    s = store_state()
+    await hear(s, ("user", "late"))
+    await os_voice._flush(s)
+    await settle()
+    assert stored == [] and rows(table) == []
+
+
+async def test_a_failing_store_never_breaks_the_save(stored, table, monkeypatch):
+    async def boom(batch):
+        raise RuntimeError("firehose down")
+
+    monkeypatch.setattr(spark_store, "put_turns", boom)
+    s = store_state()
+    await hear(s, ("user", "hi"))
+    await os_voice._flush(s)
+    await settle()
+    assert [r["text"] for r in rows(table)] == ["hi"]
+
+
+class WS:
+    async def send(self, _):
+        pass
+
+
+async def test_tick_copies_the_current_task_and_asks_the_store_every_tick(stored, table, monkeypatch):
+    table.meta.client.update_item(
+        TableName=dynamodb.table_name("containers"), Key=os_voice._key(SID),
+        UpdateExpression="SET currentTaskId = :t", ExpressionAttributeValues={":t": "dlg_zzzzzzzzzz"},
+    )  # fmt: skip
+    answers = iter([True, False])
+
+    monkeypatch.setattr(spark_store, "allowed_now", lambda uid: next(answers))
+    s = state() | {"trialEndsAt": None, "storeOk": False}
+    assert await os_voice._tick(WS(), s)
+    assert s["taskId"] == "dlg_zzzzzzzzzz" and s["storeOk"] is True
+    assert await os_voice._tick(WS(), s)
+    assert s["storeOk"] is False  # the person opted out meanwhile
+
+
+async def test_a_store_bug_is_not_a_failed_transcript_write(stored, table, monkeypatch):
+    seen = []
+    monkeypatch.setattr(os_voice, "put_metric", lambda name, *a, **kw: seen.append(name))
+
+    def boom(text):
+        raise RuntimeError("scrub bug")
+
+    monkeypatch.setattr(spark_store, "scrub", boom)
+    s = store_state()
+    await hear(s, ("user", "secret words"))
+    await os_voice._flush(s)
+    assert [r["text"] for r in rows(table)] == ["secret words"]  # the DynamoDB save stands
+    assert seen == ["spark_store.put_failed"]
+
+
+async def test_tick_does_not_ask_when_the_store_is_off(table, on, monkeypatch):
+    def asked(uid):
+        raise AssertionError("asked")
+
+    monkeypatch.setattr(spark_store, "allowed_now", asked)
+    s = state() | {"trialEndsAt": None}
+    for _ in range(3):
+        assert await os_voice._tick(WS(), s)
+    assert "storeOk" not in s
+
+
+async def test_mark_task_sets_it_on_the_persons_active_sessions_only(table):
+    containers = dynamodb.table_name("containers")
+    client = table.meta.client
+    client.put_item(
+        TableName=dynamodb.table_name("users"), Item={"user_id": "user_a", "os_voice_active": {SID, "vs_gone"}}
+    )
+    await os_voice.mark_task("user_a", "dlg_abcdefghij12")
+    got = lambda sid: client.get_item(TableName=containers, Key=os_voice._key(sid))["Item"].get("currentTaskId")  # noqa: E731
+    assert got(SID) == "dlg_abcdefghij12" and got("vs_2") is None
+    assert "Item" not in client.get_item(TableName=containers, Key=os_voice._key("vs_gone"))  # no row is created
+
+
+async def test_mark_task_skips_an_ended_session(table):
+    client = table.meta.client
+    containers = dynamodb.table_name("containers")
+    client.update_item(
+        TableName=containers, Key=os_voice._key(SID), UpdateExpression="REMOVE #st",
+        ExpressionAttributeNames={"#st": "status"},
+    )  # fmt: skip
+    client.put_item(TableName=dynamodb.table_name("users"), Item={"user_id": "user_a", "os_voice_active": {SID}})
+    await os_voice.mark_task("user_a", "dlg_abcdefghij12")
+    assert "currentTaskId" not in client.get_item(TableName=containers, Key=os_voice._key(SID))["Item"]
+
+
+async def test_mark_task_for_a_person_with_no_row_does_nothing(table):
+    await os_voice.mark_task("user_nobody", "dlg_abcdefghij12")
+
+
+async def test_an_opt_out_stops_the_stores_cache_at_once(table, on, monkeypatch):
+    seen = []
+    monkeypatch.setattr(spark_store, "forget_locally", seen.append)
+    table.meta.client.put_item(TableName=dynamodb.table_name("users"), Item={"user_id": "user_a"})
+    await os_voice.stop_transcripts("user_a")
+    assert seen == ["user_a"]

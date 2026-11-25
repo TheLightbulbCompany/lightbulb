@@ -33,7 +33,7 @@ from fastapi.responses import JSONResponse
 
 from core.config import settings
 from core.dynamodb import get_table, is_cancelled, run_in_thread, transact
-from core.observability import spark_events
+from core.observability import spark_events, spark_store
 from core.observability.metrics import put_metric
 from core.repositories import container_repo
 
@@ -403,6 +403,11 @@ async def _tick(ws, s: dict) -> bool:
         return False
     s["closeRequested"] = row.get("closeRequested")
     s["noTranscript"] = row.get("noTranscript")
+    # The latest task started in this session, deliberately never cleared: the person's reaction after a task is
+    # tagged with it.
+    s["taskId"] = row.get("currentTaskId")
+    if settings.SPARK_STORE_ENABLED:
+        s["storeOk"] = spark_store.allowed_now(s["userId"])  # never waits: off until the first answer
     if s["noTranscript"]:
         s.pop("turns", None)  # opted out: what is held is dropped unsaved
     await _flush(s, idle=TURN_PAUSE_S)
@@ -458,6 +463,32 @@ async def _save_turn(s: dict, role: str, text: str, start_ms: int) -> None:
     except Exception as e:  # noqa: BLE001 -- the type only: the text is never logged
         put_metric("os_voice.transcript.write_failed")
         logger.warning("os voice session %s: transcript write failed: %s", s["sessionId"], type(e).__name__)
+    else:  # saved: the store's copy is separate, so a bug there is not a failed transcript write
+        try:
+            _store_turn(s, role, text, start_ms)
+        except Exception as e:  # noqa: BLE001 -- the type only
+            put_metric("spark_store.put_failed")
+            logger.warning("os voice session %s: store hand-off failed: %s", s["sessionId"], type(e).__name__)
+
+
+def _store_turn(s: dict, role: str, text: str, start_ms: int) -> None:
+    """Also hand the turn it just saved to the data store, in the background (it never delays or fails the save)."""
+    if not (settings.SPARK_STORE_ENABLED and s.get("storeOk") and _saves(s)):
+        return
+    client = s.get("client") or {}
+    row = {
+        "row_id": str(uuid.uuid5(spark_events.NS, f"{s['sessionId']}:{start_ms}:{role}")),
+        "ts": (int(s["startedAt"]) * 1000 + start_ms) * 1000,  # epoch microseconds
+        "user_id": s["userId"],
+        "session_id": s["sessionId"],
+        "task_id": s.get("taskId"),
+        "role": "person" if role == "user" else "spark",
+        "source": "voice",
+        "text": spark_store.scrub(text)[:8000],
+        "platform": client.get("platform"),
+        "app_version": client.get("appVersion"),
+    }
+    spawn(spark_store.put_turns([row]))
 
 
 async def _flush(s: dict, idle: float = 0.0) -> None:
@@ -538,6 +569,7 @@ async def run_sideband(sid: str) -> None:
         return
     s = await get(sid)
     s["trialEndsAt"] = await _trial_ends_at(s["userId"])
+    s["storeOk"] = bool(settings.SPARK_STORE_ENABLED) and spark_store.allowed_now(s["userId"])
     connected = False
     try:
         try:
@@ -599,6 +631,8 @@ async def forget(user_id: str, sessions) -> None:
 
 async def _set_opt_out(user_id: str, off: bool) -> None:
     """Mark (or unmark) the person's users row `os_analytics_off`; a person with no row gets none."""
+    if off:
+        spark_store.forget_locally(user_id)
     with contextlib.suppress(ClientError):
         await run_in_thread(
             get_table("users").update_item,
@@ -632,6 +666,24 @@ async def stop_transcripts(user_id: str) -> None:
                 ExpressionAttributeValues={":t": True, ":active": ACTIVE},
             )
     await delete_transcripts(user_id)
+
+
+async def mark_task(user_id: str, task_id: str) -> None:
+    """The person's app started a task: tag their active sessions with it, so the turns saved from now on carry
+    it (the sideband copies `currentTaskId` into its state each tick)."""
+    person = (
+        await run_in_thread(get_table("users").get_item, Key={"user_id": user_id}, ProjectionExpression=ACTIVE)
+    ).get("Item") or {}
+    for sid in person.get(ACTIVE) or ():
+        with contextlib.suppress(ClientError):  # ended meanwhile: nothing to tag
+            await run_in_thread(
+                _table().update_item,
+                Key=_key(sid),
+                UpdateExpression="SET currentTaskId = :t",
+                ConditionExpression="#st = :active",
+                ExpressionAttributeNames={"#st": "status"},
+                ExpressionAttributeValues={":t": task_id, ":active": ACTIVE},
+            )
 
 
 async def delete_transcripts(user_id: str) -> None:

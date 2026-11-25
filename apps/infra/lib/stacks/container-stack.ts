@@ -3,12 +3,10 @@ import * as path from "path";
 import * as cdk from "aws-cdk-lib";
 import * as bedrockagentcore from "aws-cdk-lib/aws-bedrockagentcore";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
-import * as ecr from "aws-cdk-lib/aws-ecr";
 import * as ecs from "aws-cdk-lib/aws-ecs";
 import * as events from "aws-cdk-lib/aws-events";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as logs from "aws-cdk-lib/aws-logs";
-import * as s3 from "aws-cdk-lib/aws-s3";
 import { Construct } from "constructs";
 import { logGroupPath } from "../table-names";
 
@@ -75,7 +73,6 @@ export class ContainerStack extends cdk.Stack {
 
     const config = ENV_CONFIG[props.environment] ?? ENV_CONFIG.dev;
 
-    const litestreamBucketName = `lightbulb-${props.environment}-openclaw-replicas`;
 
     // THE PLATFORM ECS cluster — the backend Fargate service (service-stack)
     // runs on it. Nothing per-user does
@@ -565,112 +562,27 @@ export class ContainerStack extends cdk.Stack {
       ],
     });
 
-    // ROLLBACK CONSTRAINT: there is no EFS-layout flag to flip back to — the
-    // local-sqlite layout is the only layout. Reverting means reverting the
-    // code, and that alone does NOT restore an env: RemovalPolicy.RETAIN
-    // (prod) leaves this literal-named bucket behind, so a later re-promotion
-    // fails with "bucket already exists" until it is imported or deleted, and
-    // containers that already migrated have their pre-cutover state in EFS
-    // pre-migration-archive/, which must be restored too. Rollback is a manual
-    // ops sequence -- restore that archive into .openclaw/{state,agents}, then
-    // revert -- never a bare revert.
-    //
-    // The per-owner S3 GRANT is NOT here: this boundary statement is only a
-    // cap. The actual prefix-scoped inline policy ("owner-litestream-s3") is
-    // minted per owner by the backend's ensure_owner_bedrock_role, and
-    // existing owners are backfilled by
-    // apps/backend/scripts/ensure_litestream_s3_policies.py — which MUST run
-    // before any fleet restart wave in an env whose owners predate this
-    // bucket, or litestream (the boot supervisor) AccessDenies and tasks
-    // crash-loop.
-    //
-    // Litestream replica bucket — durability layer for hot SQLite on
-    // container-local disk. Literal name (consumers reference by name, never
-    // cross-stack refs — KMS-cycle posture); SSE-S3 like every other bucket in
-    // this repo (the CMK posture deliberately does not extend to S3 — flagged
-    // trade-off: replicas carry auth_profile_store rows, fenced by BLOCK_ALL +
-    // per-owner-prefix IAM). Request metrics enabled so the idle-PUT pathology
-    // (litestream#1171, still OPEN: ~480 PUT/hr per idle DB) is alarmable.
-    // Litestream's docs say an incremental sync with no new WAL pages writes
-    // no file, but we have NOT observed our own idle rate yet — treat this
-    // alarm, not that claim, as the source of truth, and gate the prod
-    // promotion on a measured idle window. No lifecycle expiration — Litestream retention owns pruning
-    // (deleting LTX files under it would break restores). The one rule reclaims the parts of a
-    // multipart upload a stopped session never completed (a SIGTERM save of a large state.db is
-    // cut off at os._exit), which are billed storage and never otherwise removed.
-    new s3.Bucket(this, "OpenclawReplicasBucket", {
-      bucketName: litestreamBucketName,
-      encryption: s3.BucketEncryption.S3_MANAGED,
-      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
-      removalPolicy: config.removalPolicy,
-      autoDeleteObjects: props.environment !== "prod",
-      metrics: [{ id: "EntireBucket" }],
-      lifecycleRules: [
-        { abortIncompleteMultipartUploadAfter: cdk.Duration.days(1) },
-        // Workspace session transcripts: free-plan ones are kept 30 days, workspace-plan ones a
-        // year. Prefix-scoped so the Litestream and per-owner state above is never expired.
-        { id: "SessionsFree", prefix: "sessions/free/", expiration: cdk.Duration.days(30) },
-        { id: "SessionsWorkspace", prefix: "sessions/workspace/", expiration: cdk.Duration.days(365) },
-        // Super-agent task overlays (<owner>/hermes-tasks/<task>/<agent>/): every object a
-        // per-task VM writes carries this tag; 14 days after its last write the overlay goes
-        // (spec 07 §6). Tag-scoped, never prefix-scoped: Litestream and specialist profile
-        // objects are never tagged, and in prod nothing is, so the rule is inert there.
-        { id: "TaskOverlays", tagFilters: { "lb-kind": "task-overlay" }, expiration: cdk.Duration.days(14) },
-      ],
-    });
 
-    // The account-scoped image repositories are IMPORTED, never created by CDK — the
-    // repos and their image history outlive any stack teardown. Only the builder role's
-    // grants live here.
-    if (props.environment === "dev") {
-      // OIDC role for the image-build workflows. Scoped to this repo so the
-      // existing isol8-dev-github-actions role (which only has sts:AssumeRole
-      // on cdk-* roles) doesn't need broader ECR perms. Created in dev only
-      // (account-scoped role, single source of truth). The `openclaw` in its
-      // name is a scar — renaming replaces the role, and build-hermes-image.yml
-      // hardcodes this ARN.
-      const oidcProviderArn = `arn:aws:iam::${this.account}:oidc-provider/token.actions.githubusercontent.com`;
-      const oidcProvider = iam.OpenIdConnectProvider.fromOpenIdConnectProviderArn(
-        this,
-        "GithubOidcProvider",
-        oidcProviderArn,
-      );
-      const builderRole = new iam.Role(this, "OpenclawImageBuilderRole", {
-        roleName: "lightbulb-openclaw-image-builder",
-        assumedBy: new iam.OpenIdConnectPrincipal(oidcProvider, {
-          StringEquals: {
-            // After the 2026-08-30 org/repo rename GitHub mints id-qualified
-            // subs (owner@id/repo@id); the ids are immutable, so this form is
-            // rename-proof and the plain-name form never matches. Main is the
-            // publisher boundary: a feature-branch workflow must not bypass
-            // branch review and gain write access to either image repository.
-            "token.actions.githubusercontent.com:sub":
-              "repo:TheLightbulbCompany@253404738/lightbulb@1182791203:ref:refs/heads/main",
-            "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
-            "token.actions.githubusercontent.com:workflow": ["build-hermes-image"],
-          },
-        }),
-        description: "Used by .github/workflows/build-hermes-image.yml to push to ECR",
-        maxSessionDuration: cdk.Duration.minutes(60),
-      });
-      builderRole.addToPolicy(
-        new iam.PolicyStatement({
-          effect: iam.Effect.ALLOW,
-          actions: ["ecr:GetAuthorizationToken"],
-          resources: ["*"],
-        }),
-      );
-
-      // The build-hermes-image workflow (Task 20) uses this same OIDC role to push the
-      // Hermes bridge image. The repo itself already exists (the spike pushed to it
-      // manually) — referenced by name here only for this grant.
-      const hermesAgentRepoForBuilder = ecr.Repository.fromRepositoryName(
-        this,
-        "HermesAgentRepoForBuilder",
-        "lightbulb/hermes-agent-arm64",
-      );
-      hermesAgentRepoForBuilder.grantPullPush(builderRole);
+    // ponytail: one-deploy pins. Spark is the only product now: nothing below the cluster is used,
+    // but the service stack still imports these ids on the deployed template and deploys after this
+    // stack, so CloudFormation refuses to drop the exports this time. The security groups and
+    // owner-role policies are also still attached to live AgentCore runtime ENIs and per-owner IAM
+    // roles the backend created, so they are RETAIN: the follow-up PR that deletes everything below
+    // the cluster then leaves them for the hand cleanup instead of failing the stack.
+    for (const retained of [
+      this.containerSecurityGroup,
+      this.ownerBedrockBasePolicy,
+      this.ownerBedrockBoundary,
+      browserSecurityGroup,
+    ]) {
+      retained.applyRemovalPolicy(cdk.RemovalPolicy.RETAIN);
     }
+    this.exportValue(this.containerSecurityGroup.securityGroupId);
+    this.exportValue(this.ownerBedrockBasePolicy.managedPolicyArn);
+    this.exportValue(this.ownerBedrockBoundary.managedPolicyArn);
+    this.exportValue(this.workspaceMemory.attrMemoryId);
+    this.exportValue(this.sessionsMemory.attrMemoryId);
+    this.exportValue(this.workspaceBrowser.attrBrowserId);
 
     // ECS task-state-change trail for the PLATFORM cluster. ECS keeps a stopped
     // task's record for ~1 hour, then drops `stoppedReason`/`stopCode` entirely —

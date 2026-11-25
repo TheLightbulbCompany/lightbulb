@@ -1,12 +1,7 @@
 import * as cdk from "aws-cdk-lib";
-import * as iam from "aws-cdk-lib/aws-iam";
 import * as kms from "aws-cdk-lib/aws-kms";
-import * as lambda from "aws-cdk-lib/aws-lambda";
-import * as logs from "aws-cdk-lib/aws-logs";
 import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
-import * as cr from "aws-cdk-lib/custom-resources";
 import { Construct } from "constructs";
-import { logGroupPath } from "../table-names";
 
 export interface AuthSecrets {
   clerkIssuer: secretsmanager.ISecret;
@@ -14,12 +9,8 @@ export interface AuthSecrets {
   clerkWebhookSecret: secretsmanager.ISecret;
   stripeSecretKey: secretsmanager.ISecret;
   stripeWebhookSecret: secretsmanager.ISecret;
-  encryptionKey: secretsmanager.ISecret;
   posthogProjectApiKey: secretsmanager.ISecret;
   openaiApiKey: secretsmanager.ISecret;
-  livekitApiKey: secretsmanager.ISecret;
-  livekitApiSecret: secretsmanager.ISecret;
-  huddleWorkerSecret: secretsmanager.ISecret;
 }
 
 export interface AuthStackProps extends cdk.StackProps {
@@ -33,14 +24,11 @@ export class AuthStack extends cdk.Stack {
   public readonly kmsKey: kms.Key;
   public readonly paperclipServiceTokenKey: secretsmanager.Secret;
   public readonly wsInternalSecret: secretsmanager.Secret;
-  public readonly engineServiceToken: secretsmanager.Secret;
   public readonly networkProofKey: secretsmanager.Secret;
   public readonly gogKeyringPassword: secretsmanager.Secret;
   public readonly metronomeApiKey: secretsmanager.Secret;
   public readonly metronomeWebhookSecret: secretsmanager.Secret;
   public readonly sesIngestSecret: secretsmanager.Secret;
-  public readonly gateBearerHmacKey: secretsmanager.Secret;
-  public readonly hookGrantSigningKey: secretsmanager.Secret;
   constructor(scope: Construct, id: string, props: AuthStackProps) {
     super(scope, id, props);
 
@@ -93,8 +81,6 @@ export class AuthStack extends cdk.Stack {
       return make(`${logicalId}Lightbulb`, "lightbulb");
     };
 
-    const encryptionKey = createSecret("EncryptionKey", "encryption_key");
-
     this.secrets = {
       clerkIssuer: createSecret("ClerkIssuer", "clerk_issuer"),
       clerkSecretKey: createSecret("ClerkSecretKey", "clerk_secret_key"),
@@ -108,7 +94,6 @@ export class AuthStack extends cdk.Stack {
       clerkWebhookSecret: createSecret("ClerkWebhookSecret", "clerk_webhook_secret"),
       stripeSecretKey: createSecret("StripeSecretKey", "stripe_secret_key"),
       stripeWebhookSecret: createSecret("StripeWebhookSecret", "stripe_webhook_secret"),
-      encryptionKey,
       // Same createSecret pattern as Clerk/Stripe — CDK generates a random
       // placeholder on first create (CFN emits only GenerateSecretString).
       // Operator immediately overrides via `aws secretsmanager update-secret`
@@ -118,10 +103,6 @@ export class AuthStack extends cdk.Stack {
       posthogProjectApiKey: createSecret("PosthogProjectApiKey", "posthog_project_api_key"),
       // The CDK-generated placeholder is intentionally not a valid key: voice stays off until the owner sets a real sk- key.
       openaiApiKey: createSecret("OpenaiApiKey", "openai_api_key"),
-      // Huddles: placeholders until the LiveKit account exists; huddle routes stay 503 while LIVEKIT_URL is empty.
-      livekitApiKey: createSecret("LivekitApiKey", "livekit_api_key"),
-      livekitApiSecret: createSecret("LivekitApiSecret", "livekit_api_secret"),
-      huddleWorkerSecret: createSecret("HuddleWorkerSecret", "huddle_worker_secret"),
     };
 
     // Paperclip-named but generic: the backend signs service tokens, share links,
@@ -145,15 +126,6 @@ export class AuthStack extends cdk.Stack {
       "ws_internal_secret",
       { passwordLength: 64, excludePunctuation: true },
       "Shared secret the WebSocket Lambdas attach so the backend /ws/* endpoints can distinguish them from forged public-gateway callers.",
-    );
-
-    // The bearer the engine service and the products send each other (core/engine/transport.py,
-    // ENGINE_SERVICE_TOKEN). Read by every backend-image process in service-stack.
-    this.engineServiceToken = createSecret(
-      "EngineServiceToken",
-      "engine_service_token",
-      { passwordLength: 64, excludePunctuation: true },
-      "Shared bearer between the engine service and the products (ENGINE_SERVICE_TOKEN).",
     );
 
     // Seeds the Ed25519 key that signs `lightbulb login` proofs (backend network_proof: the
@@ -208,27 +180,6 @@ export class AuthStack extends cdk.Stack {
       "Shared secret the SES-ingest Lambda attaches so /webhooks/ses-inbound can distinguish it from a forged caller.",
     );
 
-    // HMAC key the backend derives each workspace's bedrock-gate bearer from
-    // (bedrock_gate_tokens.derive_gate_bearer). Dedicated rather than
-    // encryption_key: rotating that one must not silently change every bearer,
-    // and holding it must not let anyone derive them. Rotating THIS one changes
-    // every owner's next derivation (live runtimes keep the bearer their boot
-    // secret carries). The backend reads it by name (service-stack).
-    this.gateBearerHmacKey = createSecret(
-      "GateBearerHmacKey",
-      "gate_bearer_hmac_key",
-      { passwordLength: 64, excludePunctuation: true },
-      "HMAC key for deriving per-workspace bedrock-gate bearer tokens. Never rotate casually.",
-    );
-
-    // Backend-only: owner runtimes do not receive this secret or its IAM read grant.
-    this.hookGrantSigningKey = createSecret(
-      "HookGrantSigningKey",
-      "hook_grant_signing_key",
-      { passwordLength: 64, excludePunctuation: true },
-      "Signing key for narrow runtime callback grants.",
-    );
-
     // Password the gog CLI's file-keyring backend uses to encrypt/decrypt the
     // owner's Google OAuth keyring on EFS (GOG_KEYRING_BACKEND=file +
     // GOG_KEYRING_PASSWORD). The SAME value is injected into both the backend
@@ -249,111 +200,20 @@ export class AuthStack extends cdk.Stack {
       "Stable password for the gog CLI file-keyring backend (Google OAuth keyring on EFS). Never rotate - rotation orphans every existing keyring.",
     );
 
-    // CDK's default GenerateSecretString produces a hex-ish placeholder that
-    // is NOT a valid Fernet key (Fernet wants 32 random bytes encoded as
-    // 44-char URL-safe base64). Bootstrap a real Fernet key on first deploy
-    // via a Lambda-backed Custom Resource. Idempotent: if the current value
-    // already decodes to 32 bytes via urlsafe_b64decode, the Lambda no-ops.
-    this.bootstrapFernetKey(encryptionKey, env);
-  }
-
-  private bootstrapFernetKey(secret: secretsmanager.Secret, env: string): void {
-    const handler = new lambda.Function(this, "FernetKeyBootstrapFn", {
-      functionName: `lightbulb-${env}-fernet-key-bootstrap`,
-      role: new iam.Role(this, "FernetKeyBootstrapFnRole", {
-        roleName: `lightbulb-${env}-fernet-key-bootstrap`,
-        assumedBy: new iam.ServicePrincipal("lambda.amazonaws.com"),
-        managedPolicies: [
-          iam.ManagedPolicy.fromAwsManagedPolicyName("service-role/AWSLambdaBasicExecutionRole"),
-        ],
-      }),
-      runtime: lambda.Runtime.PYTHON_3_12,
-      handler: "index.handler",
-      timeout: cdk.Duration.seconds(30),
-      logGroup: new logs.LogGroup(this, "FernetKeyBootstrapFnLogs", {
-        logGroupName: logGroupPath(env, "fernet-key-bootstrap"),
-        retention: logs.RetentionDays.ONE_MONTH,
-        removalPolicy: cdk.RemovalPolicy.DESTROY,
-      }),
-      code: lambda.Code.fromInline(`
-import base64
-import secrets as py_secrets
-
-import boto3
-
-sm = boto3.client("secretsmanager")
-
-def _is_valid_fernet(value):
-    if not isinstance(value, str) or len(value) != 44:
-        return False
-    try:
-        return len(base64.urlsafe_b64decode(value)) == 32
-    except Exception:
-        return False
-
-def handler(event, context):
-    request_type = event["RequestType"]
-    secret_id = event["ResourceProperties"]["SecretId"]
-
-    if request_type == "Delete":
-        return {"PhysicalResourceId": secret_id}
-
-    try:
-        current = sm.get_secret_value(SecretId=secret_id).get("SecretString", "")
-    except sm.exceptions.ResourceNotFoundException:
-        current = ""
-
-    if not _is_valid_fernet(current):
-        new_key = base64.urlsafe_b64encode(py_secrets.token_bytes(32)).decode()
-        sm.put_secret_value(SecretId=secret_id, SecretString=new_key)
-        rotated = True
-    else:
-        rotated = False
-
-    return {"PhysicalResourceId": secret_id, "Data": {"Rotated": str(rotated)}}
-`),
-    });
-
-    handler.addToRolePolicy(
-      new iam.PolicyStatement({
-        actions: ["secretsmanager:GetSecretValue", "secretsmanager:PutSecretValue"],
-        resources: [secret.secretArn],
-      }),
-    );
-    secret.encryptionKey?.grantEncryptDecrypt(handler);
-
-    const provider = new cr.Provider(this, "FernetKeyBootstrapProvider", {
-      onEventHandler: handler,
-      providerFunctionName: `lightbulb-${env}-fernet-key-bootstrap-provider`,
-      role: new iam.Role(this, "FernetKeyBootstrapProviderRole", {
-        roleName: `lightbulb-${env}-fernet-key-bootstrap-provider`,
-        assumedBy: new iam.ServicePrincipal("lambda.amazonaws.com"),
-        managedPolicies: [
-          iam.ManagedPolicy.fromAwsManagedPolicyName("service-role/AWSLambdaBasicExecutionRole"),
-        ],
-      }),
-      logGroup: new logs.LogGroup(this, "FernetKeyBootstrapProviderLogs", {
-        logGroupName: logGroupPath(env, "fernet-key-bootstrap-provider"),
-        retention: logs.RetentionDays.ONE_MONTH,
-        removalPolicy: cdk.RemovalPolicy.DESTROY,
-      }),
-    });
-
-    // "V2" because renaming the provider changed this resource's ServiceToken,
-    // and CloudFormation refuses to modify a custom resource's service token
-    // in place ("Modifying service token is not allowed") — the resource must
-    // be REPLACED via a new logical id. Safe: the handler's Delete never
-    // touches the secret, and the new Create no-ops on a valid key.
-    const resource = new cdk.CustomResource(this, "FernetKeyBootstrapV2", {
-      serviceToken: provider.serviceToken,
-      resourceType: "Custom::FernetKey",
-      properties: {
-        SecretId: secret.secretName,
-        // Bump this on intentional rotation; the handler is also called on
-        // every stack update and is a no-op when the value is already valid.
-        Version: "1",
-      },
-    });
-    resource.node.addDependency(secret);
+    // ponytail: one-deploy pins. Spark uses none of these six secrets, but the service stack's
+    // deployed template still imports them and deploys after this stack, so CloudFormation refuses
+    // to drop the exports this time. ses_ingest_secret is also imported by lightbulb-prod-ses-inbound,
+    // which is no longer deployed but still exists. Delete them (and these lines) in a follow-up
+    // after one green deploy and after the hand cleanup of the retired stacks.
+    for (const pinned of [
+      this.wsInternalSecret,
+      this.networkProofKey,
+      this.metronomeApiKey,
+      this.metronomeWebhookSecret,
+      this.sesIngestSecret,
+      this.gogKeyringPassword,
+    ]) {
+      this.exportValue(pinned.secretArn);
+    }
   }
 }

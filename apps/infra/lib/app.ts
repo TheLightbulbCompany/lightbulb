@@ -184,28 +184,11 @@ const pipeline = new GitHubWorkflow(app, "isol8-pipeline", {
       "rm -rf cdk.out",
       "npx cdk synth",
     ],
-    // Stripe flat-fee Price IDs (voice plan, Spark) are baked into the per-env ECS task env at
-    // synth time by service-stack.ts. Empty string is tolerated: that plan cannot be bought.
+    // Spark's Stripe Price ID is baked into the per-env ECS task env at synth time by
+    // service-stack.ts. Empty string is tolerated: Spark then offers no checkout link.
     env: {
-      STRIPE_VOICE_PLAN_PRICE_ID_DEV: "${{ secrets.STRIPE_VOICE_PLAN_PRICE_ID_DEV }}",
-      STRIPE_VOICE_PLAN_PRICE_ID_PROD: "${{ secrets.STRIPE_VOICE_PLAN_PRICE_ID_PROD }}",
       STRIPE_SPARK_PRICE_ID_DEV: "${{ secrets.STRIPE_SPARK_PRICE_ID_DEV }}",
       STRIPE_SPARK_PRICE_ID_PROD: "${{ secrets.STRIPE_SPARK_PRICE_ID_PROD }}",
-      OPENROUTER_WORKSPACE_ID_DEV: "${{ vars.OPENROUTER_WORKSPACE_ID_DEV }}",
-      OPENROUTER_WORKSPACE_ID_PROD: "${{ vars.OPENROUTER_WORKSPACE_ID_PROD }}",
-      OPENROUTER_MANAGED_MODEL_ID_DEV: "${{ vars.OPENROUTER_MANAGED_MODEL_ID_DEV }}",
-      OPENROUTER_MANAGED_MODEL_ID_PROD: "${{ vars.OPENROUTER_MANAGED_MODEL_ID_PROD }}",
-      OPENROUTER_MODEL_POLICY_JSON_DEV: "${{ vars.OPENROUTER_MODEL_POLICY_JSON_DEV }}",
-      OPENROUTER_MODEL_POLICY_JSON_PROD: "${{ vars.OPENROUTER_MODEL_POLICY_JSON_PROD }}",
-      // Same secrets the Vercel build job already consumes (lines below).
-      // Re-exported here so service-stack.ts can bake the publishable key
-      // into the backend container env at synth time — the paperclip-proxy
-      // bootstrap HTML needs it to load the Clerk SDK.
-      NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY_DEV: "${{ secrets.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY_DEV }}",
-      NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY_PROD: "${{ secrets.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY_PROD }}",
-      // OpenAI plugin portal's domain token, served at /.well-known/openai-apps-challenge. Empty = 404.
-      OPENAI_APPS_CHALLENGE_TOKEN_DEV: "${{ vars.OPENAI_APPS_CHALLENGE_TOKEN_DEV }}",
-      OPENAI_APPS_CHALLENGE_TOKEN_PROD: "${{ vars.OPENAI_APPS_CHALLENGE_TOKEN_PROD }}",
     },
     primaryOutputDirectory: "apps/infra/cdk.out",
   }),

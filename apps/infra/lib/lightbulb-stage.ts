@@ -1,52 +1,17 @@
 import * as cdk from "aws-cdk-lib";
 import * as logs from "aws-cdk-lib/aws-logs";
 import { Construct, IConstruct } from "constructs";
-import {
-  CLERK_DOMAIN,
-  DEV_ROOT_DOMAIN,
-  LEGACY_ROOT_DOMAIN,
-  PLATFORM_MAIL_DOMAIN,
-  ROOT_DOMAIN,
-} from "./domains";
-import { AgentMailOutboundStack } from "./stacks/agent-mail-outbound-stack";
+import { LEGACY_ROOT_DOMAIN, PLATFORM_MAIL_DOMAIN, ROOT_DOMAIN } from "./domains";
 import { ApiStack } from "./stacks/api-stack";
 import { AuthStack } from "./stacks/auth-stack";
-import { OpenRouterGateStack } from "./stacks/openrouter-gate-stack";
 import { ContainerStack } from "./stacks/container-stack";
 import { DatabaseStack } from "./stacks/database-stack";
 import { DnsStack } from "./stacks/dns-stack";
 import { NetworkStack } from "./stacks/network-stack";
 import { ObservabilityStack } from "./stacks/observability-stack";
-import { SesInboundStack } from "./stacks/ses-inbound-stack";
 import { ServiceStack } from "./stacks/service-stack";
 import { SparkStoreStack } from "./stacks/spark-store-stack";
-import { resourcePrefix, tableName } from "./table-names";
-
-// Connect platform client id (ca_…) per environment. Public, not a secret. The
-// company-Stripe OAuth connect flow and its callback are gone (#5248); account
-// wipe still uses this id to deauthorize an owner's connected account
-// (`company_stripe.deauthorize`). Empty means wipe skips the revoke at Stripe.
-const STRIPE_CONNECT_CLIENT_ID_BY_ENV: Record<string, string> = {
-  dev: "ca_VAYlHjvDMa4nm0M4C3uEen6Hk7cfpBBO",
-  prod: "ca_USVqSxboff54k8ETEYsNtlJK62FiFI7S",
-};
-
-// One LiveKit project ("Lightbulb") serves both envs; "" keeps an env dark.
-const LIVEKIT_URL_BY_ENV: Record<string, string> = {
-  dev: "wss://lightbulb-svx3a1rx.livekit.cloud",
-  prod: "wss://lightbulb-svx3a1rx.livekit.cloud",
-};
-// Sharing the project, dev must never dispatch to prod's deployed worker (lightbulb-huddle, the
-// backend default): dev's huddles and meetings go to the Mac worker started as lightbulb-meet-dev.
-const LIVEKIT_AGENT_NAME_BY_ENV: Record<string, string> = { dev: "lightbulb-meet-dev" };
-
-// The one phone line each env gives out (voice_onboarding.assign_number); its LiveKit dispatch rule
-// (lightbulb-phone-prod) routes it to that env's agent. Dev has none: dev phone tests use simulated callers.
-const VOICE_LINE_NUMBER_BY_ENV: Record<string, string> = { prod: "+14842079294" };
-
-// Recall.ai Google Login Group the Meet bot joins as (so it is not held in the waiting room).
-// Set per env once the founder creates the group in Recall; empty = the bot joins anonymously.
-const RECALL_GOOGLE_LOGIN_GROUP_ID_BY_ENV: Record<string, string> = {};
+import { tableName } from "./table-names";
 
 export interface LightbulbStageProps extends cdk.StageProps {
   environment: string;
@@ -98,60 +63,15 @@ export class LightbulbStage extends cdk.Stage {
       legacyRootDomain: LEGACY_ROOT_DOMAIN,
     });
 
-    // SesInboundStack — SES inbound agent-mail receiving (domain identity,
-    // wildcard MX/SPF, S3 buckets, receipt rule set + activation, ingest
-    // Lambda). The STACK is PROD-ONLY — SetActiveReceiptRuleSet is an
-    // account+region-scoped "one active rule set" operation, so it must be a
-    // singleton, never one-per-env.
-    //
-    // Agent email itself is live in BOTH envs. SES matches a recipient
-    // condition against the domain and its SUBDOMAINS, so the single
-    // prod-owned catch-all rule already receives `{slug}.dev.{mailDomain}` mail;
-    // this stack publishes the dev DNS and the ingest Lambda routes by
-    // recipient suffix to the dev backend. That is why dev needs no stack of
-    // its own — and why the dev wiring is configured here rather than in the
-    // dev stage.
-    let sesInbound: SesInboundStack | undefined;
-    if (env === "prod") {
-      sesInbound = new SesInboundStack(this, `lightbulb-${env}-ses-inbound`, {
-        stackName: `lightbulb-${env}-ses-inbound`,
-        envName: env,
-        // By-name import — same cross-stack-cycle-avoidance posture as every
-        // other secret name threaded into ServiceStack below.
-        sesIngestSecretName: auth.sesIngestSecret.secretName,
-        mailDomain: platformMailDomain,
-        devMailDomain: `dev.${platformMailDomain}`,
-        rootDomain,
-        devRootDomain: DEV_ROOT_DOMAIN,
-        // Deterministic by-name reference to the DEV stage's secret. AuthStack
-        // creates it unconditionally in every env; before dev routing existed,
-        // only prod's was ever read.
-        devSesIngestSecretName: "lightbulb/dev/ses_ingest_secret",
-      });
-      sesInbound.addDependency(auth);
-      // No DnsStack dependency: mail lives on its own domain now, and this
-      // stack looks that zone (and the legacy mail zone) up by name itself —
-      // DnsStack's zone follows `rootDomain`, which is a different domain.
-    }
-
-    // Outbound agent-mail plumbing exists wherever agent email is on (dev + prod).
+    // The verified SES domain the support-ticket mail is sent under (the identity lives in the
+    // retired lightbulb-prod-ses-inbound stack, see the PR notes). Prod owns the apex; dev a
+    // subdomain under it. Empty keeps the backend's sends off.
     const agentEmailDomain =
       env === "prod"
         ? platformMailDomain
         : env === "dev"
           ? `dev.${platformMailDomain}`
           : "";
-    let agentMailOutbound: AgentMailOutboundStack | undefined;
-    if (agentEmailDomain) {
-      agentMailOutbound = new AgentMailOutboundStack(this, `lightbulb-${env}-agent-mail-outbound`, {
-        stackName: `lightbulb-${env}-agent-mail-outbound`,
-        envName: env,
-        apiDomain:
-          env === "prod" ? `api.${rootDomain}` : `api-${env}.${rootDomain}`,
-        sesIngestSecretName: `lightbulb/${env}/ses_ingest_secret`,
-      });
-      agentMailOutbound.addDependency(auth);
-    }
 
     // ServiceStack grants by name (sparkStoreNames), so it does not wait on this stack; the dev
     // frontend deploy and prod promotion do.
@@ -179,28 +99,6 @@ export class LightbulbStage extends cdk.Stage {
       vpc: network.vpc,
     });
 
-    // ApiStack deploys BEFORE ServiceStack (no circular dependency)
-    const api = new ApiStack(this, `lightbulb-${env}-api`, {
-      stackName: `lightbulb-${env}-api`,
-      environment: env,
-      rootDomain,
-      vpc: network.vpc,
-      certificate: dns.certificate,
-      hostedZone: dns.hostedZone,
-      albHttpListenerArn: network.albHttpListenerArnV2,
-      albV2: network.albV2,
-      albSecurityGroup: network.albSecurityGroup,
-      clerkIssuerSecretName: `lightbulb/${env}/clerk_issuer`,
-      // Prod's issuer is a literal so a Clerk domain move reaches AppSync in the
-      // deploy that flips CLERK_DOMAIN: a secret reference is only re-read when
-      // the resource changes for some other reason. Dev is a Clerk dev instance
-      // whose issuer is not on our domain, so it stays on the secret.
-      clerkIssuerUrl: env === "prod" ? `https://clerk.${CLERK_DOMAIN}` : undefined,
-      // KMS key ARN (not Key object) to avoid CDK's cross-stack auto-grant cycle.
-      paperclipKmsKeyArn: auth.kmsKey.keyArn,
-    });
-
-    // ServiceStack replaces ComputeStack
     const service = new ServiceStack(this, `lightbulb-${env}-service`, {
       stackName: `lightbulb-${env}-service`,
       environment: env,
@@ -208,8 +106,6 @@ export class LightbulbStage extends cdk.Stage {
       platformMailDomain,
       vpc: network.vpc,
       targetGroup: network.targetGroupV2,
-      engineTargetGroup: network.engineTargetGroup,
-      albDnsName: network.albV2.loadBalancerDnsName,
       albSecurityGroup: network.albSecurityGroup,
       // Pass secret names as plain strings to avoid cross-stack refs to AuthStack.
       // These names match the secretName used in AuthStack's createSecret helper.
@@ -219,67 +115,15 @@ export class LightbulbStage extends cdk.Stage {
         clerkWebhookSecret: `lightbulb/${env}/clerk_webhook_secret`,
         stripeSecretKey: `lightbulb/${env}/stripe_secret_key`,
         stripeWebhookSecret: `lightbulb/${env}/stripe_webhook_secret`,
-        encryptionKey: `lightbulb/${env}/encryption_key`,
         posthogProjectApiKey: `lightbulb/${env}/posthog_project_api_key`,
         openaiApiKey: `lightbulb/${env}/openai_api_key`,
-        livekitApiKey: `lightbulb/${env}/livekit_api_key`,
-        livekitApiSecret: `lightbulb/${env}/livekit_api_secret`,
-        recallApiKey: `lightbulb/${env}/recall_api_key`,
-        recallWebhookSecret: `lightbulb/${env}/recall_webhook_secret`,
-        huddleWorkerSecret: `lightbulb/${env}/huddle_worker_secret`,
         paperclipServiceTokenKey: auth.paperclipServiceTokenKey.secretName,
-        gogKeyringPassword: auth.gogKeyringPassword.secretName,
-        metronomeApiKey: auth.metronomeApiKey.secretName,
-        metronomeWebhookSecret: auth.metronomeWebhookSecret.secretName,
-        wsInternalSecret: auth.wsInternalSecret.secretName,
-        networkProofKey: auth.networkProofKey.secretName,
-        sesIngestSecret: auth.sesIngestSecret.secretName,
       },
       kmsKeyArn: auth.kmsKey.keyArn,
-      container: {
-        cluster: container.cluster,
-        // Live on the Hermes path: the AgentCore runtime ENI's security group.
-        containerSecurityGroup: container.containerSecurityGroup,
-        ownerBedrockBasePolicy: container.ownerBedrockBasePolicy,
-        ownerBedrockBoundary: container.ownerBedrockBoundary,
-        workspaceMemoryId: container.workspaceMemory.attrMemoryId,
-        sessionsMemoryId: container.sessionsMemory.attrMemoryId,
-        workspaceBrowserId: container.workspaceBrowser.attrBrowserId,
-      },
-      gatewayRelayUrl: api.gatewayRelayUrl,
-      connectionsTableName: api.connectionsTableName,
-      messagingTableName: api.messagingTableName,
-      openClawWorkQueueUrl: api.openClawWorkQueueUrl,
-      openClawWorkQueueArn: api.openClawWorkQueueArn,
-      appsyncEventsHttpEndpoint: api.appsyncEventsHttpEndpoint,
-      appsyncEventsRealtimeEndpoint: api.appsyncEventsRealtimeEndpoint,
-      appsyncEventsApiArn: api.appsyncEventsApiArn,
-      appsyncEventsRegion: api.appsyncEventsRegion,
-      // Agent-email base domain. Prod owns the apex; dev gets its own
-      // subdomain so addresses can never collide and a dev message can never
-      // be mistaken for a real one. Both resolve through the single
-      // prod-owned receipt rule (SES matches subdomains), and the ingest
-      // Lambda routes each to its own backend.
-      //
-      // Every OTHER env stays empty, which keeps the backend's guards inert —
-      // there is no DNS, and nothing would route.
+      cluster: container.cluster,
       agentEmailDomain,
-      // Undefined wherever AgentMailOutboundStack isn't instantiated —
-      // ServiceStack defaults this to an empty string, which stamps no
-      // configuration set on outbound sends (core/services/ses_email.py).
-      agentMailConfigurationSet: agentMailOutbound?.configurationSetName,
-      stripeConnectClientId: STRIPE_CONNECT_CLIENT_ID_BY_ENV[env],
-      livekitUrl: LIVEKIT_URL_BY_ENV[env],
-      livekitAgentName: LIVEKIT_AGENT_NAME_BY_ENV[env],
-      voiceLineNumber: VOICE_LINE_NUMBER_BY_ENV[env],
-      recallGoogleLoginGroupId: RECALL_GOOGLE_LOGIN_GROUP_ID_BY_ENV[env],
     });
 
-    // The service ships AGENT_MAIL_CONFIGURATION_SET, and ses_email.py stamps
-    // it on EVERY platform send (agent mail, welcome, support tickets) — SES
-    // rejects a send naming a configuration set that does not exist, so the
-    // outbound stack has to be deployed before the service that references it.
-    if (agentMailOutbound) service.addDependency(agentMailOutbound);
     // EXPLICIT, and load-bearing. The service stack used to take a `database`
     // prop, which gave CDK an implicit ordering. Decoupling the exports removed
     // the prop AND that ordering — but the backend still reads every table, now
@@ -300,40 +144,32 @@ export class LightbulbStage extends cdk.Stage {
         backendLogGroupName: `/ecs/lightbulb-${env}`,
         alb: network.albV2,
         targetGroup: network.targetGroupV2,
-        engineTargetGroup: network.engineTargetGroup,
         cluster: container.cluster,
         databaseTables: {
           usersTable: tableName(env, "users"),
           containersTable: tableName(env, "containers"),
-          billingTable: tableName(env, "billing-accounts"),
-          companySlugsTable: tableName(env, "company-slugs"),
-          agentEmailAddressesTable: tableName(env, "agent-email-addresses"),
-          // Owned by ApiStack, not DatabaseStack (see api-stack.ts) — still a
-          // plain literal name, for the same no-cross-stack-export reason.
-          messagingTable: api.messagingTableName,
-        },
-        messaging: {
-          workQueueName: api.openClawWorkQueueName,
-          workDlqName: api.openClawWorkDlqName,
-          projectorFunctionName: api.messagingProjectorFunctionName,
-          appsyncEventApiId: api.appsyncEventApiId,
+          sparkTranscriptsTable: tableName(env, "spark-transcripts"),
         },
       },
     );
     observability.addDependency(database);
-    // The alarms come after the services they watch: W89 (no healthy engine target) treats missing data as
-    // breaching and pages in prod, so it must not exist before the engine service has registered its targets.
-    // `backendService` already implies this order; this keeps it if that prop goes.
-    observability.addDependency(service);
 
-    // Both envs: a runtime resolved to openrouter_managed needs this stack's gate URL,
-    // so the stack itself can't be env-gated.
-    const openrouterGate = new OpenRouterGateStack(this, `lightbulb-${env}-openrouter-gate`, {
-      stackName: `lightbulb-${env}-openrouter-gate`,
+    const api = new ApiStack(this, `lightbulb-${env}-api`, {
+      stackName: `lightbulb-${env}-api`,
       environment: env,
-      kmsKeyArn: auth.kmsKey.keyArn,
+      rootDomain,
+      vpc: network.vpc,
+      certificate: dns.certificate,
+      hostedZone: dns.hostedZone,
+      albHttpListenerArn: network.albHttpListenerArnV2,
+      albSecurityGroup: network.albSecurityGroup,
     });
-    openrouterGate.addDependency(database);
+    // ponytail: one-deploy ordering. The deployed service and observability templates still
+    // import the messaging plane's exports (AppSync, the work queue) from this stack. Deploying
+    // them first drops those imports, so this stack can then delete the resources. Remove these
+    // two lines after one green deploy.
+    api.addDependency(service);
+    api.addDependency(observability);
 
     // --- Tags ---
     cdk.Tags.of(this).add("Project", "lightbulb");

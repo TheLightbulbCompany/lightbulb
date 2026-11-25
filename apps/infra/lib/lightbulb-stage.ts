@@ -1,7 +1,7 @@
 import * as cdk from "aws-cdk-lib";
 import * as logs from "aws-cdk-lib/aws-logs";
 import { Construct, IConstruct } from "constructs";
-import { LEGACY_ROOT_DOMAIN, PLATFORM_MAIL_DOMAIN, ROOT_DOMAIN } from "./domains";
+import { PLATFORM_MAIL_DOMAIN, ROOT_DOMAIN } from "./domains";
 import { ApiStack } from "./stacks/api-stack";
 import { AuthStack } from "./stacks/auth-stack";
 import { ContainerStack } from "./stacks/container-stack";
@@ -16,8 +16,7 @@ import { tableName } from "./table-names";
 export interface LightbulbStageProps extends cdk.StageProps {
   environment: string;
   /**
-   * Product root domain — every frontend, API, WebSocket, browser-view and Clerk
-   * hostname in the stage derives from it. Per-stage so
+   * Product root domain — every frontend and API hostname in the stage derives from it. Per-stage so
    * one environment can move independently of the other. Defaults to
    * ROOT_DOMAIN (see lib/domains.ts).
    */
@@ -60,7 +59,6 @@ export class LightbulbStage extends cdk.Stage {
       stackName: `lightbulb-${env}-dns`,
       environment: env,
       rootDomain,
-      legacyRootDomain: LEGACY_ROOT_DOMAIN,
     });
 
     // ServiceStack grants by name (sparkStoreNames), so it does not wait on this stack; the dev
@@ -76,7 +74,6 @@ export class LightbulbStage extends cdk.Stage {
     const network = new NetworkStack(this, `lightbulb-${env}-network`, {
       stackName: `lightbulb-${env}-network`,
       environment: env,
-      certificate: dns.certificate,
     });
 
     const database = new DatabaseStack(this, `lightbulb-${env}-database`, {
@@ -96,7 +93,7 @@ export class LightbulbStage extends cdk.Stage {
       environment: env,
       rootDomain,
       vpc: network.vpc,
-      targetGroup: network.targetGroupV2,
+      targetGroup: network.targetGroup,
       albSecurityGroup: network.albSecurityGroup,
       // Pass secret names as plain strings to avoid cross-stack refs to AuthStack.
       // These names match the secretName used in AuthStack's createSecret helper.
@@ -132,8 +129,8 @@ export class LightbulbStage extends cdk.Stage {
         platformMailDomain,
         backendService: service.service,
         backendLogGroupName: `/ecs/lightbulb-${env}`,
-        alb: network.albV2,
-        targetGroup: network.targetGroupV2,
+        alb: network.alb,
+        targetGroup: network.targetGroup,
         cluster: container.cluster,
         databaseTables: {
           usersTable: tableName(env, "users"),
@@ -144,22 +141,16 @@ export class LightbulbStage extends cdk.Stage {
     );
     observability.addDependency(database);
 
-    const api = new ApiStack(this, `lightbulb-${env}-api`, {
+    new ApiStack(this, `lightbulb-${env}-api`, {
       stackName: `lightbulb-${env}-api`,
       environment: env,
       rootDomain,
       vpc: network.vpc,
       certificate: dns.certificate,
       hostedZone: dns.hostedZone,
-      albHttpListenerArn: network.albHttpListenerArnV2,
+      albHttpListenerArn: network.albHttpListenerArn,
       albSecurityGroup: network.albSecurityGroup,
     });
-    // ponytail: one-deploy ordering. The deployed service and observability templates still
-    // import the messaging plane's exports (AppSync, the work queue) from this stack. Deploying
-    // them first drops those imports, so this stack can then delete the resources. Remove these
-    // two lines after one green deploy.
-    api.addDependency(service);
-    api.addDependency(observability);
 
     // --- Tags ---
     cdk.Tags.of(this).add("Project", "lightbulb");

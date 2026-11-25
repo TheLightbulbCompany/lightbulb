@@ -85,7 +85,7 @@ const GITHUB_ACTIONS_ROLE_ARN = "arn:aws:iam::877352799272:role/lightbulb-github
 // OIDC provider and stripping the one `with:` key it sets.
 //
 // Deliberately NOT a set of `JsonPatch.remove` operations: there is one such
-// step per deploy/asset job (49 on this commit) and the RFC 6902 paths would be
+// step per deploy/asset job and the RFC 6902 paths would be
 // positional step indexes inside job names that churn whenever a stack or asset
 // is added — the same convergence and "job no longer exists" fragility the
 // cdk.out patches below have to work around.
@@ -117,11 +117,9 @@ const CDKOUT_S3_URI = `s3://${CDKOUT_BUCKET}/gha-cdk-out/\${{ github.run_id }}-\
 // ~1.6 GB of S3 internet egress per run, ~75-98 GB/day, ~$260/mo
 // (docs/ops/2026-11-10-cost-cuts.md). Slices cut that to ~60 MB per run.
 const CDKOUT_SLICES = `${CDKOUT_S3_URI}/slices`;
-// Host-local copy of the same tarball, shared by every runner on the box.
-// All DEPLOY_RUNNER instances run on one self-hosted machine outside AWS, so
-// each S3 GET of the tarball is billed as internet egress: 43 asset jobs x
-// ~34 MB = ~1.5 GB per run, ~817 GB/mo, ~$70/mo (2026-10-27 AWS cost review).
-// Synth writes the tarball here, so asset jobs
+// Host-local copy of the same tarball, for a self-hosted DEPLOY_RUNNER that
+// shares one filesystem (GitHub-hosted runners never hit it). Synth writes the
+// tarball here, so asset jobs
 // on the same host read it from disk; S3 stays the source of truth and the
 // fallback for any runner that does not share this filesystem. Keyed by run
 // id + attempt, written via an atomic rename, so a job never reads another
@@ -154,10 +152,8 @@ const pipeline = new GitHubWorkflow(app, "isol8-pipeline", {
     commands: [
       "cd apps/infra",
       "npm ci",
-      // The synth runner is self-hosted with a persistent workspace, and CDK
-      // reuses a cached bundle whenever the cache key (source + docker command)
-      // is unchanged -- which replayed a broken authorizer bundle across two
-      // deploys after the local bundler was fixed. Start every synth clean.
+      // A self-hosted runner keeps its workspace, and CDK reuses a cached bundle
+      // whenever the cache key is unchanged. Start every synth clean.
       "rm -rf cdk.out",
       "npx cdk synth",
     ],
@@ -173,12 +169,9 @@ const pipeline = new GitHubWorkflow(app, "isol8-pipeline", {
   workflowPath: "../../.github/workflows/deploy.yml",
   // Pipeline runner is driven by the `DEPLOY_RUNNER` repo Actions variable so
   // hosted <-> self-hosted flips from the GitHub UI (or
-  // scripts/switch-ci-runner.sh) with no code change or re-synth — set it to
-  // `isol8-wsl` (self-hosted WSL; free Linux minutes) or `ubuntu-latest`
-  // (GitHub-hosted). See expressionRunner() for why this can't be a plain
-  // Runner. Desktop DMG builds are NOT part of this pipeline — they live in
-  // the standalone .github/workflows/desktop-build.yml on a self-hosted macOS
-  // runner.
+  // scripts/switch-ci-runner.sh) with no code change or re-synth. It is
+  // `ubuntu-latest` (GitHub-hosted). See expressionRunner() for why this can't
+  // be a plain Runner.
   runner: expressionRunner("${{ vars.DEPLOY_RUNNER }}"),
   // Serialize deploys: only one pipeline run may touch the CloudFormation
   // stacks at a time. cancelInProgress:false queues an overlapping deploy
@@ -424,7 +417,7 @@ pipeline.workflowFile.patch(
   // the new queued job or workflow will take its place".
   //
   // Prod ships only on `workflow_dispatch`, and this pipeline is runner-bound
-  // (~2 concurrent job slots for 67 jobs, 10-30 min per run), so a promotion
+  // (it was ~2 concurrent job slots for 67 jobs, 10-30 min per run), so a promotion
   // routinely sits PENDING for minutes waiting on the group. Every merge to
   // main inside that window fires a push run that silently evicts it. On the
   // night of 2026-09-07 that killed three consecutive promotions of a live

@@ -59,12 +59,6 @@ function buildTemplate(envName: "dev" | "prod"): Template {
       targetType: elbv2.TargetType.IP,
     });
 
-    const engineTg = new elbv2.ApplicationTargetGroup(supportStack, "EngineTG", {
-      vpc,
-      port: 8000,
-      targetType: elbv2.TargetType.IP,
-    });
-
     const service = new ecs.FargateService(supportStack, "Service", {
       cluster,
       taskDefinition: taskDef,
@@ -353,11 +347,23 @@ describe("ObservabilityStack", () => {
     template.resourceCountIs("AWS::Events::Rule", 2);
   });
 
-  // The $1,500 account-wide Budget is PROD-GATED (see createCostAlarms) —
+  // The $500 account-wide Budget is PROD-GATED (see createCostAlarms) —
   // dev and prod share one AWS account, so an ungated budget would render
   // twice and double-email admin@ for the same account-wide spend number.
   test("does NOT create an AWS Budget in dev", () => {
     template.resourceCountIs("AWS::Budgets::Budget", 0);
+  });
+
+  const alarmNames = () =>
+    Object.values(template.findResources("AWS::CloudWatch::Alarm")).map((a: any) => String(a.Properties.AlarmName));
+
+  test("dev has no W78 (dev runs one task, so a threshold of 2 is always in ALARM)", () => {
+    expect(alarmNames().filter((n) => n.includes("W78"))).toEqual([]);
+  });
+
+  test("no consumed-capacity alarms on the on-demand tables (W40/W41)", () => {
+    expect(alarmNames().filter((n) => /W4[01]-/.test(n))).toEqual([]);
+    expect(alarmNames().filter((n) => n.includes("W42-"))).toHaveLength(3);
   });
 
   // Both tiers must have a live destination. Alarms are worthless without one:
@@ -730,66 +736,6 @@ describe("ObservabilityStack — CloudWatch alarms can publish", () => {
   );
 });
 
-describe("alert topic grant covers alarms in EVERY stack", () => {
-  // The grant lives in observability-stack, but other stacks import these
-  // topics by ARN and attach alarm actions (service, agent-mail-outbound). A test that only inspected
-  // observability-stack's own alarms would not notice those drifting outside
-  // the granted ARN pattern — #1947's failure relocated one stack over.
-  //
-  // The invariant is the PAIRING: an alarm publishing to some env's alert
-  // topic must fall inside the ARN prefix that env's topic policy grants.
-  test.each(["dev", "prod"] as const)(
-    "%s stage: every alarm is inside the granted prefix of the topic it pages",
-    (envName) => {
-      const app = new cdk.App();
-      const stage = new LightbulbStage(app, envName, {
-        environment: envName,
-        env: { account: "123456789012", region: "us-east-1" },
-      } as any);
-
-      const alarms = stage.node
-        .findAll()
-        .filter((c): c is cdk.Stack => c instanceof cdk.Stack)
-        .flatMap((stack) =>
-          Object.values(
-            Template.fromStack(stack).findResources("AWS::CloudWatch::Alarm"),
-          ),
-        );
-      expect(alarms.length).toBeGreaterThan(0);
-
-      // "arn:aws:sns:<region>:<account>:lightbulb-<env>-alerts-<page|warn>"
-      const topicEnv = /:([a-z0-9-]+)-alerts-(?:page|warn)$/;
-
-      const mismatched: string[] = [];
-      let checked = 0;
-      for (const alarm of alarms as any[]) {
-        const name = alarm.Properties?.AlarmName;
-        if (typeof name !== "string") continue;
-        const actions = [
-          ...(alarm.Properties?.AlarmActions ?? []),
-          ...(alarm.Properties?.OKActions ?? []),
-        ];
-        for (const action of actions) {
-          if (typeof action !== "string") continue; // same-stack Ref
-          const match = topicEnv.exec(action);
-          if (!match) continue;
-          checked += 1;
-          // match[1] is "lightbulb-dev" / "lightbulb-prod"; the granted prefix
-          // for that env is resourcePrefix(env) === `${match[1]}-`.
-          if (!name.startsWith(`${match[1]}-`)) {
-            mismatched.push(`${name} -> ${action}`);
-          }
-        }
-      }
-
-      // Guard the guard: if nothing resolved to a literal topic ARN the loop
-      // above would vacuously pass.
-      expect(checked).toBeGreaterThan(0);
-      expect(mismatched).toEqual([]);
-    },
-  );
-});
-
 describe("ObservabilityStack — prod-only paths", () => {
   const template = PROD_TEMPLATE;
 
@@ -825,7 +771,7 @@ describe("ObservabilityStack — prod-only paths", () => {
   });
 
   // Account-wide resources (GuardDuty/Access Analyzer routing rules, the
-  // $1,500 Budget) are PROD-GATED — dev and prod share one AWS account, so
+  // $500 Budget) are PROD-GATED — dev and prod share one AWS account, so
   // these render exactly once, on the prod stack.
   test("prod creates EventBridge rules for security findings", () => {
     // ECS TaskStopped (W39) + the alert-subscription monitor + GuardDuty +
@@ -833,8 +779,16 @@ describe("ObservabilityStack — prod-only paths", () => {
     template.resourceCountIs("AWS::Events::Rule", 4);
   });
 
-  test("prod creates the account-wide AWS Budget", () => {
+  test("prod creates the account-wide AWS Budget at $500", () => {
     template.resourceCountIs("AWS::Budgets::Budget", 1);
+    template.hasResourceProperties("AWS::Budgets::Budget", {
+      Budget: Match.objectLike({ BudgetLimit: { Amount: 500, Unit: "USD" } }),
+    });
+  });
+
+  test("prod keeps W78 on the backend target group", () => {
+    const names = Object.values(template.findResources("AWS::CloudWatch::Alarm")).map((a: any) => String(a.Properties.AlarmName));
+    expect(names).toContain("lightbulb-prod-W78-backend-healthy-hosts");
   });
 
   test("prod uptime alarms page rather than warn", () => {

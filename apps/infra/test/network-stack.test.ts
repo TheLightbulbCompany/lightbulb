@@ -33,84 +33,23 @@ describe("NetworkStack — backend target group drain", () => {
   });
 });
 
-describe("NetworkStack — WAF web ACL (count-only)", () => {
-  const template = buildNetworkStack("dev");
+describe.each(["dev", "prod"] as const)("NetworkStack — only what API Gateway uses (%s)", (environment) => {
+  const template = buildNetworkStack(environment);
 
-  test("ACL exists, allows by default, and is associated to the ALB", () => {
-    template.hasResourceProperties("AWS::WAFv2::WebACL", {
-      Scope: "REGIONAL",
-      DefaultAction: { Allow: {} },
-    });
-    template.hasResourceProperties("AWS::WAFv2::WebACLAssociation", {
-      ResourceArn: { Ref: Match.stringLikeRegexp("^AlbV2") },
-    });
+  test("one :80 listener to the one backend target group; no :443, :8082 or WAF", () => {
+    template.resourceCountIs("AWS::ElasticLoadBalancingV2::Listener", 1);
+    template.hasResourceProperties("AWS::ElasticLoadBalancingV2::Listener", { Port: 80, Protocol: "HTTP" });
+    template.resourceCountIs("AWS::ElasticLoadBalancingV2::TargetGroup", 1);
+    template.resourceCountIs("AWS::WAFv2::WebACL", 0);
+    template.resourceCountIs("AWS::WAFv2::WebACLAssociation", 0);
   });
 
-  test("every rule is count-only: switching to block is a deliberate, separate change", () => {
-    const acls = Object.values(template.findResources("AWS::WAFv2::WebACL"));
-    expect(acls).toHaveLength(1);
-    const rules: any[] = (acls[0] as any).Properties.Rules;
-    expect(rules.length).toBe(3);
-    for (const r of rules) {
-      if (r.Statement.ManagedRuleGroupStatement) {
-        expect(r.OverrideAction).toEqual({ Count: {} });
-        expect(r.Action).toBeUndefined();
-      } else {
-        expect(r.Action).toEqual({ Count: {} });
-      }
-      expect(r.VisibilityConfig.CloudWatchMetricsEnabled).toBe(true);
-      // Samples would store raw URLs/headers (bearer tokens).
-      expect(r.VisibilityConfig.SampledRequestsEnabled).toBe(false);
-      // Every inner managed rule counts too, else the first inner Block ends evaluation.
-      const inner = r.Statement.ManagedRuleGroupStatement?.RuleActionOverrides;
-      if (r.Statement.ManagedRuleGroupStatement) {
-        expect(inner.length).toBeGreaterThan(10);
-        for (const o of inner) expect(o.ActionToUse).toEqual({ Count: {} });
-      }
-    }
-    expect((acls[0] as any).Properties.VisibilityConfig.SampledRequestsEnabled).toBe(false);
-    // Rate rule keys on the header API GW overwrites, never client-suppliable XFF.
-    const rate = rules.find((r) => r.Statement.RateBasedStatement);
-    expect(rate.Statement.RateBasedStatement.ForwardedIPConfig.HeaderName).toBe("X-Lightbulb-Client-Ip");
-    const scope = JSON.stringify(rate.Statement.RateBasedStatement.ScopeDownStatement);
-    expect(scope).toContain("NotStatement");
-    expect(scope).toContain('"UriPath":{}');
-    expect(scope).not.toContain("/__paperclip_proxy__");
-    expect(scope).toContain("/api/v1/gateway/"); // bv- door: client can set the header
-  });
-});
-
-describe("NetworkStack: engine listener", () => {
-  const template = buildNetworkStack("dev");
-
-  test("8082 forwards to the engine target group, which health-checks /health on 8000", () => {
-    const [tgId] = Object.keys(
-      template.findResources("AWS::ElasticLoadBalancingV2::TargetGroup", {
-        Properties: { Name: "lightbulb-dev-engine" },
+  test("the ALB security group admits only :80 (443 and 8082 are gone)", () => {
+    const sg = Object.values(
+      template.findResources("AWS::EC2::SecurityGroup", {
+        Properties: { GroupDescription: Match.stringLikeRegexp("internal ALB security group") },
       }),
-    );
-    expect(tgId).toBeDefined();
-    template.hasResourceProperties("AWS::ElasticLoadBalancingV2::TargetGroup", {
-      Name: "lightbulb-dev-engine",
-      Port: 8000,
-      TargetType: "ip",
-      HealthCheckPath: "/health",
-    });
-    template.hasResourceProperties("AWS::ElasticLoadBalancingV2::Listener", {
-      Port: 8082,
-      Protocol: "HTTP",
-      DefaultActions: [Match.objectLike({ Type: "forward", TargetGroupArn: { Ref: tgId } })],
-    });
-  });
-
-  test("the network stack opens 8082 to nobody (the service stack admits only its SG)", () => {
-    const ingress = [
-      ...Object.values(template.findResources("AWS::EC2::SecurityGroupIngress")).map((r: any) => r.Properties),
-      ...Object.values(template.findResources("AWS::EC2::SecurityGroup")).flatMap(
-        (r: any) => r.Properties.SecurityGroupIngress ?? [],
-      ),
-    ];
-    expect(ingress.filter((r: any) => r.FromPort <= 8082 && r.ToPort >= 8082)).toEqual([]);
+    )[0] as any;
+    expect([...new Set(sg.Properties.SecurityGroupIngress.map((r: any) => r.FromPort))]).toEqual([80]);
   });
 });
-

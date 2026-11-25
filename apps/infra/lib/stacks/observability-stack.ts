@@ -59,7 +59,7 @@ export interface ObservabilityStackProps extends cdk.StackProps {
 }
 
 /**
- * The one table set P8, W40, W41 and W42 cover.
+ * The one table set P8 and W42 cover.
  *
  * One list, one place to add a table. Short names are kebab because they land in alarm names; P8 underscores them
  * for metric-math ids.
@@ -268,7 +268,7 @@ export class ObservabilityStack extends cdk.Stack {
       });
     }
 
-    // Warn tier stays email-only on purpose. Routing ~90 warn alarms into
+    // Warn tier stays email-only on purpose. Routing the warn alarms into
     // PagerDuty would create an incident per blip and train you to ignore the
     // thing whose entire job is to be impossible to ignore.
 
@@ -723,15 +723,11 @@ def handler(event, context):
       severity: "warn",
     });
 
-    // W78: backend-healthy-hosts (ruling D8, sub-project D machine relay).
-    // The backend went from a fixed desiredCount:1 to autoscaled 2-4
-    // (service-stack.ts) — P12 (gateway.running.count heartbeat) catches
-    // "every task is dead" but is instance-blind, so it cannot see one of N
-    // healthy tasks disappear. This alarm is the instance-aware companion:
-    // Minimum HealthyHostCount on the backend target group, 2-of-2 five-minute
-    // periods so a single deploy's transient dip (old task draining before the
-    // new one is healthy) does not warn-then-clear.
-    this.createAlarm({
+    // W78: backend-healthy-hosts. Prod runs at least 2 tasks (service-stack.ts); P12
+    // catches "every task is dead" but cannot see one of N healthy tasks disappear.
+    // 2-of-2 five-minute periods so a deploy's transient dip does not warn-then-clear.
+    // Prod only: dev runs one task, so a threshold of 2 would sit in ALARM forever.
+    if (this.envName === "prod") this.createAlarm({
       id: "W78",
       name: "backend-healthy-hosts",
       description:
@@ -823,7 +819,7 @@ def handler(event, context):
     // event (per-container exitCode + the free-text stoppedReason), which is
     // easier to evaluate in the Lambda than in an EventBridge content filter.
     // The Lambda below only emits the alarm metric for genuinely-unexpected
-    // stops, so normal per-user teardown + deploys no longer fire W39.
+    // stops, so deploys and Spot reclaims do not fire W39.
     const taskStoppedRule = new events.Rule(this, "TaskStoppedRule", {
       ruleName: `lightbulb-${this.envName}-ecs-task-stopped`,
       description: "Captures ECS task stopped events for alarming",
@@ -850,7 +846,7 @@ def handler(event, context):
     //
     // A crashing container is reported as EssentialContainerExited, so the
     // exit code carries no signal the stopCode does not already carry.
-    // SpotInterruption is routine — the whole fleet runs Fargate Spot, and a
+    // SpotInterruption is routine — dev runs on Fargate Spot, and a
     // reclaim self-heals; a genuine storm still trips W58's crash-loop count.
     // ServiceSchedulerInitiated is the ambiguous one: the scheduler both rolls
     // deploys AND replaces tasks that fail health checks, so it is split on
@@ -866,8 +862,8 @@ import boto3
 cw = boto3.client('cloudwatch')
 
 # stopCodes that are routine lifecycle, never a failure:
-#   UserInitiated     - operator or per-user container teardown
-#   SpotInterruption  - Fargate Spot reclaim; the fleet runs Spot, it self-heals
+#   UserInitiated     - an operator stopped the task
+#   SpotInterruption  - Fargate Spot reclaim (dev runs Spot); it self-heals
 EXPECTED_STOP_CODES = ('UserInitiated', 'SpotInterruption')
 
 # Substrings (lowercased) of stoppedReason that mark a ServiceSchedulerInitiated
@@ -930,7 +926,7 @@ def handler(event, context):
       severity: "warn",
     });
 
-    // W58: per-user container crash-loop. W39 fires on ANY single unexpected
+    // W58: backend crash-loop (the alarm name is historical; renaming it creates a new alarm). W39 fires on ANY single unexpected
     // stop; a crash-LOOP (CPU-starve → healthcheck SIGKILL → restart → repeat)
     // produces a burst of unexpected stops. Reuses the same TaskStoppedUnexpected
     // metric the free TaskStoppedFn Lambda already emits — no new emission.
@@ -953,65 +949,10 @@ def handler(event, context):
       severity: "warn",
     });
 
-    // -- DynamoDB (W40-W42) --
+    // -- DynamoDB (W42) --
+    // No consumed-capacity alarms: the tables are on-demand.
     // Create alarms for each table
     const allTables = alarmedTables(props.databaseTables);
-
-    // W40: ConsumedReadCapacityUnits anomaly (on-demand tables)
-    // For on-demand tables we alarm when read consumption spikes
-    for (const [shortName, table] of allTables) {
-      const w40 = new cloudwatch.Alarm(
-        this,
-        `W40-${shortName}`,
-        {
-          alarmName: `${resourcePrefix(this.envName)}W40-ddb-read-${shortName}`,
-          alarmDescription: `DynamoDB ${shortName} read capacity anomaly`,
-          metric: new cloudwatch.Metric({
-            namespace: "AWS/DynamoDB",
-            metricName: "ConsumedReadCapacityUnits",
-            statistic: "Sum",
-            period: cdk.Duration.minutes(5),
-            dimensionsMap: { TableName: table },
-          }),
-          // High threshold for on-demand — alert on sustained high usage
-          threshold: 1000,
-          evaluationPeriods: 3,
-          comparisonOperator:
-            cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
-          treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
-        },
-      );
-      w40.addAlarmAction(
-        new cloudwatch_actions.SnsAction(this.warnTopic),
-      );
-    }
-
-    // W41: ConsumedWriteCapacityUnits anomaly
-    for (const [shortName, table] of allTables) {
-      const w41 = new cloudwatch.Alarm(
-        this,
-        `W41-${shortName}`,
-        {
-          alarmName: `${resourcePrefix(this.envName)}W41-ddb-write-${shortName}`,
-          alarmDescription: `DynamoDB ${shortName} write capacity anomaly`,
-          metric: new cloudwatch.Metric({
-            namespace: "AWS/DynamoDB",
-            metricName: "ConsumedWriteCapacityUnits",
-            statistic: "Sum",
-            period: cdk.Duration.minutes(5),
-            dimensionsMap: { TableName: table },
-          }),
-          threshold: 1000,
-          evaluationPeriods: 3,
-          comparisonOperator:
-            cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
-          treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
-        },
-      );
-      w41.addAlarmAction(
-        new cloudwatch_actions.SnsAction(this.warnTopic),
-      );
-    }
 
     // W42: SystemErrors per table
     for (const [shortName, table] of allTables) {
@@ -1069,15 +1010,8 @@ def handler(event, context):
   private createCostAlarms(props: ObservabilityStackProps): void {
     // W49a + W49b: AWS Budget — 80% warn + 100% page
     //
-    // $500 was far below the actual run rate, so the budget sat permanently
-    // breached and both notifications were pure noise. Observed account spend:
-    // Apr $808, May $2,432, Jun $2,643, Jul $1,654, Aug tracking ~$900.
-    //
-    // $1,500 is a deliberately TIGHT leash for launch — roughly the current
-    // run rate, below the June peak — so it is expected to trip if spend
-    // climbs back toward historical highs. That is the intent: an early
-    // tripwire while launch traffic is unknown, not a ceiling. Raise it once
-    // post-launch spend settles, rather than letting it sit breached again.
+    // $500: about 1.5x the account's spend after the Spark cleanup (~$350/month on
+    // 2026-11-24, Cost Explorer), so it trips if spend grows by half.
     // DO NOT set an explicit budgetName here. `notificationsWithSubscribers`
     // is an update-requires-REPLACEMENT property, so any change to the alert
     // addresses makes CloudFormation create a new budget BEFORE deleting the
@@ -1100,7 +1034,7 @@ def handler(event, context):
         budget: {
           budgetType: "COST",
           timeUnit: "MONTHLY",
-          budgetLimit: { amount: 1500, unit: "USD" },
+          budgetLimit: { amount: 500, unit: "USD" },
         },
         notificationsWithSubscribers: [
           {

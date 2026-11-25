@@ -2,12 +2,7 @@ import * as cdk from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
 import { ApiStack } from "../lib/stacks/api-stack";
 import { NetworkStack } from "../lib/stacks/network-stack";
-import {
-  LEGACY_MAIL_DOMAIN,
-  LEGACY_ROOT_DOMAIN,
-  PLATFORM_MAIL_DOMAIN,
-  ROOT_DOMAIN,
-} from "../lib/domains";
+import { PLATFORM_MAIL_DOMAIN, ROOT_DOMAIN } from "../lib/domains";
 
 /**
  * Static CDK context so `HostedZone.fromLookup` resolves without an AWS API
@@ -36,17 +31,7 @@ export const HOSTED_ZONE_CONTEXT: Record<string, unknown> = {
   // cannot. Domains are deduped because these constants overlap during the move.
   ...Object.fromEntries(
     [
-      // Both LEGACY_* constants are "" now that those domains are retired;
-      // an empty entry would synthesize a `domainName=` context key that
-      // matches no lookup.
-      ...new Set(
-        [
-          ROOT_DOMAIN,
-          PLATFORM_MAIL_DOMAIN,
-          LEGACY_ROOT_DOMAIN,
-          LEGACY_MAIL_DOMAIN,
-        ].filter(Boolean),
-      ),
+      ...new Set([ROOT_DOMAIN, PLATFORM_MAIL_DOMAIN]),
     ].map((domain) => [
       `hosted-zone:account=877352799272:domainName=${domain}:region=us-east-1`,
       {

@@ -98,6 +98,37 @@ describe("ServiceStack — the Spark backend", () => {
     expect(backendContainer(template).Environment).toContainEqual({ Name: "SPARK_STORE_DELETES", Value: value });
   });
 
+  const statement = (template: Template, sid: string): any =>
+    Object.values(template.findResources("AWS::IAM::Policy"))
+      .flatMap((p: any) => p.Properties.PolicyDocument.Statement)
+      .find((st: any) => st.Sid === sid);
+
+  test("DynamoDB is granted on the four Spark tables and their indexes only, with no Scan", () => {
+    const st = statement(SERVICE_TEMPLATE_PROD, "DynamoDbOwnedTables");
+    expect(st.Action).not.toContain("dynamodb:Scan");
+    expect(st.Action).toContain("dynamodb:TransactWriteItems");
+    expect(st.Action).toContain("dynamodb:BatchWriteItem");
+    const table = (t: string) => `arn:aws:dynamodb:us-east-1:877352799272:table/lightbulb-prod-${t}`;
+    expect(st.Resource).toEqual(
+      ["users", "containers", "spark-transcripts", "webhook-event-dedup"].flatMap((t) => [table(t), `${table(t)}/index/*`]),
+    );
+  });
+
+  test("the execution role reads exactly the injected secrets", () => {
+    const st = statement(SERVICE_TEMPLATE_DEV, "SecretsManagerForEcs");
+    expect(st.Resource).toHaveLength(8);
+    for (const r of st.Resource) {
+      expect(r).toMatch(/^arn:aws:secretsmanager:us-east-1:877352799272:secret:lightbulb\/dev\/[a-z_]+-\*$/);
+    }
+  });
+
+  test.each([
+    ["dev", SERVICE_TEMPLATE_DEV, "512", "2048"],
+    ["prod", SERVICE_TEMPLATE_PROD, "512", "1024"],
+  ] as const)("%s task size is %s CPU / %s MiB", (_env, template, cpu, memory) => {
+    template.hasResourceProperties("AWS::ECS::TaskDefinition", { Cpu: cpu, Memory: memory });
+  });
+
   test("SparkStoreAccess: Firehose put only on the three named streams, Athena only on the app workgroup", () => {
     const arn = (p: string) => `arn:aws:${p}`;
     const doc = Object.values(SERVICE_TEMPLATE_DEV.findResources("AWS::IAM::ManagedPolicy")).find(

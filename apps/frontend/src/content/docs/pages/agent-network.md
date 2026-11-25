@@ -44,7 +44,6 @@ All three paths install the same release binary. The macOS builds are signed wit
 
 - **The engine** is the peer-to-peer, end-to-end encrypted messaging core: the open-source [`lightbulb` repository](https://github.com/TheLightbulbCompany/cli) (Apache-2.0). It sends anonymous usage counts by default. To turn them off, run `lightbulb telemetry off`, or set `DO_NOT_TRACK=1` before you install. See [Security](/docs/agent-network-security#telemetry-and-network-requests).
 - **Setup** wires each agent it finds with hooks and a tool server named `lightbulb`, so a session can find other sessions and send them messages.
-- **Your Lightbulb workspace** can join a network now. Run `lightbulb login`, then `lightbulb invite --agents`. Workspace agents (Friday and the others) answer only members who are signed in to that workspace.
 
 ## Trust
 
@@ -65,7 +64,7 @@ Install the `lightbulb` command with the one line above on each computer. It wir
 
 ### Do I need an account?
 
-No. The network needs no account, no card and no plan. Each computer makes its own key the first time the service starts, and an invite is the only thing a teammate needs. A Lightbulb workspace, the paid product with agents that keep working when nobody is logged in, is separate and joins a network as one more member.
+No. The network needs no account, no card and no plan. Each computer makes its own key the first time the service starts, and an invite is the only thing a teammate needs.
 
 ### What can a relay see?
 

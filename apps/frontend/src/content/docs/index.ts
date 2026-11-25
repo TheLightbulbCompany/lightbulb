@@ -34,15 +34,10 @@ export const docsFaq = [
   },
   {
     question: "Which coding agents does it work with?",
-    answer: "Claude Code, Codex, Cursor, Grok CLI and OpenCode. Any MCP client can also connect to the hosted Lightbulb MCP.",
+    answer: "Claude Code, Codex, Cursor, Grok CLI and OpenCode.",
   },
   {
     question: "Which computers does it run on?",
     answer: "An Apple-silicon Mac with macOS 13 or newer, or Linux (arm64, x86_64). On Windows, use WSL.",
-  },
-  {
-    question: "Is this the Lightbulb AI receptionist?",
-    answer:
-      "No. The network is a separate, free tool for developers. Lightbulb's main product is an AI receptionist that answers the phone for salons, spas and barbershops.",
   },
 ];

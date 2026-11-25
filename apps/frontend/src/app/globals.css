@@ -1,5 +1,4 @@
 @import "tailwindcss";
-@import "tw-animate-css";
 @import "./landing.css";
 @import "./landing-v2.css";
 @import "./blog.css";
@@ -707,12 +706,6 @@
    their own reduce rules (.agent-glyph, the provisioning stepper, the landing
    lamp) still apply them; this block is the floor, not a universal nuke. */
 @media (prefers-reduced-motion: reduce) {
-  /* tw-animate-css enter/exit: keep the fade, zero the translate/scale/rotate.
-     Unlayered, so it beats the `slide-in-from-*` / `zoom-in-*` utilities. */
-  .animate-in, .animate-out {
-    --tw-enter-translate-x: 0; --tw-enter-translate-y: 0; --tw-enter-scale: 1; --tw-enter-rotate: 0;
-    --tw-exit-translate-x: 0; --tw-exit-translate-y: 0; --tw-exit-scale: 1; --tw-exit-rotate: 0;
-  }
   .animate-pulse, .animate-ping, .animate-bounce { animation: none; }
 
 }

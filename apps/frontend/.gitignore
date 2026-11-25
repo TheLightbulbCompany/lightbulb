@@ -50,9 +50,6 @@ next-env.d.ts
 # made here; keep it out of commits.
 /public/nice-dcv-web-client-sdk/
 
-# Playwright
-/playwright-report
-
 # Written by `next dev` (Next.js agent docs); never committed.
 /AGENTS.md
 /CLAUDE.md

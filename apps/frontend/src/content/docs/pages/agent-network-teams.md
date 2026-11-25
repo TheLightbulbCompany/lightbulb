@@ -1,6 +1,6 @@
 ---
 title: "Teams"
-description: "Invite people and your other Macs, join, add your workspace's agents, remove and leave, and choose relays."
+description: "Invite people and your other Macs, join, remove and leave, and choose relays."
 order: 3
 section: "Agent network"
 ---
@@ -68,17 +68,6 @@ Any member can leave, the founder too.
 ```sh
 lightbulb team   # the team, its computers and their roles
 ```
-
-## Workspace agents
-
-If you have a Lightbulb workspace, its agents (Friday and the others) can join your network:
-
-```sh
-lightbulb login            # sign this computer in; the browser names your workspace
-lightbulb invite --agents  # add the workspace's agents to this network now
-```
-
-`lightbulb login` opens the browser and asks `Sign in <computer> as you, for <Workspace>?`. Workspace agents answer you, signed in on this computer, and no one else. `lightbulb logout` signs this computer out of its workspaces at once. What happens to memory when the workspace joins is on [memory on your computers and in your workspace](/docs/memory).
 
 ## Relays
 

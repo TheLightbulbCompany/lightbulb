@@ -190,6 +190,58 @@ describe("/os with an invite", () => {
   });
 });
 
+describe("/os with a channel code", () => {
+  it.each(["c=Bad", "c=a", "c=a_b", `c=${"x".repeat(33)}`])("%s: the download button only", async (query) => {
+    s.query = query;
+    await page();
+    expect(screen.queryByTestId("clerk-sign-up")).toBeNull();
+    expect(screen.getByRole("link", { name: DOWNLOAD })).toBeInTheDocument();
+  });
+
+  it("signed out: the sign-up that comes back with the code", async () => {
+    s.query = "c=yt-abc";
+    await page();
+    expect(screen.getByTestId("clerk-sign-up")).toBeInTheDocument();
+    expect(signUpProps).toHaveBeenCalledWith(expect.objectContaining({ forceRedirectUrl: "/os?c=yt-abc" }));
+    expect(screen.getByText("Get Spark")).toBeInTheDocument();
+    expect(screen.getByText("Create your account, then download.")).toBeInTheDocument();
+    expect(screen.queryByText(/invited/)).toBeNull();
+    expect(capture).not.toHaveBeenCalled();
+    expect(screen.getByRole("link", { name: "Skip, just download" })).toBeInTheDocument();
+    expect(post).not.toHaveBeenCalled();
+  });
+
+  it("signed in: the channel is posted before the referral", async () => {
+    s.query = "ref=abc123XYZ&c=yt-abc";
+    s.signedIn = true;
+    await page();
+    expect(await screen.findByRole("link", { name: DOWNLOAD })).toBeInTheDocument();
+    expect(post.mock.calls).toEqual([
+      ["/os/channel", { channel: "yt-abc" }],
+      ["/os/referral", { code: "abc123XYZ" }],
+    ]);
+    await waitFor(() => expect(capture.mock.calls).toEqual([["spark_invite_signup_completed"]]));
+  });
+
+  it("signed in with a channel only: no referral call", async () => {
+    s.query = "c=yt-abc";
+    s.signedIn = true;
+    await page();
+    expect(await screen.findByRole("link", { name: DOWNLOAD })).toBeInTheDocument();
+    expect(post.mock.calls).toEqual([["/os/channel", { channel: "yt-abc" }]]);
+    expect(capture).not.toHaveBeenCalled();
+  });
+
+  it("a failed channel call still records the referral", async () => {
+    s.query = "ref=abc123XYZ&c=yt-abc";
+    s.signedIn = true;
+    post.mockRejectedValueOnce(new Error("x"));
+    await page();
+    expect(await screen.findByRole("link", { name: DOWNLOAD })).toBeInTheDocument();
+    expect(post.mock.calls.map((c) => c[0])).toEqual(["/os/channel", "/os/referral"]);
+  });
+});
+
 it("no /os file calls the account route (it would create the account and start the trial)", () => {
   const dir = join(__dirname, "..");
   for (const f of readdirSync(dir, { recursive: true }) as string[]) {

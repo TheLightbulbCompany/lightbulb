@@ -637,7 +637,36 @@ export interface SparkData {
   downloads: { key: string; count: number }[];
   channels: { channel: string; activated_24h: Kn }[];
   people: SparkPerson[];
+  money: {
+    price_usd: number;
+    /** null = no subscription_updated seen yet. */
+    subs: {
+      paying: number;
+      mrr_usd: number;
+      unknown: number;
+      trial_to_paid: { month: string; k: number; n: number; partial: boolean }[];
+      cancellations: { month: string; count: number; reasons: SparkCount[]; feedback: SparkCount[] }[];
+    } | null;
+    /** null = no voice_session_ended seen yet. */
+    voice: {
+      rate_usd_per_min: number;
+      months: { month: string; minutes: number; users: number; p50: number; p90: number; cost_usd: number }[];
+      top: { email: string | null; status: string; minutes: number; cost_usd: number; margin_usd: number }[];
+    } | null;
+  };
+  time_to_first_task: { bucket: string; k: number; n: number }[];
+  /** null = nobody has answered "how did you hear" yet. */
+  heard_from: { choice: string; installs: number; activated_24h: Kn }[] | null;
+  /** null = no onboarding_step seen yet. */
+  setup: {
+    steps: { step: string; shown: number; completed: Kn; skipped: Kn }[];
+    signin_failures: SparkCount[];
+    permissions: { permission: string; prompted: number; denied: Kn }[];
+    unfinished: Kn | null;
+  } | null;
 }
+
+export type SparkCount = { key: string; count: number };
 
 export async function getSpark(token: string): Promise<OpsEnvelope<SparkData | null> | null> {
   return adminFetch<OpsEnvelope<SparkData | null>>(token, "/ops/spark");

@@ -15,8 +15,11 @@ Any failed query -> no figures at all (``compute`` returns data=None + the faile
 from __future__ import annotations
 
 import asyncio
+import math
 import re
+import statistics
 import time
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 
 from core.config import settings
@@ -28,6 +31,8 @@ WEEKS = 12
 INSTALL_DAYS = 84  # install scan window (12 weeks); event scans use 90d so day-29 follow-ups fit
 OK_TTL_S, FAIL_TTL_S = 300, 60
 INSTALL_CAP = 5000
+BUCKETS = (("lt5m", 5), ("lt30m", 30), ("lt2h", 120), ("lt24h", 1440))  # minutes: launch -> first human task
+STEP_ORDER = ("sign_in", "brain", "permissions", "say_hi")
 D7_LABEL = "activated d7 (installs 7d+ old)"
 STEPS = ("signin", "brain", "permission", "onboarding", "first task", "activated d7", "subscribed")
 
@@ -81,7 +86,8 @@ def build_queries() -> dict[str, str]:
         # email, then counts: signin, brain_chosen, accessibility permission, onboarding, human tasks,
         # human tasks within 24h of launch (activated_24h), distinct UTC days with a human task within 7d of
         # launch (activated_d7 = >= 2), human tasks on days 22-28 after launch (week 4), spark subscription,
-        # and the last human-task UTC day.
+        # the last human-task UTC day, the first human task after launch (valid only when human tasks > 0),
+        # onboarding_step permissions completed (either platform), and spark_heard_from.
         "installs": f"""
             select l.launch, l.platform, l.version,
               argMaxIf(toString(e.properties.provider), e.timestamp, e.event = 'brain_chosen' and {after}),
@@ -95,20 +101,25 @@ def build_queries() -> dict[str, str]:
               uniqIf({e_day}, {h} and {after} and e.timestamp < l.launch + interval 7 day),
               countIf({h} and e.timestamp >= l.launch + interval 22 day and e.timestamp < l.launch + interval 29 day),
               countIf(e.event = 'subscription_started' and toString(e.properties.product) = 'spark' and {after}),
-              toString(maxIf({e_day}, {h} and {after}))
+              toString(maxIf({e_day}, {h} and {after})),
+              minIf(e.timestamp, {h} and {after}),
+              countIf(e.event = 'onboarding_step' and toString(e.properties.step) = 'permissions'
+                      and toString(e.properties.action) = 'completed' and {after}),
+              p.heard
             from (select person_id, min(timestamp) as launch,
                     argMin({plat}, timestamp) as platform, argMin({ver}, timestamp) as version
                   from events where event = 'app_first_launch' and {w}
                   group by person_id having launch >= now() - interval {INSTALL_DAYS} day) as l
             left join (select id, toString(properties.email) as email,
                          coalesce(nullIf(toString(properties.spark_channel), ''),
-                                  nullIf(toString(properties.$initial_utm_source), ''), 'unknown') as channel
+                                  nullIf(toString(properties.$initial_utm_source), ''), 'unknown') as channel,
+                         coalesce(nullIf(toString(properties.spark_heard_from), ''), 'not answered') as heard
                        from persons) as p on p.id = l.person_id
             left join (select person_id, event, timestamp, properties from events
                        where event in ('signin_completed', 'brain_chosen', 'permission_granted', 'onboarding_completed',
-                                       'task_completed', 'subscription_started')
+                                       'task_completed', 'subscription_started', 'onboarding_step')
                          and {w} and timestamp >= now() - interval 90 day) as e on l.person_id = e.person_id
-            group by l.person_id, l.launch, l.platform, l.version, p.channel, p.email
+            group by l.person_id, l.launch, l.platform, l.version, p.channel, p.email, p.heard
             order by l.launch desc limit {INSTALL_CAP}""",
         # Task success = human task_completed / (human task_completed + task_failed): weekly by platform,
         # by app_version (30d) and by brain provider (30d; latest brain_chosen per person, any age <= 180d).
@@ -138,6 +149,168 @@ def build_queries() -> dict[str, str]:
             select coalesce(nullIf(toString(properties.source), ''), nullIf(toString(properties.placement), ''), 'unknown') as k, count()
             from events where event = 'spark_download_clicked' and {w} and timestamp >= now() - interval 30 day
             group by k order by count() desc limit 20""",
+        # Voice per person and UTC month (6 months): seconds = sum(voice_session_ended.seconds), sessions.
+        # Minutes = seconds / 60; cost = minutes x SPARK_VOICE_USD_PER_MIN (an estimate).
+        "voice_monthly": f"""
+            select toString(toStartOfMonth(toTimeZone(v.timestamp, 'UTC'))) as m, v.person_id,
+              sum(toInt(v.properties.seconds)), count(), coalesce(p.email, '')
+            from (select person_id, timestamp, properties from events where event = 'voice_session_ended'
+                  and toString(properties.product) = 'spark' and {w} and timestamp >= now() - interval 6 month) as v
+            left join (select id, toString(properties.email) as email from persons) as p on p.id = v.person_id
+            group by m, v.person_id, p.email limit 20000""",
+        # Money facts per person, oldest first (12 months): the latest subscription_updated.status_to is the
+        # status; no update but a subscription_started = unknown (data before the updates existed); the month
+        # is the UTC month of the event. Trial -> paid and cancellations are derived from these rows.
+        "subs": f"""
+            select person_id, event, toString(toStartOfMonth(toTimeZone(timestamp, 'UTC'))),
+              coalesce(toString(properties.status_to), ''), coalesce(toString(properties.reason), ''),
+              coalesce(toString(properties.feedback), '')
+            from events
+            where event in ('account_created', 'subscription_started', 'subscription_updated', 'subscription_cancelled')
+              and toString(properties.product) = 'spark'
+              and {w} and timestamp >= now() - interval 12 month
+            order by timestamp limit 50000""",
+        # Setup, last 30d: distinct persons by event, key (step / reason / permission) and action.
+        "setup_steps": f"""
+            select event,
+              coalesce(nullIf(toString(multiIf(event = 'onboarding_step', properties.step,
+                event = 'brain_signin_failed', properties.reason, properties.permission)), ''), 'unknown') as k,
+              if(event = 'onboarding_step', coalesce(toString(properties.action), ''), '') as a, uniq(person_id)
+            from events
+            where event in ('onboarding_step', 'brain_signin_failed', 'permission_prompted', 'permission_denied')
+              and {w} and timestamp >= now() - interval 30 day
+            group by event, k, a limit 200""",
+        # Last 30d, tasks started (not automation) >= 30 min ago: n; those with no task_completed/task_failed
+        # carrying the same task_id: k. One row: (k, n).
+        "tasks_unfinished": f"""
+            select countIf(fin = 0), count() from (
+              select toString(properties.task_id) as tid,
+                countIf(event = 'task_started' and coalesce(toString(properties.source), '') != 'automation') as st,
+                minIf(timestamp, event = 'task_started') as first_start,
+                countIf(event in ('task_completed', 'task_failed')) as fin
+              from events
+              where event in ('task_started', 'task_completed', 'task_failed')
+                and {w} and timestamp >= now() - interval 30 day and toString(properties.task_id) != ''
+              group by tid having st > 0 and first_start < now() - interval 30 minute) limit 1""",
+    }
+
+
+def _money(rows: dict[str, list], now: datetime) -> dict:
+    """Subscription facts and voice usage. A part is None when its events were never seen ("no data yet")."""
+    price = settings.SPARK_PRICE_USD
+    rate = getattr(settings, "SPARK_VOICE_USD_PER_MIN", 0.05)
+    status, started, created, ever_active, cancels, first_upd = {}, set(), {}, set(), {}, ""
+    this = now.strftime("%Y-%m")
+    for person, event, month, to, reason, feedback in rows["subs"]:
+        month = month[:7]
+        if event == "account_created":
+            created.setdefault(person, month)
+        elif event == "subscription_started":
+            started.add(person)
+        elif event == "subscription_updated":
+            status[person] = to or "other"
+            first_upd = first_upd or month  # rows are oldest first
+            if to == "active":
+                ever_active.add(person)
+        elif event == "subscription_cancelled":
+            c = cancels.setdefault(month, [0, Counter(), Counter()])
+            c[0] += 1
+            c[1][reason or "unknown"] += 1
+            c[2][feedback or "none"] += 1
+    subs = None
+    if status:  # no subscription_updated yet = paying cannot be told: no figures, not zeros
+        paying = sum(s == "active" for s in status.values())
+        by_month = {}
+        for person, month in created.items():
+            if month < first_upd:  # accounts before status updates existed cannot show their first charge
+                continue
+            b = by_month.setdefault(month, [0, 0])
+            b[0] += person in ever_active
+            b[1] += 1
+        subs = {
+            "paying": paying,
+            "mrr_usd": paying * price,
+            "unknown": len(started - set(status)),
+            # partial: the month of the first status update (earlier conversions are invisible) and this month
+            "trial_to_paid": [
+                {"month": m, "k": k, "n": n, "partial": m in (first_upd, this)}
+                for m, (k, n) in sorted(by_month.items())
+            ],
+            "cancellations": [
+                {
+                    "month": m,
+                    "count": c[0],
+                    "reasons": [{"key": k, "count": n} for k, n in c[1].most_common()],
+                    "feedback": [{"key": k, "count": n} for k, n in c[2].most_common()],
+                }
+                for m, c in sorted(cancels.items())
+            ],
+        }
+    voice = None
+    if rows["voice_monthly"]:
+        months: dict[str, dict[str, float]] = {}
+        emails = {}
+        for m, person, secs, _, email in rows["voice_monthly"]:
+            months.setdefault(m[:7], {})[person] = float(secs) / 60
+            emails[person] = email
+        label = lambda p: status.get(p) or ("unknown" if p in started else "none")  # noqa: E731
+        voice = {
+            "rate_usd_per_min": rate,
+            "months": [
+                {
+                    "month": m,
+                    "minutes": round(sum(u.values()), 1),
+                    "users": len(u),
+                    "p50": round(statistics.median(u.values()), 1),
+                    "p90": round(sorted(u.values())[math.ceil(0.9 * len(u)) - 1], 1),
+                    "cost_usd": round(sum(u.values()) * rate, 2),
+                }
+                for m, u in sorted(months.items())
+            ],
+            "top": [
+                {
+                    "email": emails[p] or None,
+                    "status": label(p),
+                    "minutes": round(mins, 1),
+                    "cost_usd": round(mins * rate, 2),
+                    "margin_usd": round((price if label(p) == "active" else 0) - mins * rate, 2),
+                }
+                for p, mins in sorted(months.get(this, {}).items(), key=lambda x: -x[1])[:20]
+            ],
+        }
+    return {"price_usd": price, "subs": subs, "voice": voice}
+
+
+def _setup(rows: dict[str, list]) -> dict | None:
+    """Onboarding losses, sign-in failures, permission denials (distinct persons, 30d), tasks never finished.
+    None = no onboarding_step ever seen (the app that sends them is not out yet)."""
+    kn = lambda k, n: {"k": k, "n": n}  # noqa: E731
+    seen = {(e, str(k), a): int(n) for e, k, a, n in rows["setup_steps"]}
+    if not any(e == "onboarding_step" for e, _, _ in seen):
+        return None
+    step = lambda s, a: seen.get(("onboarding_step", s, a), 0)  # noqa: E731
+    stuck = rows["tasks_unfinished"][0] if rows["tasks_unfinished"] else (0, 0)
+    return {
+        "steps": [
+            {
+                "step": s,
+                "shown": step(s, "shown"),
+                "completed": kn(step(s, "completed"), step(s, "shown")),
+                "skipped": kn(step(s, "skipped"), step(s, "shown")),
+            }
+            for s in STEP_ORDER
+        ],
+        "signin_failures": [
+            {"key": k, "count": n}
+            for (e, k, _), n in sorted(seen.items(), key=lambda x: -x[1])
+            if e == "brain_signin_failed"
+        ],
+        "permissions": [
+            {"permission": p, "prompted": n, "denied": kn(seen.get(("permission_denied", p, ""), 0), n)}
+            for (e, p, _), n in sorted(seen.items())
+            if e == "permission_prompted"
+        ],
+        "unfinished": kn(int(stuck[0]), int(stuck[1])) if int(stuck[1]) else None,
     }
 
 
@@ -151,7 +324,9 @@ def derive(rows: dict[str, list], now: datetime) -> dict:
     per7 = {p: int(n) for p, n in rows["doers_7d"]}
     doers = {wk_of(w): int(n) for w, n in rows["doers_weekly"]}
 
-    people, cohorts, channels = [], {}, {}
+    people, cohorts, channels, heard = [], {}, {}, {}
+    ttft = [0] * (len(BUCKETS) + 2)  # buckets, later, never
+    ttft_n = 0
     funnel = [0] * (len(STEPS) + 1)  # [launches, then STEPS]
     d7_base = 0  # installs 7d+ old (30d window): the denominator of the d7 step
     for r in rows["installs"]:
@@ -159,12 +334,24 @@ def derive(rows: dict[str, list], now: datetime) -> dict:
         platform, version, provider, channel, email = r[1], r[2], r[3] or "unknown", r[4], r[5]
         signin, brain, perm, onb, tasks, act24, d7days, w4, sub = (int(x) for x in r[6:15])
         last_task = str(r[15])[:10] if tasks else None
+        first_task, perm_step, hf = r[16], int(r[17]), r[18] or "not answered"
+        # Windows has nothing to grant: it reached the permissions step once it reached the brain step.
+        perm = perm > 0 or perm_step > 0 or (platform == "windows" and brain > 0)
         age = now - launch
         settled, d7_old = age >= timedelta(hours=24), age >= timedelta(days=7)
         d7 = d7_old and d7days >= 2
         reached = [signin, brain, perm, onb, tasks, d7, sub]
         reached = [bool(x) for x in reached]
         if age <= timedelta(days=30):
+            if settled:
+                ttft_n += 1
+                mins = (_parse_ts(first_task) - launch).total_seconds() / 60 if tasks else None
+                ttft[
+                    next(
+                        (i for i, (_, m) in enumerate(BUCKETS) if mins is not None and mins < m),
+                        len(BUCKETS) + (mins is None),
+                    )
+                ] += 1
             funnel[0] += 1
             d7_base += d7_old
             for i, ok in enumerate(reached):
@@ -184,10 +371,14 @@ def derive(rows: dict[str, list], now: datetime) -> dict:
                         "email": email or None,
                     }
                 )
+            h = heard.setdefault(hf, [0, 0, 0])  # [activated, settled, installs]
+            h[2] += 1
             if settled:
                 c = channels.setdefault(channel, [0, 0])
                 c[0] += act24 > 0
                 c[1] += 1
+                h[0] += act24 > 0
+                h[1] += 1
         wk = _monday(_utc_date(launch)).isoformat()
         if wk in weeks:
             c = cohorts.setdefault(
@@ -259,6 +450,18 @@ def derive(rows: dict[str, list], now: datetime) -> dict:
             {"channel": c, "activated_24h": kn(k, n)} for c, (k, n) in sorted(channels.items(), key=lambda x: -x[1][1])
         ],
         "people": people,
+        "money": _money(rows, now),
+        "time_to_first_task": [
+            {"bucket": b, "k": k, "n": ttft_n} for b, k in zip([*(b for b, _ in BUCKETS), "later", "never"], ttft)
+        ],
+        # None = no install has answered yet (never seen), not a table of zeros.
+        "heard_from": None
+        if set(heard) <= {"not answered"}
+        else [
+            {"choice": c, "installs": i, "activated_24h": kn(a, n)}
+            for c, (a, n, i) in sorted(heard.items(), key=lambda x: -x[1][2])
+        ],
+        "setup": _setup(rows),
     }
 
 

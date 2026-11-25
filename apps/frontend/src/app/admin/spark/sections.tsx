@@ -61,7 +61,7 @@ export function Cohorts({ data }: { data: SparkData }) {
 
 export function Channels({ data }: { data: SparkData }) {
   return (
-    <Card title="Activated in 24h by channel (installs in the last 60 days)">
+    <Card title="Activated in 24h by channel (installs in the last 60 days; creator codes and referral)">
       <Table head={["Channel", "Activated 24h"]} rows={data.channels.map((c) => [c.channel, kn(c.activated_24h)])} />
     </Card>
   );
@@ -104,5 +104,99 @@ export function Reliability({ data }: { data: SparkData }) {
         </Card>
       </div>
     </div>
+  );
+}
+
+const NO_DATA = <div className="text-xs text-muted-foreground">no data yet</div>;
+const usd = (v: number) => `$${v.toFixed(2)}`;
+const counts = (c: { key: string; count: number }[]) => c.map((x) => `${x.key} ${x.count}`).join(", ") || "none";
+const WITHIN: Record<string, string> = { lt5m: "< 5 min", lt30m: "< 30 min", lt2h: "< 2 h", lt24h: "< 24 h", later: "later", never: "never" };
+
+export function Sources({ data }: { data: SparkData }) {
+  return (
+    <Card title="How they heard (installs in the last 60 days)">
+      {data.heard_from ? (
+        <Table
+          head={["Answer", "Installs", "Activated 24h"]}
+          rows={data.heard_from.map((h) => [h.choice, h.installs, kn(h.activated_24h)])}
+        />
+      ) : (
+        NO_DATA
+      )}
+    </Card>
+  );
+}
+
+export function Setup({ data }: { data: SparkData }) {
+  const s = data.setup;
+  return (
+    <div className="space-y-6">
+      <Card title="Time from first launch to first human task (installs 24h+ old, last 30 days)">
+        <Table head={["Within", "Installs"]} rows={data.time_to_first_task.map((b) => [WITHIN[b.bucket] ?? b.bucket, kn(b)])} />
+      </Card>
+      <Card title="Setup, last 30 days (people)">
+        {s ? (
+          <div className="space-y-4">
+            <Table
+              head={["Step", "Shown", "Completed", "Skipped"]}
+              rows={s.steps.map((r) => [r.step, r.shown, kn(r.completed), kn(r.skipped)])}
+            />
+            <Table
+              head={["Permission", "Prompted", "Denied"]}
+              rows={s.permissions.map((r) => [r.permission, r.prompted, kn(r.denied)])}
+            />
+            <p className="text-xs text-muted-foreground">
+              Brain sign-in failures: {counts(s.signin_failures)}. Tasks started and not finished after 30 minutes:{" "}
+              {s.unfinished ? kn(s.unfinished) : "no data yet"}.
+            </p>
+          </div>
+        ) : (
+          NO_DATA
+        )}
+      </Card>
+    </div>
+  );
+}
+
+export function Money({ data }: { data: SparkData }) {
+  const { subs, voice, price_usd } = data.money;
+  return (
+    <Card title="Money">
+      <div className="space-y-4">
+        {subs ? (
+          <>
+            <div className="grid grid-cols-2 gap-4 md:grid-cols-3">
+              <MetricStat label="Paying users" value={subs.paying} hint="latest status is active" />
+              <MetricStat label="MRR at list price" value={`$${subs.mrr_usd}`} hint={`paying x $${price_usd}`} />
+              <MetricStat label="Status unknown" value={subs.unknown} hint="subscribed before status tracking" />
+            </div>
+            <Table head={["Account created", "Reached paying"]} rows={subs.trial_to_paid.map((t) => [weekLabel(t.month, t.partial), kn(t)])} />
+            <Table
+              head={["Cancelled in", "Count", "Reasons", "Feedback"]}
+              rows={subs.cancellations.map((c) => [c.month, c.count, counts(c.reasons), counts(c.feedback)])}
+            />
+          </>
+        ) : (
+          NO_DATA
+        )}
+        {voice ? (
+          <>
+            <Table
+              head={["Month", "Minutes", "Users", "Median / user", "p90 / user", "Cost (estimate)"]}
+              rows={voice.months.map((m) => [m.month, m.minutes, m.users, m.p50, m.p90, usd(m.cost_usd)])}
+            />
+            <p className="text-xs text-muted-foreground">
+              Cost is an estimate: minutes x ${voice.rate_usd_per_min}/min. Top 20 by voice minutes this month.
+            </p>
+            <Table
+              head={["User", "Status", "Minutes", "Cost (estimate)", "Margin"]}
+              rows={voice.top.map((u) => [u.email ?? "—", u.status, u.minutes, usd(u.cost_usd), usd(u.margin_usd)])}
+            />
+          </>
+        ) : (
+          NO_DATA
+        )}
+      </div>
+    </Card>
   );
 }

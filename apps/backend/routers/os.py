@@ -66,11 +66,12 @@ class AccountResponse(BaseModel):
 class ConfigResponse(BaseModel):
     priceText: str
     trialDays: int
-    worklogScope: Literal["all", "problem"] = "problem"
+    worklogScope: Literal["all", "problem", "off"] = "off"
 
 
 def _price_facts() -> ConfigResponse:
-    scope = "all" if settings.SPARK_WORKLOG_SCOPE == "all" else "problem"
+    # "off" while the store is disabled here: apps then upload no work log at all (they fail closed on anything else).
+    scope = "off" if not settings.SPARK_STORE_ENABLED else "all" if settings.SPARK_WORKLOG_SCOPE == "all" else "problem"
     return ConfigResponse(
         priceText=f"${settings.SPARK_PRICE_USD}/month", trialDays=TRIAL_S // DAY_S, worklogScope=scope
     )

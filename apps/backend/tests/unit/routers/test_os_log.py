@@ -155,6 +155,9 @@ async def test_a_normal_session_never_hits_the_limit(store):
 
 async def test_config_returns_the_scope(monkeypatch):
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        monkeypatch.setattr(settings, "SPARK_STORE_ENABLED", False)
+        assert (await c.get("/api/v1/os/config")).json()["worklogScope"] == "off"  # apps upload nothing
+        monkeypatch.setattr(settings, "SPARK_STORE_ENABLED", True)
         assert (await c.get("/api/v1/os/config")).json()["worklogScope"] == "problem"
         monkeypatch.setattr(settings, "SPARK_WORKLOG_SCOPE", "all")
         assert (await c.get("/api/v1/os/config")).json()["worklogScope"] == "all"

@@ -6,6 +6,9 @@ import { NotAuthorized } from "@/components/admin/NotAuthorized";
 
 import { getAdminMe } from "./_lib/api";
 
+// Land back on the admin root afterwards: the sign-in page has its own default.
+const SIGN_IN = "/sign-in?redirect_url=%2F";
+
 /**
  * Admin tree gate (Server Component).
  *
@@ -16,12 +19,9 @@ import { getAdminMe } from "./_lib/api";
  *      IN PLACE (not a redirect — see the note at the check below).
  *
  * The whole admin route segment sits behind this layout, so individual pages
- * don't need their own gate. Pair with the host-based 404 in
- * `src/middleware.ts` for defense in depth (CEO A1).
+ * don't need their own gate. `src/middleware.ts` serves this tree at the root
+ * of an admin host and answers 404 for `/admin*` everywhere.
  */
-// Land back on the admin root afterwards: the sign-in page defaults to /voice.
-const SIGN_IN = "/sign-in?redirect_url=%2F";
-
 export default async function AdminLayout({
   children,
 }: {

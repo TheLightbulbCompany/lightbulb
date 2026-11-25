@@ -53,13 +53,12 @@ function isAdminHostPassthroughPath(pathname: string): boolean {
  * Pure host/path -> decision function for the admin gate. Exported so the
  * branching logic can be unit-tested without a Next.js request object.
  *
- * Defense in depth (CEO A1): unknown hosts hitting `/admin*` get a 404, not a
- * 403 — we don't want host-header probes to confirm the path even exists.
- * On an admin host the admin lives at the root: `/<path>` is rewritten to
- * `/admin/<path>` (the address bar keeps the short path). The old
- * `/admin/<path>` links are a 404 there too: old links never redirect
- * (owner, 2026-11-25). Clerk auth paths, Next internals and API routes are
- * left alone (see isAdminHostPassthroughPath).
+ * Any `/admin*` path is a 404 on every host: off an admin host so probes
+ * cannot confirm the path exists (CEO A1), and on one because old links never
+ * redirect (owner, 2026-11-25). On an admin host the admin lives at the root:
+ * `/<path>` is rewritten to `/admin/<path>` (the address bar keeps the short
+ * path). Clerk auth paths, Next internals and API routes are left alone
+ * (see isAdminHostPassthroughPath).
  */
 export function decideAdminHostRouting(
   host: string | null | undefined,

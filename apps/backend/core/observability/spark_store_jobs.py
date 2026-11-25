@@ -214,33 +214,34 @@ async def _finish(key: str, mine: dict, advance: Callable[[dict], dict | None]) 
 
 
 async def request_forget(user_id: str, at: datetime | None = None, bounded: bool = True) -> None:
-    """Write (or bump) the marker: a new request starts all three passes again. A live claim is kept, so two
-    tasks never run a pass at once. An older request than the marker's own changes nothing, except that an
-    unbounded one (account deletion) widens a bounded marker; never the reverse."""
+    """Write (or bump) the marker: a new request starts all three passes again (and pass 4 later). A live claim is
+    kept, so two tasks never run a pass at once. A request older than the marker's own changes nothing, with one
+    exception: widening a bounded marker to unbounded (account deletion) is a new generation whatever the request
+    times are (`requested_at` becomes now, so an in-flight bounded pass's finisher only releases its claim). A
+    bounded request never narrows an unbounded marker."""
     at = at or _now()
     key = forget_key(user_id)
-    until = (at + CUTOFF_SLACK).isoformat() if bounded else None
-    body = {
-        "user_id": user_id,
-        "requested_at": at.isoformat(),
-        "next_pass": 1,
-        "not_before": at.isoformat(),
-        "attempts": 0,
-    }
     for _ in range(5):
         got = await _get(key)
-        if got is None:
-            if await _put(key, body | {"until": until, "claimed_at": None}):
+        old, etag = got if got else ({}, None)
+        old_wide = bool(old) and old.get("until") is None  # a marker without `until` is unbounded
+        stamp = at
+        if old:
+            seen = datetime.fromisoformat(old["requested_at"])
+            if old_wide and bounded or (bounded or old_wide) and seen >= at:
                 return
-            continue
-        old, etag = got
-        wide = until is None or old.get("until") is None  # a marker without `until` is unbounded
-        if datetime.fromisoformat(old["requested_at"]) >= at:
-            if until is None and old.get("until") is not None and await _put(key, old | {"until": None}, etag):
-                return
-            if until is not None or old.get("until") is None:
-                return
-        elif await _put(key, body | {"until": None if wide else until, "claimed_at": old.get("claimed_at")}, etag):
+            if not bounded and not old_wide:
+                stamp = max(_now(), seen + timedelta(microseconds=1))  # widening: strictly newer than the old request
+        body = {
+            "user_id": user_id,
+            "requested_at": stamp.isoformat(),
+            "until": (stamp + CUTOFF_SLACK).isoformat() if bounded else None,
+            "next_pass": 1,
+            "not_before": stamp.isoformat(),
+            "attempts": 0,
+            "claimed_at": old.get("claimed_at"),
+        }
+        if await _put(key, body, etag):
             return
     raise RuntimeError("forget marker contended")
 

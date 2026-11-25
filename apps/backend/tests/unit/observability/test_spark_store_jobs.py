@@ -256,8 +256,58 @@ async def test_retry_marker_never_overwrites_a_newer_request(env):
     before = env.s3.objects[MARKER]
     await jobs.retry_marker(USER, T0)
     assert env.s3.objects[MARKER] == before
-    await jobs.retry_marker(USER, T0, bounded=False)  # but account deletion widens it
-    assert env.s3.marker()["until"] is None and env.s3.marker()["next_pass"] == 2
+    await jobs.retry_marker(USER, T0, bounded=False)  # but account deletion widens it: a new generation
+    m = env.s3.marker()
+    assert m["until"] is None and m["next_pass"] == 1 and m["attempts"] == 0
+    assert datetime.fromisoformat(m["requested_at"]) > T0 + 10 * MIN
+
+
+async def test_widening_a_marker_at_pass_four_restarts_it_and_the_next_tick_deletes_unbounded(env):
+    env.s3.seed(next_pass=4, attempts=2, not_before=(T0 + timedelta(hours=40)).isoformat())
+    await jobs.request_forget(USER, T0 - 5 * MIN, bounded=False)  # an older time, as retry_marker sends
+    m = env.s3.marker()
+    assert (m["next_pass"], m["attempts"], m["until"]) == (1, 0, None)
+    assert m["not_before"] == m["requested_at"] and datetime.fromisoformat(m["requested_at"]) >= T0
+    env.clock[0] += timedelta(seconds=1)  # the clock moves on past the restart
+    await jobs.tick()
+    deletes = env.athena.sqls("DELETE")
+    assert len(deletes) == 3 and all("ts <=" not in q for q in deletes)
+
+
+async def test_widening_while_a_bounded_pass_is_claimed_only_releases_the_finisher(env):
+    env.s3.seed(next_pass=2)
+    reached, release = threading.Event(), threading.Event()
+
+    def hold(sql):
+        if sql.startswith("DELETE FROM lightbulb_dev_spark.events"):
+            reached.set()
+            release.wait(5)
+
+    env.athena.on_start = hold
+    task = asyncio.create_task(jobs.tick())
+    while not reached.is_set():
+        await asyncio.sleep(0.001)
+    await jobs.request_forget(USER, T0 - 1 * MIN, bounded=False)
+    env.athena.on_start = None
+    release.set()
+    await task
+    m = env.s3.marker()
+    assert (m["next_pass"], m["until"], m["claimed_at"]) == (1, None, None)  # not advanced, not deleted
+    env.athena.queries.clear()
+    env.clock[0] += timedelta(seconds=1)
+    await jobs.tick()
+    deletes = env.athena.sqls("DELETE")
+    assert len(deletes) == 3 and all("ts <=" not in q for q in deletes)
+    assert env.s3.marker()["next_pass"] == 2
+
+
+async def test_a_bounded_request_never_changes_an_unbounded_markers_scope_or_time(env):
+    env.s3.seed(until=None, next_pass=2, requested_at=T0.isoformat())
+    before = env.s3.objects[MARKER]
+    await jobs.request_forget(USER, T0 + 10 * MIN)  # newer, but bounded
+    assert env.s3.objects[MARKER] == before
+    await jobs.request_forget(USER, T0 - 10 * MIN, bounded=False)  # older and already unbounded
+    assert env.s3.objects[MARKER] == before
 
 
 async def test_a_pass_that_runs_out_of_time_is_a_failed_pass(env, monkeypatch):

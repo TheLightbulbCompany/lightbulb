@@ -19,8 +19,6 @@
  * `trial_started` lands on the same id.
  */
 
-import { capture } from "@/lib/analytics";
-
 const FLOW_ID_KEY = "lightbulb:signup_flow_id:v1";
 
 // Storage-disabled fallback. Safari private mode and several in-app
@@ -76,27 +74,6 @@ export function signupFlowId(): string {
 }
 
 // ---------------------------------------------------------------------------
-// Current step, for `signup_exit`
-// ---------------------------------------------------------------------------
-
-// Module-level rather than React state: the `pagehide` listener that emits
-// `signup_exit` is installed once at the app root and must read the step
-// owned by a component (ProvisioningStepper) it has no relationship with.
-// A ref passed through context would work; this is one variable.
-let currentStep: string | null = null;
-
-/** Publish the step the user is currently sitting on, or null once the
- *  flow is complete / the user is not in it (no `signup_exit` is emitted
- *  while this is null). */
-export function setSignupStep(step: string | null): void {
-  currentStep = step;
-}
-
-export function currentSignupStep(): string | null {
-  return currentStep;
-}
-
-// ---------------------------------------------------------------------------
 // Browser context
 // ---------------------------------------------------------------------------
 
@@ -136,49 +113,4 @@ export function browserContext(ua?: string): BrowserContext {
   if (/FxiOS|Firefox\//.test(agent)) return { browser_context: "firefox", is_in_app_browser: false };
   if (/Safari\//.test(agent)) return { browser_context: "safari", is_in_app_browser: false };
   return { browser_context: "other", is_in_app_browser: false };
-}
-
-// ---------------------------------------------------------------------------
-// CTA labelling
-// ---------------------------------------------------------------------------
-
-/**
- * Emit `signup_cta_clicked`. EVERY door into /sign-up goes through here.
- *
- * Before this, a click on the nav button, the hero submit, a pricing card,
- * and any of the thirteen controls in the landing workspace demo were
- * indistinguishable in PostHog: the demo emitted nothing at all, and the
- * rest emitted `signup_started` — an event whose name says "account
- * created" but which was 78% button clicks (measured over 90 days: 60 CTA
- * clicks vs 17 real completions). So "where do people stop?" had no
- * answer. `signup_started` now means only the Clerk completion; this names
- * the control.
- *
- * `browser_context` / `is_in_app_browser` / `signup_flow_id` ride along as
- * super properties — do not repeat them here.
- */
-export function captureSignupCta(opts: {
-  /** Stable machine id, e.g. "nav_sign_up". Never change one — it is the
-   *  join key across time. */
-  ctaId: string;
-  /** The label the user actually saw. Changes freely with the copy. */
-  label: string;
-  /** The component the control lives in. */
-  surface: string;
-  destination?: string;
-  providerChoice?: string;
-  /** Anything else worth segmenting this click on (the hero's
-   *  new-vs-grow path, say). Kept separate from the named fields so the
-   *  five every CTA must carry cannot be forgotten. */
-  properties?: Record<string, unknown>;
-}): void {
-  capture("signup_cta_clicked", {
-    cta_id: opts.ctaId,
-    cta_label: opts.label,
-    surface: opts.surface,
-    destination: opts.destination ?? "/sign-up",
-    route: typeof window === "undefined" ? null : window.location.pathname,
-    ...(opts.providerChoice ? { provider_choice: opts.providerChoice } : {}),
-    ...opts.properties,
-  });
 }

@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useEffect, useLayoutEffect, useRef } from "react";
+import { Suspense, useEffect, useRef } from "react";
 import { usePathname, useSearchParams } from "next/navigation";
 import { useAuth, useUser } from "@clerk/nextjs";
 
@@ -12,19 +12,12 @@ import {
   identify,
   init as initAnalytics,
   isMarketingRoute,
-  isPrivateRoute,
   pageview,
   register,
   reset,
   withoutChatQuery,
 } from "@/lib/analytics";
-import {
-  browserContext,
-  currentSignupStep,
-  rotateSignupFlowId,
-  setSignupStep,
-  signupFlowId,
-} from "@/lib/signupFlow";
+import { browserContext, rotateSignupFlowId, signupFlowId } from "@/lib/signupFlow";
 
 const POSTHOG_KEY = process.env.NEXT_PUBLIC_POSTHOG_KEY;
 // Route PostHog through our own domain via the Next rewrite in
@@ -121,62 +114,18 @@ function PostHogInit() {
   useEffect(() => {
     if (initializedRef.current || !POSTHOG_KEY) return;
     initializedRef.current = true;
-    const privateRoute = isPrivateRoute(window.location.pathname);
-    document.body.classList.toggle("ph-no-capture", privateRoute);
     initAnalytics(POSTHOG_KEY, {
       api_host: POSTHOG_API_HOST,
       ui_host: POSTHOG_UI_HOST,
       person_profiles: "identified_only",
       capture_pageview: false,
       capture_pageleave: true,
-      // ON everywhere EXCEPT /chat and /s (a session link's transcript).
-      //
-      // The hand-instrumented events in @/lib/analytics cover the funnel we
-      // knew to measure. Launch is the case they cannot cover: you cannot
-      // pre-instrument a drop-off nobody has seen yet, and first real traffic
-      // is exactly when an uninstrumented dead end is worth more than a clean
-      // event taxonomy. This is the safety net for that window — revisit once
-      // the funnel has been read against real users.
-      //
-      // The /chat exclusion is the load-bearing part, not a detail.
-      // Autocapture serialises the text of the clicked element and its
-      // ancestors into `$element_chain`. On marketing and onboarding pages
-      // that text is our own copy — harmless. On /chat the DOM IS the
-      // customer's business conversation, so a click on a copy button or a
-      // link inside an agent response would carry conversation content into
-      // analytics props, bypassing the no-PII-in-props discipline held
-      // everywhere else. That is customer data somewhere it was never meant
-      // to go, on a product sold on confidentiality.
-      //
-      // The original perf objection lives on the same page: a DOM-path walk
-      // per interaction on the one main thread already saturated by an
-      // un-virtualized streaming transcript. Excluding /chat answers both.
-      //
-      // Heatmaps are a separate subsystem (`capture_heatmaps`), unaffected.
-      autocapture: {
-        url_ignorelist: [/\/chat/, /^[a-z]+:\/\/[^/]+\/s(?:[?#]|$)/],
-      },
-      // CEO observability: keep session replay, but sample it instead of
-      // recording every session. rrweb installs a document-wide
-      // MutationObserver and serialises every mutation; on /chat the
-      // transcript is un-virtualized and mutates continuously while a
-      // response streams, so recording is sustained main-thread work rather
-      // than a one-off cost. Sampling is decided once per session and is
-      // deterministic on the session id — an unsampled session never starts
-      // rrweb at all, so the majority now pay nothing.
-      //
-      // Mask all typed input. The /chat route is blocked with data-private
-      // because its DOM contains customer conversations and session transcripts.
-      // See https://posthog.com/docs/session-replay/how-to-control-which-sessions-you-record.
+      // Autocapture stays on (the default). Replay masks all typed input.
       session_recording: {
         // 0-1. Every session, since 2026-09-30: at this traffic level replay
         // earns its keep through individual sessions watched end-to-end, and
         // the 0.25 sample recorded one or two of the week's seven signups and
         // missed the one that mattered. Drop it back when volume justifies.
-        // What this covers: landing, sign-up and /onboarding. /chat is never
-        // recorded (the route effect below stops rrweb there and before_send
-        // drops its frames) because its DOM is the customer's conversation —
-        // the rate changes nothing about that boundary.
         // Set here rather than in the PostHog project settings because a
         // client-side value takes precedence over the remote config: this
         // literal is the rate, and moving the dashboard slider will not
@@ -195,9 +144,6 @@ function PostHogInit() {
       },
       before_send: (event) => {
         if (!event) return null;
-        // stopSessionRecording flushes its buffered frames. Discard that flush
-        // on /chat in case it saw a body portal before the route effect stopped it.
-        if (event.event === "$snapshot" && isPrivateRoute(window.location.pathname)) return null;
         // The SDK adds entry URLs to event props and initial URLs to person
         // props ($set_once, including on $identify). Cover both wire shapes.
         for (const candidate of [event.properties, event.$set, event.$set_once,
@@ -230,10 +176,6 @@ function PostHogInit() {
         }
         return event;
       },
-      // Explicit — PostHog's project-level dashboard has a master switch
-      // too, but being explicit here means local dev + preview branches
-      // behave the same as prod.
-      disable_session_recording: privateRoute,
     });
     // Super properties: merged by PostHog into every subsequent event, so
     // `signup_flow_id` reaches call sites that know nothing about it, and
@@ -245,103 +187,15 @@ function PostHogInit() {
   return null;
 }
 
-/**
- * `signup_exit` — the user left while still inside the onboarding flow,
- * tagged with the step they left FROM. This is the event that turns
- * "people drop off somewhere" into "people drop off HERE".
- *
- * It is NOT emitted from /sign-up or /sign-in, on purpose. A `pagehide`
- * there is ambiguous by construction: "Continue with Google/Apple" is a
- * cross-origin full-document navigation that fires `pagehide` for every
- * SUCCESSFUL OAuth signup, and there is no way to tell it from an abandon at
- * the moment it happens. Emitting there would count every OAuth success as
- * a drop-off — in exactly the in-app-webview cohort this exists to measure.
- * The sign-up page's own drop-off is `reached /sign-up AND never
- * $identify`, which needs no event and cannot be fooled by a redirect;
- * autocapture (on for every route but /chat) already records the OAuth
- * button click itself.
- *
- * `pagehide`, not `beforeunload`: mobile Safari skips `beforeunload`
- * entirely when a page enters the back/forward cache, which is the normal
- * way an iOS user leaves a tab. `send_instantly` bypasses PostHog's batch
- * queue so the request is at least issued before the document goes away
- * (posthog-js ignores a `transport` option on capture — its own pageleave
- * path is the only thing that gets sendBeacon; for a custom event the
- * keepalive fetch this produces is the best available).
- *
- * Fires at most once per step per page session: a bfcache restore/freeze
- * cycle can dispatch `pagehide` repeatedly from the same step, and a
- * drop-off count that double-counts one user is worse than useless.
- */
-function SignupExitTracker() {
-  const firedRef = useRef<Set<string>>(new Set());
-  useEffect(() => {
-    const onHide = () => {
-      const step = currentSignupStep();
-      if (!step || firedRef.current.has(step)) return;
-      firedRef.current.add(step);
-      capture(
-        "signup_exit",
-        { step, route: window.location.pathname },
-        { send_instantly: true },
-      );
-    };
-    window.addEventListener("pagehide", onHide);
-    return () => window.removeEventListener("pagehide", onHide);
-  }, []);
-  return null;
-}
-
-/**
- * `setup_cta_clicked` (T23): any link to /request-setup, wherever it is, counts. One listener
- * instead of wiring every button; a link names itself with `data-cta-id` / `data-surface`.
- */
-function SetupCtaTracker() {
-  useEffect(() => {
-    const onClick = (event: MouseEvent) => {
-      const link = (event.target as Element | null)?.closest?.("a[href]") as HTMLAnchorElement | null;
-      if (!link) return;
-      let path: string;
-      try {
-        path = new URL(link.href, window.location.origin).pathname;
-      } catch {
-        return;
-      }
-      // Never on /chat or /s: a link there is a person's message, and its label is their words.
-      if (path !== "/request-setup" || isPrivateRoute(window.location.pathname)) return;
-      capture("setup_cta_clicked", {
-        cta_id: link.dataset.ctaId ?? null,
-        cta_label: (link.textContent ?? "").trim().slice(0, 80),
-        surface: link.dataset.surface ?? null,
-        route: window.location.pathname,
-      });
-    };
-    document.addEventListener("click", onClick, true);
-    return () => document.removeEventListener("click", onClick, true);
-  }, []);
-  return null;
-}
-
 function PostHogPageview() {
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const { isSignedIn } = useAuth();
   const queryString = searchParams?.toString() ?? "";
   const url = pathname + (queryString ? `?${queryString}` : "");
-  // The chat route can portal customer content to document.body, outside its
-  // data-private layout wrapper. Block the body before rrweb observes the new DOM.
-  useLayoutEffect(() => {
-    document.body.classList.toggle("ph-no-capture", isPrivateRoute(pathname));
-  }, [pathname]);
-
-  useEffect(() => {
-    if (!POSTHOG_KEY) return;
-    if (isPrivateRoute(pathname)) posthogClient.stopSessionRecording();
-    else posthogClient.startSessionRecording(); // no override: keeps the sampleRate gate
-  }, [pathname]);
   // The URL whose per-URL events were last SENT. Set only after a real send
   // (pageview() reports whether posthog was loaded). One ref guards every
-  // capture in the block — pageview, landing_viewed, the checkout return —
+  // capture in the block — pageview, landing_viewed —
   // so a StrictMode dev double-invoke cannot double any of them.
   const lastSentUrlRef = useRef<string | null>(null);
 
@@ -357,36 +211,6 @@ function PostHogPageview() {
       if (isMarketingRoute(pathname) && !safeSessionFlag(LANDING_SESSION_KEY)) {
         capture("landing_viewed", { path: url });
       }
-      if (searchParams.get("from") === "away_email") {
-        // The away email's link (T15): how long "needs you" took to reach the person.
-        const sent = Number(searchParams.get("sent"));
-        capture("notification_opened", {
-          channel: "email",
-          latency_s: Number.isFinite(sent) && sent > 0 ? Math.max(0, Math.round(Date.now() / 1000 - sent)) : null,
-        });
-      }
-      const checkoutStatus = searchParams.get("checkout") ?? searchParams.get("subscription");
-      if (checkoutStatus === "success" || checkoutStatus === "cancel") {
-        capture(
-          checkoutStatus === "success"
-            ? "subscription_checkout_returned_success"
-            : "subscription_checkout_canceled",
-          { path: pathname, provider_choice: searchParams.get("provider") },
-        );
-      }
-    }
-
-    // Which step `signup_exit` reports. /chat is owned by ProvisioningStepper
-    // (it knows the provisioning phase and whether this is a genuine first
-    // run). /onboarding is Clerk's team-creation / invitation screen — an
-    // expensive, unambiguous place to abandon, so it gets its own step.
-    // /sign-up and /sign-in deliberately get NONE: see SignupExitTracker for
-    // why an exit there cannot be told from an OAuth redirect. Every other
-    // route clears it so a later exit reports nothing.
-    if (pathname?.startsWith("/onboarding")) {
-      setSignupStep("team_setup");
-    } else if (!pathname?.startsWith("/chat")) {
-      setSignupStep(null);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `url` is derived from pathname + searchParams; keying on the string is the point.
   }, [url]);
@@ -511,8 +335,6 @@ export function PostHogProvider({ children }: { children: React.ReactNode }) {
         <PostHogPageview />
       </Suspense>
       <PostHogIdentify />
-      <SignupExitTracker />
-      <SetupCtaTracker />
       <PostHogErrorForwarder />
       {children}
     </AnalyticsProvider>

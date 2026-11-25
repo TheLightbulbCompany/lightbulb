@@ -142,17 +142,14 @@ describe("PostHogProvider", () => {
     expect(opts.person_profiles).toBe("identified_only");
     expect(opts.capture_pageview).toBe(false);
     expect(opts.capture_pageleave).toBe(true);
-    // Session replay must be enabled with masking defaults.
-    expect(opts.disable_session_recording).toBe(false);
+    // Session replay masking defaults.
     const recording = opts.session_recording as {
       sampleRate: number;
       maskAllInputs: boolean;
       blockSelector: string;
       maskCapturedNetworkRequestFn: (request: { name: string; requestBody?: string }) => { name: string; requestBody?: string };
     };
-    // Every pre-chat session is recorded while signups are few (2026-09-30); a
-    // sampled replay missed the one new-user session that needed watching.
-    // /chat stays unrecorded regardless of the rate (route effect below).
+    // Every session is recorded while signups are few (2026-09-30).
     expect(recording.sampleRate).toBe(1);
     expect(recording.maskAllInputs).toBe(true);
     expect(recording.blockSelector).toBe("[data-private]");
@@ -160,88 +157,29 @@ describe("PostHogProvider", () => {
       .toMatchObject({ name: "https://thelightbulb.company/chat", requestBody: undefined });
     type Capture = { event?: string; properties: Record<string, unknown>; $set?: Record<string, unknown>; $set_once?: Record<string, unknown> };
     const beforeSend = opts.before_send as (event: Capture) => Capture | null;
-    expect(beforeSend({ properties: { $current_url: "/chat?path=/private" } })?.properties.$current_url)
-      .toBe("/chat");
+    expect(beforeSend({ properties: { $current_url: "/sign-in?__clerk_ticket=t" } })?.properties.$current_url)
+      .toBe("/sign-in");
     const person = beforeSend({
       event: "$identify",
       properties: {
-        $session_entry_url: "/chat?path=/private",
-        $set_once: { $initial_current_url: "/chat?path=/private" },
+        $session_entry_url: "/sign-in?__clerk_ticket=t",
+        $set_once: { $initial_current_url: "/sign-in?__clerk_ticket=t" },
       },
-      $set: { $current_url: "/chat?path=/private" },
-      $set_once: { $initial_current_url: "/chat?path=/private", $initial_referrer: "/chat?path=/private" },
+      $set: { $current_url: "/sign-in?__clerk_ticket=t" },
+      $set_once: { $initial_current_url: "/sign-in?__clerk_ticket=t", $initial_referrer: "/sign-in?__clerk_ticket=t" },
     });
-    expect(person?.properties.$session_entry_url).toBe("/chat");
-    expect(person?.properties.$set_once).toEqual({ $initial_current_url: "/chat" });
-    expect(person?.$set).toEqual({ $current_url: "/chat" });
-    expect(person?.$set_once).toEqual({ $initial_current_url: "/chat", $initial_referrer: "/chat" });
+    expect(person?.properties.$session_entry_url).toBe("/sign-in");
+    expect(person?.properties.$set_once).toEqual({ $initial_current_url: "/sign-in" });
+    expect(person?.$set).toEqual({ $current_url: "/sign-in" });
+    expect(person?.$set_once).toEqual({ $initial_current_url: "/sign-in", $initial_referrer: "/sign-in" });
     const replay = beforeSend({ event: "$snapshot", properties: { $snapshot_data: [
-      { type: 4, data: { href: "https://thelightbulb.company/chat?path=%2Fprivate" } },
-      { type: 5, data: { tag: "$url_changed", payload: { href: "/chat?path=%2Fprivate" } } },
+      { type: 4, data: { href: "https://thelightbulb.company/sign-in?__clerk_ticket=t" } },
+      { type: 5, data: { tag: "$url_changed", payload: { href: "/sign-in?__clerk_ticket=t" } } },
     ] } });
     expect(replay?.properties.$snapshot_data).toEqual([
-      { type: 4, data: { href: "https://thelightbulb.company/chat" } },
-      { type: 5, data: { tag: "$url_changed", payload: { href: "/chat" } } },
+      { type: 4, data: { href: "https://thelightbulb.company/sign-in" } },
+      { type: 5, data: { tag: "$url_changed", payload: { href: "/sign-in" } } },
     ]);
-  });
-
-  it("blocks body portals and stops replay on the chat route", async () => {
-    process.env.NEXT_PUBLIC_POSTHOG_KEY = "phc_test_key_123";
-    mockRouterState.pathname = "/chat";
-    window.history.replaceState({}, "", "/chat?path=%2Fprivate%2Ffolder");
-    const mod = await import("../PostHogProvider");
-    render(<mod.PostHogProvider><div>private chat</div></mod.PostHogProvider>);
-
-    expect((mockInit.mock.calls[0][1] as Record<string, unknown>).disable_session_recording).toBe(true);
-    expect(document.body.classList.contains("ph-no-capture")).toBe(true);
-    expect(mockStopRecording).toHaveBeenCalled();
-    const beforeSend = (mockInit.mock.calls[0][1] as Record<string, unknown>).before_send as (
-      event: { event: string; properties: Record<string, unknown> },
-    ) => unknown;
-    expect(beforeSend({ event: "$snapshot", properties: { $snapshot_data: [{ type: 4, data: { href: "/chat?path=/private" } }] } }))
-      .toBeNull();
-  });
-
-  it("treats a session link page like /chat and strips its token from every URL", async () => {
-    process.env.NEXT_PUBLIC_POSTHOG_KEY = "phc_test_key_123";
-    mockRouterState.pathname = "/s";
-    window.history.replaceState({}, "", "/s?port=53123#secret-token");
-    const mod = await import("../PostHogProvider");
-    render(<mod.PostHogProvider><div>transcript</div></mod.PostHogProvider>);
-
-    const options = mockInit.mock.calls[0][1] as Record<string, unknown>;
-    expect(options.disable_session_recording).toBe(true);
-    expect(document.body.classList.contains("ph-no-capture")).toBe(true);
-    expect(mockStopRecording).toHaveBeenCalled();
-    const ignore = (options.autocapture as { url_ignorelist: RegExp[] }).url_ignorelist;
-    expect(ignore.some(r => r.test("https://thelightbulb.company/s#secret-token"))).toBe(true);
-    expect(ignore.some(r => r.test("https://thelightbulb.company/settings"))).toBe(false);
-    const beforeSend = options.before_send as (
-      event: { event: string; properties: Record<string, unknown>; $set_once?: Record<string, unknown> },
-    ) => { properties: Record<string, unknown>; $set_once?: Record<string, unknown> } | null;
-    expect(beforeSend({ event: "$snapshot", properties: { $snapshot_data: [] } })).toBeNull();
-    const sent = beforeSend({
-      event: "$identify",
-      properties: { $current_url: "https://thelightbulb.company/s#secret-token" },
-      $set_once: { $initial_current_url: "https://thelightbulb.company/s?port=53123#secret-token" },
-    });
-    expect(JSON.stringify(sent)).not.toContain("secret-token");
-    expect(JSON.stringify(sent)).not.toContain("53123");
-  });
-
-  it("stops replay when navigation enters chat from onboarding", async () => {
-    process.env.NEXT_PUBLIC_POSTHOG_KEY = "phc_test_key_123";
-    mockRouterState.pathname = "/onboarding";
-    window.history.replaceState({}, "", "/onboarding");
-    const mod = await import("../PostHogProvider");
-    const { rerender } = render(<mod.PostHogProvider><div>child</div></mod.PostHogProvider>);
-    expect(mockStartRecording).toHaveBeenCalled();
-
-    mockRouterState.pathname = "/chat";
-    window.history.replaceState({}, "", "/chat?path=%2Fprivate%2Ffolder");
-    rerender(<mod.PostHogProvider><div>child</div></mod.PostHogProvider>);
-    expect(document.body.classList.contains("ph-no-capture")).toBe(true);
-    expect(mockStopRecording).toHaveBeenCalled();
   });
 
   it("renders children when NEXT_PUBLIC_POSTHOG_KEY is not set", async () => {
@@ -274,7 +212,7 @@ describe("PostHogProvider", () => {
 
   it("captures signup_started after Clerk identifies the user from a sign-up intent", async () => {
     process.env.NEXT_PUBLIC_POSTHOG_KEY = "phc_test_key_123";
-    mockRouterState.pathname = "/chat";
+    mockRouterState.pathname = "/os";
     mockRouterState.search = "";
     window.localStorage.setItem("isol8:signup_intent:v1", JSON.stringify({
       path: "/sign-up?provider=byo_key",
@@ -311,7 +249,7 @@ describe("PostHogProvider", () => {
 
   it("does not recapture stitched signup_started for the same user", async () => {
     process.env.NEXT_PUBLIC_POSTHOG_KEY = "phc_test_key_123";
-    mockRouterState.pathname = "/chat";
+    mockRouterState.pathname = "/os";
     mockRouterState.search = "";
     mockClerkState.isSignedIn = true;
     mockClerkState.userId = "user_123";
@@ -331,55 +269,21 @@ describe("PostHogProvider", () => {
     expect(mockCapture.mock.calls.map((c) => c[0])).not.toContain("signup_started");
   });
 
-  it("counts a click on any link to /request-setup as setup_cta_clicked", async () => {
-    process.env.NEXT_PUBLIC_POSTHOG_KEY = "phc_test_key_123";
-    mockRouterState.pathname = "/";
-    const mod = await import("../PostHogProvider");
-    render(
-      <mod.PostHogProvider>
-        <a href="/request-setup?utm_source=x" data-cta-id="hero_setup" data-surface="hero"><span>Request a guided setup</span></a>
-        {/* eslint-disable-next-line @next/next/no-html-link-for-pages -- a plain DOM link is the fixture */}
-        <a href="/sign-up">Start free</a>
-      </mod.PostHogProvider>,
-    );
-    screen.getByText("Start free").click();
-    expect(mockCapture.mock.calls.filter((c) => c[0] === "setup_cta_clicked")).toHaveLength(0);
-    screen.getByText("Request a guided setup").click();
-    const clicks = mockCapture.mock.calls.filter((c) => c[0] === "setup_cta_clicked");
-    expect(clicks).toHaveLength(1);
-    expect(clicks[0][1]).toMatchObject({ cta_id: "hero_setup", surface: "hero", cta_label: "Request a guided setup" });
-  });
-
-  it("never reads a /request-setup link inside a conversation (/chat)", async () => {
-    process.env.NEXT_PUBLIC_POSTHOG_KEY = "phc_test_key_123";
-    window.history.replaceState(null, "", "/chat");
-    mockRouterState.pathname = "/chat";
-    const mod = await import("../PostHogProvider");
-    render(
-      <mod.PostHogProvider>
-        <a href="/request-setup">a customer&apos;s private words</a>
-      </mod.PostHogProvider>,
-    );
-    screen.getByText("a customer's private words").click();
-    expect(mockCapture.mock.calls.filter((c) => c[0] === "setup_cta_clicked")).toHaveLength(0);
-    window.history.replaceState(null, "", "/");
-  });
-
   it("counts landing_viewed on the first website page of a session, not the app", async () => {
     process.env.NEXT_PUBLIC_POSTHOG_KEY = "phc_test_key_123";
     const mod = await import("../PostHogProvider");
     const landings = () => mockCapture.mock.calls.filter((c) => c[0] === "landing_viewed");
-    mockRouterState.pathname = "/chat";
+    mockRouterState.pathname = "/sign-in";
     mockRouterState.search = "";
     const { unmount } = render(<mod.PostHogProvider><div /></mod.PostHogProvider>);
     unmount();
     expect(landings()).toHaveLength(0);
-    mockRouterState.pathname = "/pricing";
+    mockRouterState.pathname = "/os";
     const second = render(<mod.PostHogProvider><div /></mod.PostHogProvider>);
     second.unmount();
     expect(landings()).toHaveLength(1);
-    expect(landings()[0][1]).toMatchObject({ path: "/pricing" });
-    mockRouterState.pathname = "/blog";
+    expect(landings()[0][1]).toMatchObject({ path: "/os" });
+    mockRouterState.pathname = "/docs";
     render(<mod.PostHogProvider><div /></mod.PostHogProvider>);
     expect(landings()).toHaveLength(1); // same session: the entry was already counted
   });
@@ -414,19 +318,6 @@ describe("PostHogProvider", () => {
     const names = mockCapture.mock.calls.map((c) => c[0]);
     expect(names.filter((n) => n === "$pageview")).toHaveLength(1);
     expect(names.filter((n) => n === "landing_viewed")).toHaveLength(1);
-  });
-
-  it("counts an away email's link as notification_opened with the time since it was sent", async () => {
-    process.env.NEXT_PUBLIC_POSTHOG_KEY = "phc_test_key_123";
-    mockRouterState.pathname = "/chat";
-    const sent = Math.round(Date.now() / 1000) - 120;
-    mockRouterState.search = `panel=chat&room=r&message=m&from=away_email&sent=${sent}`;
-    const mod = await import("../PostHogProvider");
-    render(<mod.PostHogProvider><div>child</div></mod.PostHogProvider>);
-    const opened = mockCapture.mock.calls.filter((c) => c[0] === "notification_opened");
-    expect(opened).toHaveLength(1);
-    expect(opened[0][1]).toMatchObject({ channel: "email" });
-    expect(opened[0][1].latency_s).toBeGreaterThanOrEqual(119);
   });
 
   it("does NOT stash a sign-up intent while Clerk is unresolved or for a signed-in user", async () => {

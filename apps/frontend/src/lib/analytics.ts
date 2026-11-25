@@ -19,8 +19,8 @@
  * for tests.
  *
  * What belongs here:
- *   - User intents (chat_message_sent, subscription_checkout_started)
- *   - User-visible outcomes (chat_completed, channel_link_submitted)
+ *   - User intents (spark_download_clicked, support_ticket_submitted)
+ *   - User-visible outcomes (spark_invite_signup_completed)
  *   - The React Provider wrapper (``Provider``) for the app's root layout
  *   - identify / reset / pageview / init bookkeeping for PostHogProvider
  *
@@ -60,121 +60,16 @@ export const Provider = PHProvider;
  * each group when adding new entries so diffs stay reviewable.
  */
 export type AnalyticsEvent =
-  // Super-agent threads (wave 2). Properties: taskId, source, status, count only; never titles or text.
-  | "overview_opened"
-  | "task_card_opened"
-  | "task_question_answered"
-  | "task_reopened"
-  | "task_resolved"
-  | "task_retried"
-  | "task_steer_sent"
-  | "task_stopped"
-  // Growth: the door into a workspace and the sharing surface (2026-09-30)
-  | "session_opened"
-  | "share_link_full_viewed"
-  | "join_link_viewed"
-  | "join_command_copied"
-  | "share_link_cta_clicked"
-  // Agent lifecycle
-  | "agent_create_chooser"
-  | "agent_created"
-  | "agent_deleted"
-  | "agent_model_changed"
-  | "agent_renamed"
-  | "agent_selected"
-  // Billing
-  | "billing_portal_opened"
-  | "billing_plan_chosen"
-  // Settings → Profile: an owner saved the workspace ZIP export.
-  | "workspace_export_downloaded"
-  // Paired with `first_run_failed_notice_shown` {cause: "credits"}: without a
-  // click event, the question the credits branch was built to answer — do
-  // out-of-credits owners self-serve instead of emailing us — cannot be
-  // answered from the data at all.
-  | "credits_topup_clicked"
-  | "subscription_checkout_canceled"
-  | "subscription_checkout_failed"
-  | "subscription_checkout_returned_success"
-  | "subscription_checkout_started"
-  // Catalog
-  | "catalog_agent_deployed"
-  | "catalog_agent_published"
-  // Channels
-  | "channel_connected"
-  | "channel_link_submitted"
-  // Chat surface
-  | "chat_aborted"
-  | "chat_completed"
-  | "chat_file_uploaded"
-  | "chat_message_sent"
-  | "chat_stopped"
-  | "session_deleted"
-  // Container / control panel
-  | "control_panel_opened"
-  | "file_browser_opened"
-  | "browser_view_opened"
-  | "ideas_opened"
-  | "teams_degraded_notice_shown"
-  | "first_run_failed_notice_shown"
-  | "update_applied"
-  | "update_scheduled"
-  // Cron
-  | "cron_job_created"
-  | "cron_job_deleted"
-  | "cron_job_toggled"
-  | "cron_job_triggered"
-  // First-run funnel
-  | "first_run_brief_submitted"
-  // Landing
   | "install_line_copied"
-  | "landing_download_clicked"
+  | "join_command_copied"
+  | "join_link_viewed"
   | "landing_viewed"
-  | "setup_cta_clicked"
+  | "signup_started"
   | "spark_download_clicked"
   | "spark_invite_signup_completed"
   | "spark_invite_signup_started"
-  // Integrations
-  | "integration_access_requested"
-  // MCP
-  | "mcp_server_added"
-  | "mcp_server_removed"
-  // Messaging — room_kind + workspace_id only; a room's name can be customer content
-  | "room_opened"
-  | "composer_typing_started"
-  // Notifications
-  | "notification_clicked"
-  | "notification_opened"
-  | "notification_shown"
-  | "run_notification_clicked"
-  | "run_notification_shown"
-  // Plugins
-  | "plugin_toggled"
-  // Onboarding
-  | "onboarding_gate_blocked"
-  | "onboarding_provider_completed"
-  | "onboarding_ready"
-  | "onboarding_step_completed"
-  | "onboarding_step_entered"
-  | "trial_started"
-  // Signup
-  | "signup_cta_clicked"
-  | "signup_exit"
-  | "signup_started"
-  | "source_reported"
-  // Skills
-  | "skill_api_key_saved"
-  | "skill_installed"
-  | "skill_toggled"
-  | "clawhub_searched"
-  // Support
-  | "support_ticket_submitted"
   | "support_contact_clicked"
-  // Workspace shell
-  | "workspace_layout_reset"
-  | "workspace_panel_opened"
-
-  // Cards in chat
-  | "openui.parse_error";
+  | "support_ticket_submitted";
 
 /**
  * Type exposing the ``__loaded`` flag PostHog sets after ``init()``
@@ -271,12 +166,8 @@ function externalReferrer(): { referrer: string | null; domain: string | null } 
   }
 }
 
-// The product app, not the site. Every other path (/, /pricing, /request-setup, /docs, /blog,
-// comparison and legal pages, the [seoSlug] pages) is a marketing route for landing_viewed.
-const APP_ROUTE_PREFIXES = [
-  "/voice", "/chat", "/settings", "/onboarding", "/sign-in", "/sign-up", "/admin", "/welcome",
-  "/auth", "/oauth", "/checkout_redirect", "/meet-bot", "/api",
-];
+// Not the site. Every other path (/, /os, /docs, legal pages) is a marketing route for landing_viewed.
+const APP_ROUTE_PREFIXES = ["/sign-in", "/sign-up", "/admin", "/api"];
 
 /** A page of the website (T23): where a visit lands, as opposed to the signed-in app. */
 export function isMarketingRoute(pathname: string | null | undefined): boolean {
@@ -284,18 +175,8 @@ export function isMarketingRoute(pathname: string | null | undefined): boolean {
   return !APP_ROUTE_PREFIXES.some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`));
 }
 
-/** Routes whose DOM is a customer's conversation (/chat, /s): never recorded, never autocaptured. */
-export function isPrivateRoute(pathname: string | null | undefined): boolean {
-  return pathname === "/chat" || pathname === "/s";
-}
-
-// /chat deep links can carry file paths in `?path=`, and /s carries a session
-// link's token in its fragment (a read credential) and the CLI's loopback port.
-// The route is enough for analytics; keep the query string and fragment out of
-// pageviews, replay URLs and SDK defaults.
 // Clerk forwards its sign-in ticket to /sign-up and /sign-in: drop those params
-// anywhere, keep the rest (UTM). redirect_url can be a private deep link
-// (/chat?panel=…&detailId=…), so it goes too.
+// anywhere, keep the rest (UTM). redirect_url can carry a private deep link, so it goes too.
 const SECRET_PARAMS = ["__clerk_ticket", "__clerk_status", "redirect_url"];
 
 export function withoutChatQuery(value: string): string {
@@ -303,7 +184,6 @@ export function withoutChatQuery(value: string): string {
     const url = new URL(value, "https://thelightbulb.company");
     // /j carries a join ticket in its fragment: keep the route and query, drop the fragment.
     if (url.pathname === "/j") return value.split("#", 1)[0];
-    if (isPrivateRoute(url.pathname)) return value.split(/[?#]/, 1)[0];
     if (!SECRET_PARAMS.some((key) => url.searchParams.has(key))) return value;
     for (const key of SECRET_PARAMS) url.searchParams.delete(key);
     const absolute = /^[a-z]+:\/\//i.test(value);
@@ -358,44 +238,7 @@ export function refreshAttribution(): StoredAttribution | null {
   return next;
 }
 
-const WORKSPACE_DOOR_KEY = "lightbulb:workspace_door";
-
-/** The door a person used on the way to "Create your workspace" (T16's session page marks
- *  `session_link`); the workspace form sends it with the source (T12). Tab-scoped
- *  (sessionStorage): an abandoned visit must not label a later, unrelated signup. */
-export function markWorkspaceDoor(door: "session_link"): void {
-  try {
-    window.sessionStorage.setItem(WORKSPACE_DOOR_KEY, door);
-  } catch {
-    // analytics only
-  }
-}
-
-/** Forget the door once a workspace was created from it: it describes this visit, not history. */
-export function clearWorkspaceDoor(): void {
-  try {
-    window.sessionStorage.removeItem(WORKSPACE_DOOR_KEY);
-  } catch {
-    // analytics only
-  }
-}
-
-export function readWorkspaceDoor(): string | null {
-  try {
-    return window.sessionStorage.getItem(WORKSPACE_DOOR_KEY);
-  } catch {
-    return null;
-  }
-}
-
-/** The stored first- and last-touch records, for a form that hands them to the backend
- *  (the workspace form, T12; the setup form, T22). Empty objects when nothing is stored. */
-export function touchPayload(): { first_touch: AttributionPayload; last_touch: AttributionPayload } {
-  const stored = readStoredAttribution();
-  return { first_touch: stored?.first_touch ?? {}, last_touch: stored?.last_touch ?? {} };
-}
-
-export function attributionProperties(): Record<string, unknown> {
+function attributionProperties(): Record<string, unknown> {
   const stored = readStoredAttribution();
   if (!stored) return {};
 

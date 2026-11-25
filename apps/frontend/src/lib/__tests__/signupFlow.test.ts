@@ -1,16 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const mockCapture = vi.fn();
-vi.mock("@/lib/analytics", () => ({ capture: (...args: unknown[]) => mockCapture(...args) }));
-
-import {
-  browserContext,
-  captureSignupCta,
-  currentSignupStep,
-  rotateSignupFlowId,
-  setSignupStep,
-  signupFlowId,
-} from "@/lib/signupFlow";
+import { browserContext, rotateSignupFlowId, signupFlowId } from "@/lib/signupFlow";
 
 const FLOW_ID_KEY = "lightbulb:signup_flow_id:v1";
 
@@ -65,15 +55,6 @@ describe("signupFlowId", () => {
   });
 });
 
-describe("setSignupStep", () => {
-  it("publishes the current step and clears it", () => {
-    setSignupStep("provider");
-    expect(currentSignupStep()).toBe("provider");
-    setSignupStep(null);
-    expect(currentSignupStep()).toBeNull();
-  });
-});
-
 describe("browserContext", () => {
   // Real UAs. The iOS in-app webviews all claim "Mobile/…Safari", which is
   // why PostHog's own $browser reports every one of them as Mobile Safari.
@@ -119,28 +100,5 @@ describe("browserContext", () => {
     expect(browserContext(instagram).browser_context).not.toBe(
       browserContext(safari).browser_context,
     );
-  });
-});
-
-describe("captureSignupCta", () => {
-  beforeEach(() => mockCapture.mockClear());
-
-  it("carries the five required fields, the optional provider, and any extra properties", () => {
-    captureSignupCta({
-      ctaId: "hero_funnel_submit",
-      label: "Start",
-      surface: "landing_hero_funnel",
-      providerChoice: "chatgpt_oauth",
-      properties: { path: "grow" },
-    });
-    expect(mockCapture).toHaveBeenCalledWith("signup_cta_clicked", {
-      cta_id: "hero_funnel_submit",
-      cta_label: "Start",
-      surface: "landing_hero_funnel",
-      destination: "/sign-up",
-      route: window.location.pathname,
-      provider_choice: "chatgpt_oauth",
-      path: "grow",
-    });
   });
 });

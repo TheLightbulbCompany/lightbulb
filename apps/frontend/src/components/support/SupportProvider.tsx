@@ -32,10 +32,8 @@ const SupportContext = createContext<SupportContextValue | null>(null);
  * Owns the single shared support dialog instance and exposes `openSupport`.
  *
  * Mounted high in the tree (below Clerk, inside PostHogProvider) so any surface
- * — the Help button, an error toast's Report button, the ErrorBoundary — opens
- * the *same* dialog rather than each shipping its own. The `<Toaster/>` is
- * mounted as a sibling INSIDE this provider so a toast's `<ReportButton/>` (a
- * custom-JSX sonner action) can call `useSupport()`.
+ * — the /support page, the ErrorBoundary — opens the *same* dialog rather
+ * than each shipping its own.
  */
 export function SupportProvider({ children }: { children: ReactNode }) {
   const [open, setOpen] = useState(false);

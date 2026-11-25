@@ -6,11 +6,8 @@ import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { DeployRefresh } from "@/components/DeployRefresh";
 import { InAppNavTracker } from "@/components/legal/BackButton";
 import { PostHogProvider } from "@/components/PostHogProvider";
-import { SwrProvider } from "@/components/SwrProvider";
 import { VercelAnalytics } from "@/components/VercelAnalytics";
 import { SupportProvider } from "@/components/support/SupportProvider";
-import { Toaster } from "@/components/ui/sonner";
-import { TooltipProvider } from "@/components/ui/tooltip";
 import { clerkAppearance } from "@/lib/clerkAppearance";
 import { SITE_URL } from "@/lib/domain";
 import { OG_IMAGE, SITE_DESCRIPTION, SITE_TITLE } from "@/lib/seo";
@@ -87,23 +84,15 @@ export default function RootLayout({
         <body className="antialiased">
           {/* The boundary sits inside PostHogProvider so PostHog still loads when a page throws, and the
               caught error reaches it (ErrorBoundary.componentDidCatch). */}
-          <SwrProvider>
-            <PostHogProvider>
-              <ErrorBoundary>
-                <DeployRefresh />
-                <SupportProvider>
-                  {/* One provider for the whole app so the tooltip skip-delay
-                      grace is shared: after the first tooltip, neighbouring
-                      ones open instantly instead of re-waiting. */}
-                  <InAppNavTracker />
-                  <TooltipProvider>{children}</TooltipProvider>
-                  {/* Toaster INSIDE SupportProvider so a toast's <ReportButton/>
-                      (a custom-JSX sonner action) can resolve useSupport(). */}
-                  <Toaster />
-                </SupportProvider>
-              </ErrorBoundary>
-            </PostHogProvider>
-          </SwrProvider>
+          <PostHogProvider>
+            <ErrorBoundary>
+              <DeployRefresh />
+              <SupportProvider>
+                <InAppNavTracker />
+                {children}
+              </SupportProvider>
+            </ErrorBoundary>
+          </PostHogProvider>
           <VercelAnalytics />
         </body>
       </html>

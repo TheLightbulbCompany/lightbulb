@@ -104,17 +104,6 @@
   color: inherit;
 }
 
-.blog-card-meta {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-family: var(--font-geist-mono), ui-monospace, monospace;
-  font-size: 11px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--midnight-muted);
-}
-
 .blog-card-title {
   margin-top: 12px;
   font-family: var(--font-serif), Georgia, serif;
@@ -144,22 +133,6 @@
 }
 .blog-card:hover .blog-card-arrow {
   transform: translateX(4px);
-}
-
-/* ---- article ---- */
-.blog-back {
-  margin-bottom: 28px;
-  font-family: var(--font-geist-mono), ui-monospace, monospace;
-  font-size: 12px;
-  letter-spacing: 0.06em;
-}
-.blog-back a {
-  color: var(--midnight-muted);
-  text-decoration: none;
-  transition: color var(--dur-base) ease;
-}
-.blog-back a:hover {
-  color: var(--midnight);
 }
 
 .blog-article-header {
@@ -314,28 +287,6 @@
   border-radius: 12px;
 }
 
-/* ---- article-footer CTA ---- */
-.blog-article-footer {
-  margin-top: 64px;
-  padding: 36px 32px;
-  border: 1px solid var(--edge);
-  border-radius: 18px;
-  background: var(--cream-deep);
-  text-align: center;
-}
-.blog-article-footer h2 {
-  font-family: var(--font-serif), Georgia, serif;
-  font-size: 26px;
-  color: var(--midnight);
-}
-.blog-article-footer p {
-  margin: 12px auto 24px;
-  max-width: 46ch;
-  font-size: 15.5px;
-  line-height: 1.6;
-  color: var(--midnight-soft);
-}
-
 /* ---- load choreography ----
    Staggered fade-up reveal on first paint, matching the landing page's
    motion language. Pure CSS (pages are static/server-rendered). */
@@ -376,18 +327,11 @@
   animation-delay: 0.34s;
 }
 
-/* Article: back link, header, body, CTA in sequence. */
-.blog-back {
-  animation-delay: 0.02s;
-}
 .blog-article-header {
   animation-delay: 0.1s;
 }
 .blog-prose {
   animation-delay: 0.18s;
-}
-.blog-article-footer {
-  animation-delay: 0.26s;
 }
 
 @media (prefers-reduced-motion: reduce) {

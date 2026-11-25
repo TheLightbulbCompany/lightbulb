@@ -61,7 +61,7 @@ describe("analytics.capture", () => {
     delete globalThis.window;
     try {
       const { capture } = await importAnalytics();
-      capture("agent_created", { agent_id: "a1" });
+      capture("landing_viewed", { path: "/" });
       expect(mockCapture).not.toHaveBeenCalled();
     } finally {
       globalThis.window = originalWindow;
@@ -71,24 +71,22 @@ describe("analytics.capture", () => {
   it("no-ops when PostHog has not finished loading (__loaded=false)", async () => {
     mockState.__loaded = false;
     const { capture } = await importAnalytics();
-    capture("agent_deleted", { agent_id: "a1" });
+    capture("landing_viewed", { path: "/" });
     expect(mockCapture).not.toHaveBeenCalled();
   });
 
   it("forwards to posthog.capture when loaded", async () => {
     mockState.__loaded = true;
     const { capture } = await importAnalytics();
-    capture("chat_message_sent", { agent_id: "a1", message_length: 42 });
+    capture("spark_download_clicked", { surface: "hero" });
     expect(mockCapture).toHaveBeenCalledTimes(1);
-    expect(mockCapture).toHaveBeenCalledWith("chat_message_sent", {
-      agent_id: "a1",
-      message_length: 42,
+    expect(mockCapture).toHaveBeenCalledWith("spark_download_clicked", {
+      surface: "hero",
     }, undefined);
   });
 
-  it("drops file-path query strings from chat analytics URLs", async () => {
+  it("drops secrets from analytics URLs", async () => {
     const { withoutChatQuery } = await importAnalytics();
-    expect(withoutChatQuery("/chat?panel=file-viewer&path=%2FUsers%2Falice%2Fsecret")).toBe("/chat");
     expect(withoutChatQuery("/?utm_source=hn")).toBe("/?utm_source=hn");
     // /j is tracked, but its fragment (the ticket) is dropped; the query stays.
     expect(withoutChatQuery("https://x.co/j#ticket")).toBe("https://x.co/j");
@@ -96,7 +94,6 @@ describe("analytics.capture", () => {
     expect(withoutChatQuery("https://x.co/sign-up?__clerk_ticket=t&__clerk_status=sign_up&utm_source=hn"))
       .toBe("https://x.co/sign-up?utm_source=hn");
     expect(withoutChatQuery("/sign-in?__clerk_ticket=t")).toBe("/sign-in");
-    // T09: the approval card an invitation opens after sign-up is a private id.
     const card = encodeURIComponent("/chat?panel=teams-approval-detail&detailId=ap-secret");
     expect(withoutChatQuery(`https://x.co/sign-up?__clerk_ticket=t&redirect_url=${card}&utm_source=hn`))
       .toBe("https://x.co/sign-up?utm_source=hn");
@@ -124,9 +121,9 @@ describe("analytics.capture", () => {
     const { capture, refreshAttribution } = await importAnalytics();
 
     refreshAttribution();
-    capture("signup_cta_clicked", { cta_id: "hero_funnel_submit" });
+    capture("spark_download_clicked", { cta_id: "hero_funnel_submit" });
 
-    expect(mockCapture).toHaveBeenCalledWith("signup_cta_clicked", {
+    expect(mockCapture).toHaveBeenCalledWith("spark_download_clicked", {
       first_touch_timestamp: expect.any(String),
       first_touch_landing_path: "/?utm_source=hn&utm_campaign=launch",
       first_touch_utm_source: "hn",

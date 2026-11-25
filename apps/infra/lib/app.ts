@@ -120,8 +120,8 @@ const CDKOUT_SLICES = `${CDKOUT_S3_URI}/slices`;
 // Host-local copy of the same tarball, shared by every runner on the box.
 // All DEPLOY_RUNNER instances run on one self-hosted machine outside AWS, so
 // each S3 GET of the tarball is billed as internet egress: 43 asset jobs x
-// ~34 MB = ~1.5 GB per run, ~817 GB/mo, ~$70/mo (docs/research/
-// 2026-10-27-aws-cost-review.md). Synth writes the tarball here, so asset jobs
+// ~34 MB = ~1.5 GB per run, ~817 GB/mo, ~$70/mo (2026-10-27 AWS cost review).
+// Synth writes the tarball here, so asset jobs
 // on the same host read it from disk; S3 stays the source of truth and the
 // fallback for any runner that does not share this filesystem. Keyed by run
 // id + attempt, written via an atomic rename, so a job never reads another

@@ -49,7 +49,7 @@ describe("Navbar", () => {
     expect(screen.queryByRole("link", { name: "Log in" })).toBeNull();
     expect(screen.queryByRole("link", { name: "Open Lightbulb" })).toBeNull();
     fireEvent.click(button());
-    expect(capture).toHaveBeenCalledWith("spark_download_clicked", { source: "nav" });
+    expect(capture).toHaveBeenCalledWith("spark_download_clicked", { source: "nav", dl_id: expect.stringMatching(/^[0-9a-f]{16}$/) });
     expect(captureSignupCta).not.toHaveBeenCalled();
   });
 

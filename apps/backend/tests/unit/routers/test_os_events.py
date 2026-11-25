@@ -22,7 +22,7 @@ A, B = Tenant("user_a", None), Tenant("user_b", None)
 INSTALL = str(uuid.uuid4())
 SENTENCE = "please book my flight to Paris and email the file report.pdf from https://example.com/x"
 VALID = {
-    "app_first_launch": {},
+    "app_first_launch": {"dl_id": "0123456789abcdef"},
     "app_opened": {},
     "signin_started": {"method": "apple"},
     "signin_completed": {"method": "google", "is_new_account": True},
@@ -32,7 +32,9 @@ VALID = {
     "full_access_set": {"on": True},
     "onboarding_completed": {"skipped_sign_in": False, "seconds_total": 120},
     "first_conversation": {},
-    "task_completed": {},
+    "task_completed": {"source": "typed", "seconds_bucket": "lt30"},
+    "health": {"brain": "ok", "mic": "denied", "accessibility": "ok", "screen": "unknown", "last_success": "lt1d"},
+    "talk_started": {"trigger": "hands_free"},
     "first_tidy": {"outcome": "already_tidy"},
     "task_failed": {"reason": "unreachable"},
     "problem_raised": {"kind": "permission.screenRecording"},
@@ -99,7 +101,13 @@ async def req(method, path, who=None, body=None, content=None, headers=None):
 
 
 async def send(event, properties=None, who=None, install=INSTALL, **extra):
-    body = {"event": event, "properties": properties or {}, "installId": install, "appVersion": "2.1.1"}
+    body = {
+        "event": event,
+        "properties": properties or {},
+        "installId": install,
+        "appVersion": "2.1.1",
+        "platform": "mac",
+    }
     body |= {"osVersion": "15.1"} | extra
     return await req("POST", "/os/event", who, body)
 
@@ -118,14 +126,55 @@ async def test_each_allowed_event_is_captured(event, signed_in, ph, ddb):
     assert c["properties"] == VALID[event] | {
         "app_version": "2.1.1",
         "os_version": "15.1",
+        "platform": "mac",
         "install_id": INSTALL,
         "product": "spark",
         "environment": c["properties"]["environment"],
     }
 
 
+# The Spark engine's EVENTS (packages/engine/src/account/events.ts), event to property names: its test holds the
+# same table, so a change on one side fails the other's test.
+ENGINE_TABLE = {
+    "app_first_launch": ["dl_id"],
+    "app_opened": [],
+    "brain_chosen": ["provider"],
+    "brain_signin_started": ["needed_download", "provider"],
+    "first_conversation": [],
+    "first_tidy": ["outcome"],
+    "full_access_set": ["on"],
+    "health": ["accessibility", "brain", "last_success", "mic", "screen"],
+    "manage_subscription_clicked": [],
+    "onboarding_completed": ["seconds_total", "skipped_sign_in"],
+    "permission_granted": ["permission"],
+    "problem_raised": ["kind"],
+    "referral_link_copied": [],
+    "signin_completed": ["is_new_account", "method"],
+    "signin_started": ["method"],
+    "talk_started": ["trigger"],
+    "task_completed": ["seconds_bucket", "source"],
+    "task_failed": ["reason"],
+    "update_installed": ["from_version", "to_version"],
+    "upgrade_clicked": [],
+}
+
+
 async def test_the_allow_list_is_the_one_table():
     assert set(VALID) == set(spark_events.APP_EVENTS)
+    assert {e: sorted(r) for e, r in spark_events.APP_EVENTS.items()} == ENGINE_TABLE
+    assert all(sorted(VALID[e]) == sorted(r) for e, r in spark_events.APP_EVENTS.items())
+
+
+@pytest.mark.parametrize("osv", ["10.0.26100", "10.0.22631", "10.0.19045", "26.2", "15.1.1"])
+async def test_windows_and_mac_os_versions_pass(osv, ph, ddb):
+    await send("app_opened", osVersion=osv, platform="windows")
+    p = ph.captures[0]["properties"]
+    assert p["os_version"] == osv and p["platform"] == "windows"
+
+
+async def test_a_bad_platform_is_omitted(ph, ddb):
+    await send("app_opened", platform="linux")
+    assert "platform" not in ph.captures[0]["properties"]
 
 
 async def test_unknown_event_is_204_and_sends_nothing(ph, ddb):

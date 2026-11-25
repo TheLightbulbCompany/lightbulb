@@ -15,9 +15,14 @@ const light = (on: boolean) => window.dispatchEvent(new CustomEvent("spark:light
 
 // Counts a click on any Download for Mac link. `source` names the placement: os_page (the short page),
 // os_hero, os_closing, nav. Never the invite code itself: only whether the visit came from an invite.
-export function trackSparkDownload(source: string) {
+// Every click gets a random `dl_id` (16 hex): it rides on the event and on the link as `?dl=` (the download
+// request's URL), so the app's `app_first_launch` can claim it. The installer cannot carry it yet: see
+// docs/spark-analytics-dl-id.md.
+export function trackSparkDownload(source: string, link?: HTMLAnchorElement) {
   const ref = new URLSearchParams(window.location.search).get("ref") ?? "";
-  capture("spark_download_clicked", { source, ...(CODE.test(ref) && { has_referral: true }) });
+  const dl_id = Array.from(crypto.getRandomValues(new Uint8Array(8)), (b) => b.toString(16).padStart(2, "0")).join("");
+  if (link) link.search = `?dl=${dl_id}`;
+  capture("spark_download_clicked", { source, dl_id, ...(CODE.test(ref) && { has_referral: true }) });
 }
 
 // A plain link (works with JavaScript off); the click is counted, never delayed.
@@ -30,7 +35,7 @@ export function SparkDownload({ source = "os_page" }: { source?: string }) {
       onMouseLeave={() => light(false)}
       onFocus={() => light(true)}
       onBlur={() => light(false)}
-      onClick={() => trackSparkDownload(source)}
+      onClick={(e) => trackSparkDownload(source, e.currentTarget)}
     >
       Download for Mac
     </a>

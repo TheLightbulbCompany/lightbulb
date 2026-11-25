@@ -76,7 +76,7 @@ describe("/os without an invite", () => {
     await page();
     vi.stubGlobal("location", { hostname: "thelightbulb.company", search: "" });
     fireEvent.click(screen.getByRole("link", { name: DOWNLOAD }));
-    expect(capture.mock.calls).toEqual([["spark_download_clicked", { source: "os_page" }]]);
+    expect(capture.mock.calls).toEqual([["spark_download_clicked", { source: "os_page", dl_id: expect.stringMatching(/^[0-9a-f]{16}$/) }]]);
   });
 
   it("no release yet (404): coming soon, no button", async () => {

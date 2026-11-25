@@ -119,8 +119,8 @@ describe("/os landing page (dev only)", () => {
     expect(links.map((a) => a.getAttribute("href"))).toEqual(["/download/spark", "/download/spark"]);
     links.forEach((a) => fireEvent.click(a));
     expect(capture.mock.calls).toEqual([
-      ["spark_download_clicked", { source: "os_hero" }],
-      ["spark_download_clicked", { source: "os_closing" }],
+      ["spark_download_clicked", { source: "os_hero", dl_id: expect.stringMatching(/^[0-9a-f]{16}$/) }],
+      ["spark_download_clicked", { source: "os_closing", dl_id: expect.stringMatching(/^[0-9a-f]{16}$/) }],
     ]);
   });
 

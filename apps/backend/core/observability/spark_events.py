@@ -16,6 +16,9 @@ logger = logging.getLogger(__name__)
 
 PRODUCT = "spark"
 VERSION = re.compile(r"[0-9]{1,4}(\.[0-9]{1,4}){0,3}([-+][0-9A-Za-z.]{1,16})?")
+# An OS version is dotted numbers, each up to five digits: macOS 26.2, Windows 10.0.26100.
+OS_VERSION = re.compile(r"[0-9]{1,5}(\.[0-9]{1,5}){0,3}")
+DL_ID = re.compile(r"[0-9a-f]{16}")  # the website's download id, claimed by the app on first launch
 NS = uuid.uuid5(uuid.NAMESPACE_URL, "lightbulb:spark")
 
 
@@ -35,6 +38,7 @@ def _seconds(v: object) -> bool:
     return type(v) is int and 0 <= v <= 86400
 
 
+_GRANT = _enum("ok", "denied", "unknown")
 _METHOD = _enum("apple", "google", "email")
 _PROVIDER = _enum("chatgpt", "claude")
 _PROBLEM_KIND = _enum(
@@ -63,7 +67,7 @@ _PROBLEM_KIND = _enum(
 )  # keep equal to ProblemKind in the Spark engine's protocol package
 
 APP_EVENTS: dict[str, dict[str, Callable[[object], bool]]] = {
-    "app_first_launch": {},
+    "app_first_launch": {"dl_id": _match(DL_ID)},
     "app_opened": {},
     "signin_started": {"method": _METHOD},
     "signin_completed": {"method": _METHOD, "is_new_account": _bool},
@@ -74,7 +78,18 @@ APP_EVENTS: dict[str, dict[str, Callable[[object], bool]]] = {
     "onboarding_completed": {"skipped_sign_in": _bool, "seconds_total": _seconds},
     "first_conversation": {},
     "first_tidy": {"outcome": _enum("done", "already_tidy", "declined", "stopped", "failed")},
-    "task_completed": {},
+    "task_completed": {
+        "source": _enum("voice", "typed", "automation"),
+        "seconds_bucket": _enum("lt10", "lt30", "lt120", "lt600", "gte600"),
+    },
+    "health": {
+        "brain": _enum("ok", "missing", "starting"),
+        "mic": _enum("ok", "denied", "none"),
+        "accessibility": _GRANT,
+        "screen": _GRANT,
+        "last_success": _enum("none", "lt1d", "lt7d", "gte7d"),
+    },
+    "talk_started": {"trigger": _enum("hold", "hands_free", "wake")},
     "task_failed": {"reason": _enum("auth", "quota", "rate", "unreachable", "signed_out", "other")},
     "problem_raised": {"kind": _PROBLEM_KIND},
     "upgrade_clicked": {},
@@ -82,6 +97,19 @@ APP_EVENTS: dict[str, dict[str, Callable[[object], bool]]] = {
     "referral_link_copied": {},
     "update_installed": {"from_version": _match(VERSION), "to_version": _match(VERSION)},
 }
+
+
+# The fixed fields every app event body may carry: body key, then the property it becomes and its validator.
+COMMON: dict[str, tuple[str, Callable[[object], bool]]] = {
+    "appVersion": ("app_version", _match(VERSION)),
+    "osVersion": ("os_version", _match(OS_VERSION)),
+    "platform": ("platform", _enum("mac", "windows")),
+}
+
+
+def common_properties(body: dict) -> dict:
+    """`app_version`, `os_version` and `platform` from the body, each only if it passes."""
+    return {prop: body[key] for key, (prop, ok) in COMMON.items() if ok(body.get(key))}
 
 
 def allowed_properties(event: str, properties: object) -> dict:

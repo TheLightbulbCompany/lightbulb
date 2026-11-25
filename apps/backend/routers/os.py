@@ -601,10 +601,7 @@ async def post_event(request: Request, auth: AuthContext | None = Depends(get_op
         event = body.get("event")
         if isinstance(event, str) and event in spark_events.APP_EVENTS:
             props = spark_events.allowed_properties(event, body.get("properties"))
-            props |= {"install_id": install_id, "product": spark_events.PRODUCT}
-            for key, prop in (("appVersion", "app_version"), ("osVersion", "os_version")):
-                if isinstance(v := body.get(key), str) and spark_events.VERSION.fullmatch(v):
-                    props[prop] = v
+            props |= {"install_id": install_id, "product": spark_events.PRODUCT} | spark_events.common_properties(body)
             day = time.strftime("%Y-%m-%d", time.gmtime())
             once = str(uuid.uuid5(spark_events.NS, f"app_opened:{install_id}:{day}")) if event == "app_opened" else None
             product_analytics.capture_product_event(

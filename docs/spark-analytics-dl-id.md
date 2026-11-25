@@ -1,0 +1,5 @@
+# Spark download id (`dl_id`)
+
+What exists: every Download for Mac click makes a random `dl_id` (16 hex). It rides on the `spark_download_clicked` event and on the link as `/download/spark?dl=<id>`. The backend lets `app_first_launch` carry `dl_id` (strict pattern `[0-9a-f]{16}`), and the engine sends it when `EVE_DL_ID` is set at first launch. Joining the two events on `dl_id` in PostHog gives click to install per placement.
+
+The gap: nothing sets `EVE_DL_ID` yet. `/download/spark` is a Vercel redirect to a fixed GitHub asset, so the id never reaches the DMG or the NSIS installer, and neither installer has a clean place to carry it. Options if this becomes worth it: serve a per-click file name (needs a proxy route, not a redirect), or read the download's origin URL from the OS (macOS `kMDItemWhereFroms` on the DMG, Windows `Zone.Identifier` on the EXE) from the installer or first-run code. Both are fragile (the app is copied out of the DMG; the NSIS installer runs once), so none is done.

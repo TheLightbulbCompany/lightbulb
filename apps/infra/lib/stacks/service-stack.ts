@@ -277,8 +277,10 @@ export class ServiceStack extends cdk.Stack {
       SPARK_STORE_ENABLED: env === "prod" ? "0" : "1",
       // User-data deletes and retention against the store; "0" in prod until its tables exist.
       SPARK_STORE_DELETES: env === "prod" ? "0" : "1",
-      // Work-log upload scope: "problem" keeps text only for failed or cancelled tasks.
-      SPARK_WORKLOG_SCOPE: "problem",
+      // Work-log upload scope. "all": every task's steps are kept with their text (owner, 25 Nov 2026:
+      // keep everything Spark does with voice and brain, for analysis). "problem" would keep text only
+      // for failed or cancelled tasks. Apps see "off" while SPARK_STORE_ENABLED is off.
+      SPARK_WORKLOG_SCOPE: "all",
       // PostHog server-side reads for the admin Spark metrics. Project ID is public.
       POSTHOG_HOST: "https://us.posthog.com",
       POSTHOG_PROJECT_ID: "380894",

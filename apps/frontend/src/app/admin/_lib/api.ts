@@ -592,3 +592,53 @@ export async function getAlarms(token: string): Promise<OpsEnvelope<AlarmRow[]> 
 export async function getGrowth(token: string): Promise<OpsEnvelope<GrowthData> | null> {
   return adminFetch<OpsEnvelope<GrowthData>>(token, "/ops/growth");
 }
+
+/** k of n; n = 0 renders as a dash. */
+export interface Kn {
+  k: number;
+  n: number;
+}
+export interface SparkPerson {
+  installed: string;
+  platform: string;
+  version: string;
+  provider: string;
+  channel: string;
+  furthest: string;
+  last_task: string | null;
+  email: string | null;
+}
+
+export interface SparkData {
+  generated_at: string;
+  wad: { last7: number; prev7: number; weekly: { week: string; partial: boolean; doers: number }[] };
+  cohorts: {
+    week: string;
+    partial: boolean;
+    platform: string;
+    installs: number;
+    settled: number;
+    activated_24h: Kn;
+    activated_d7: Kn;
+    /** null = too early. */
+    w4: Kn | null;
+  }[];
+  success: {
+    weekly: { week: string; partial: boolean; platform: string; success: Kn }[];
+    by_version: { key: string; success: Kn }[];
+    by_provider: { key: string; success: Kn }[];
+    failed_reasons: { key: string; count: number }[];
+    problem_kinds: { key: string; count: number }[];
+  };
+  brain_unavailable_installs_24h: number;
+  funnel: { step: string; k: number; n: number }[];
+  /** installs query hit its row cap; older installs are missing. */
+  truncated: boolean;
+  downloads: { key: string; count: number }[];
+  channels: { channel: string; activated_24h: Kn }[];
+  people: SparkPerson[];
+}
+
+export async function getSpark(token: string): Promise<OpsEnvelope<SparkData | null> | null> {
+  return adminFetch<OpsEnvelope<SparkData | null>>(token, "/ops/spark");
+}

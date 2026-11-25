@@ -34,7 +34,7 @@ describe.each(["dev", "prod"] as const)("SparkStoreStack %s", (environment) => {
         Rules: [
           Match.objectLike({ Id: "AbortIncompleteUploads", AbortIncompleteMultipartUpload: { DaysAfterInitiation: 1 } }),
           Match.objectLike({ Id: "ExpireAthenaResults", Prefix: "athena-results/", ExpirationInDays: 7 }),
-          Match.objectLike({ Id: "ExpireJobState", Prefix: "jobs/", ExpirationInDays: 7 }),
+          Match.objectLike({ Id: "ExpireRetentionMarkers", Prefix: "jobs/retention/", ExpirationInDays: 7 }),
           Match.objectLike({ Id: "ExpireFirehoseErrors", Prefix: "errors/", ExpirationInDays: 3 }),
         ],
       },
@@ -44,7 +44,7 @@ describe.each(["dev", "prod"] as const)("SparkStoreStack %s", (environment) => {
     expect(bucket.DeletionPolicy).toBe(environment === "prod" ? "Retain" : "Delete");
   });
 
-  test("workgroups: 1 GB app cap and 20 GB adhoc cap, configuration enforced", () => {
+  test("workgroups: 1 GB app cap, 20 GB adhoc cap, configuration enforced", () => {
     for (const [name, cutoff] of [
       [`lightbulb-${environment}-spark`, 1073741824],
       [`lightbulb-${environment}-spark-adhoc`, 21474836480],
@@ -59,9 +59,22 @@ describe.each(["dev", "prod"] as const)("SparkStoreStack %s", (environment) => {
     }
   });
 
+  test("jobs workgroup: 100 GB cap, results under athena-results/jobs/", () => {
+    t.hasResourceProperties("AWS::Athena::WorkGroup", {
+      Name: `lightbulb-${environment}-spark-jobs`,
+      WorkGroupConfiguration: Match.objectLike({
+        EnforceWorkGroupConfiguration: true,
+        BytesScannedCutoffPerQuery: 107374182400,
+        ResultConfiguration: Match.objectLike({
+          OutputLocation: Match.objectLike({ "Fn::Join": ["", Match.arrayWith(["/athena-results/jobs/"])] }),
+        }),
+      }),
+    });
+  });
+
   test("workgroup results are SSE_KMS encrypted", () => {
     const wgs = Object.values(t.findResources("AWS::Athena::WorkGroup")) as any[];
-    expect(wgs).toHaveLength(2);
+    expect(wgs).toHaveLength(3);
     for (const w of wgs) {
       expect(w.Properties.WorkGroupConfiguration.ResultConfiguration.EncryptionConfiguration.EncryptionOption).toBe(
         "SSE_KMS",
@@ -69,9 +82,10 @@ describe.each(["dev", "prod"] as const)("SparkStoreStack %s", (environment) => {
     }
   });
 
-  test("no lifecycle rule touches warehouse/", () => {
+  test("no lifecycle rule matches jobs/forget/ or warehouse/", () => {
     const [bucket] = Object.values(t.findResources("AWS::S3::Bucket")) as any[];
-    for (const r of bucket.Properties.LifecycleConfiguration.Rules) expect(r.Prefix ?? "").not.toMatch(/^warehouse/);
+    for (const r of bucket.Properties.LifecycleConfiguration.Rules)
+      for (const key of ["warehouse/x", "jobs/forget/x"]) expect(key.startsWith(r.Prefix ?? "\u0000")).toBe(false);
   });
 
   test("firehose KMS use is limited to S3 via kms:ViaService", () => {

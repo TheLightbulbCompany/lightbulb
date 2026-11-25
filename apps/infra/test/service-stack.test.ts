@@ -83,6 +83,7 @@ describe("ServiceStack — the Spark backend", () => {
       "STRIPE_SPARK_PRICE_ID",
       "SPARK_TRANSCRIPTS_ENABLED",
       "SPARK_STORE_ENABLED",
+      "SPARK_STORE_DELETES",
       "SPARK_WORKLOG_SCOPE",
       "WEBHOOK_DEDUP_TABLE",
       "AGENT_EMAIL_DOMAIN",
@@ -91,6 +92,13 @@ describe("ServiceStack — the Spark backend", () => {
     ]) {
       expect(envNames).toContain(name);
     }
+  });
+
+  test.each([
+    ["dev", SERVICE_TEMPLATE_DEV, "1"],
+    ["prod", SERVICE_TEMPLATE_PROD, "0"],
+  ] as const)("%s backend sets SPARK_STORE_DELETES=%s", (_env, template, value) => {
+    expect(backendContainer(template).Environment).toContainEqual({ Name: "SPARK_STORE_DELETES", Value: value });
   });
 
   test("SES send is scoped to the mail domain identity", () => {
@@ -123,6 +131,7 @@ describe("ServiceStack — the Spark backend", () => {
     );
     expect(flat(byAction("athena:StartQueryExecution"))).toEqual([
       arn("athena:us-east-1:877352799272:workgroup/lightbulb-dev-spark"),
+      arn("athena:us-east-1:877352799272:workgroup/lightbulb-dev-spark-jobs"),
     ]);
     expect(JSON.stringify(doc.Properties.Roles)).toContain("TaskRole");
     const stmts = doc.Properties.PolicyDocument.Statement as any[];
@@ -136,7 +145,7 @@ describe("ServiceStack — the Spark backend", () => {
     expect(s3Resources.sort()).toEqual(
       [
         "arn:aws:s3:::lightbulb-dev-spark-store",
-        ...["warehouse/*", "athena-results/app/*", "errors/*", "jobs/*"].map((p) => `arn:aws:s3:::lightbulb-dev-spark-store/${p}`),
+        ...["warehouse/*", "athena-results/app/*", "athena-results/jobs/*", "errors/*", "jobs/*"].map((p) => `arn:aws:s3:::lightbulb-dev-spark-store/${p}`),
       ].sort(),
     );
   });

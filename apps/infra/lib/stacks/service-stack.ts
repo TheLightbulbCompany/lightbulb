@@ -140,7 +140,7 @@ export class ServiceStack extends cdk.Stack {
           actions: ["firehose:PutRecordBatch"],
           resources: spark.streams.map((s) => `arn:aws:firehose:${this.region}:${this.account}:deliverystream/${s}`),
         }),
-        // The app workgroup only, never adhoc.
+        // The app and jobs workgroups only, never adhoc.
         new iam.PolicyStatement({
           sid: "SparkStoreAthena",
           actions: [
@@ -149,7 +149,9 @@ export class ServiceStack extends cdk.Stack {
             "athena:GetQueryResults",
             "athena:StopQueryExecution",
           ],
-          resources: [`arn:aws:athena:${this.region}:${this.account}:workgroup/${spark.workgroup}`],
+          resources: [spark.workgroup, spark.jobsWorkgroup].map(
+            (w) => `arn:aws:athena:${this.region}:${this.account}:workgroup/${w}`,
+          ),
         }),
         new iam.PolicyStatement({
           sid: "SparkStoreGlue",
@@ -170,7 +172,7 @@ export class ServiceStack extends cdk.Stack {
             "s3:AbortMultipartUpload",
             "s3:ListMultipartUploadParts",
           ],
-          resources: ["warehouse/*", "athena-results/app/*", "errors/*", "jobs/*"].map(
+          resources: ["warehouse/*", "athena-results/app/*", "athena-results/jobs/*", "errors/*", "jobs/*"].map(
             (p) => `arn:aws:s3:::${spark.bucket}/${p}`,
           ),
         }),
@@ -293,6 +295,8 @@ export class ServiceStack extends cdk.Stack {
       SPARK_TRANSCRIPTS_ENABLED: "1",
       // Spark data store (S3/Iceberg). "0" in prod until the store is verified there.
       SPARK_STORE_ENABLED: env === "prod" ? "0" : "1",
+      // User-data deletes and retention against the store; "0" in prod until its tables exist.
+      SPARK_STORE_DELETES: env === "prod" ? "0" : "1",
       // Work-log upload scope: "problem" keeps text only for failed or cancelled tasks.
       SPARK_WORKLOG_SCOPE: "problem",
       // PostHog server-side reads for the admin Spark metrics. Project ID is public.

@@ -37,6 +37,28 @@ describe("spark sections", () => {
     expect(screen.getAllByText("none").length).toBeGreaterThan(0);
   });
 
+  it("renders null fields as an em dash, never 0, and no-data panels", () => {
+    const data: SparkData = {
+      ...EMPTY,
+      wad: { rolling_7d: null, weekly: [] },
+      reliability: { unhealthy_installs_24h: null },
+      cohorts: [{ ...EMPTY.cohorts[0], installs: null, activated: null }],
+      task_success: { ...EMPTY.task_success, top_failed_reasons: null, top_problem_kinds: null },
+      funnel: [{ stage: "app_first_launch", users: null }],
+    };
+    const { container } = render(
+      <>
+        <Headline data={data} />
+        <Funnel data={data} />
+        <Cohorts data={data} />
+        <Failures data={data} />
+      </>,
+    );
+    expect(screen.getAllByText("— no data yet")).toHaveLength(2);
+    expect(screen.getByText("no data yet (no health events)")).toBeTruthy();
+    expect(container.textContent).not.toMatch(/Weekly Active Doers0/);
+  });
+
   it("marks young cohorts as too early for retention", () => {
     const data = {
       ...EMPTY,

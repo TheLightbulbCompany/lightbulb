@@ -29,7 +29,7 @@ export default async function AdminSparkPage() {
           error={
             !env
               ? "Spark metrics read failed — nothing below is trustworthy."
-              : `${env.source_state}: ${env.errors.map((e) => `${e.domain}: ${e.reason}`).join("; ") || "no detail"}. Sections fed by a failed query render empty, not zero.`
+              : `${env.source_state}: ${env.errors.map((e) => `${e.domain}: ${e.reason}`).join("; ") || "no detail"}.${data?.failed_queries.length ? ` Failed: ${data.failed_queries.join(", ")}; the figures they feed show "—", not zero.` : ""}`
           }
         />
       ) : null}

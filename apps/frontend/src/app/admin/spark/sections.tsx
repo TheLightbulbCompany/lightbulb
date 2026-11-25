@@ -7,6 +7,8 @@ import { Table } from "../growth/sections";
 /** A share, or an em dash when there is nothing to divide by (never a fake 0%). */
 export const pct = (v: number | null | undefined) => (v === null || v === undefined ? "—" : `${Math.round(v * 100)}%`);
 
+const dash = (v: number | null | undefined) => (v === null || v === undefined ? "—" : v);
+
 const STAGE_LABEL: Record<string, string> = {
   spark_download_clicked: "Download clicked",
   app_first_launch: "First launch",
@@ -16,6 +18,10 @@ const STAGE_LABEL: Record<string, string> = {
   subscription_started: "Paid",
 };
 
+function NoData() {
+  return <div className="text-xs text-muted-foreground">— no data yet</div>;
+}
+
 export function Headline({ data }: { data: SparkData }) {
   const last = data.cohorts[data.cohorts.length - 1];
   const rate = data.task_success.weekly[data.task_success.weekly.length - 1]?.rate ?? null;
@@ -23,14 +29,14 @@ export function Headline({ data }: { data: SparkData }) {
   return (
     <Card title="Headline">
       <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
-        <MetricStat label="Weekly Active Doers" value={data.wad.rolling_7d} hint="last 7 days, >=3 tasks" />
-        <MetricStat label="installs this week" value={last?.installs ?? 0} hint={`activation ${pct(last?.activation_rate)}`} />
+        <MetricStat label="Weekly Active Doers" value={dash(data.wad.rolling_7d)} hint="last 7 days, >=3 tasks" />
+        <MetricStat label="installs this week" value={dash(last?.installs)} hint={`activation ${pct(last?.activation_rate)}`} />
         <MetricStat label="task success this week" value={pct(rate)} />
         <MetricStat
           label="installs with brain != ok"
-          value={unhealthy}
-          hint="last 24h, from health events"
-          tone={unhealthy > 0 ? "error" : "default"}
+          value={dash(unhealthy)}
+          hint={unhealthy === null ? "no data yet (no health events)" : "last 24h, from health events"}
+          tone={unhealthy === null ? "unknown" : unhealthy > 0 ? "error" : "default"}
         />
       </div>
     </Card>
@@ -43,7 +49,7 @@ export function Funnel({ data }: { data: SparkData }) {
     <Card title="Funnel, last 30 days (distinct users per stage)">
       <Table
         head={["Stage", "Users", "of first stage"]}
-        rows={data.funnel.map((f) => [STAGE_LABEL[f.stage] ?? f.stage, f.users, top ? pct(f.users / top) : "—"])}
+        rows={data.funnel.map((f) => [STAGE_LABEL[f.stage] ?? f.stage, dash(f.users), top && f.users !== null ? pct(f.users / top) : "—"])}
       />
     </Card>
   );
@@ -51,13 +57,13 @@ export function Funnel({ data }: { data: SparkData }) {
 
 export function Cohorts({ data }: { data: SparkData }) {
   const rows = data.cohorts
-    .filter((c) => c.installs > 0)
+    .filter((c) => c.installs === null || c.installs > 0)
     .map((c) => [
       c.week,
-      c.installs,
-      c.activated,
+      dash(c.installs),
+      dash(c.activated),
       pct(c.activation_rate),
-      data.platforms.map((p) => `${p} ${c.activated_by_platform[p] ?? 0}`).join(", ") || "—",
+      data.platforms.map((p) => `${p} ${dash(c.activated_by_platform[p])}`).join(", ") || "—",
       c.w4_retention === null ? "too early" : pct(c.w4_retention),
     ]);
   return (
@@ -72,10 +78,10 @@ export function Failures({ data }: { data: SparkData }) {
   return (
     <div className="grid gap-6 md:grid-cols-2">
       <Card title="Top task_failed reasons, 7d">
-        <Table head={["Reason", "Count"]} rows={t.top_failed_reasons.map((r) => [r.key, r.count])} />
+        {t.top_failed_reasons === null ? <NoData /> : <Table head={["Reason", "Count"]} rows={t.top_failed_reasons.map((r) => [r.key, r.count])} />}
       </Card>
       <Card title="Top problem_raised kinds, 7d">
-        <Table head={["Kind", "Count"]} rows={t.top_problem_kinds.map((r) => [r.key, r.count])} />
+        {t.top_problem_kinds === null ? <NoData /> : <Table head={["Kind", "Count"]} rows={t.top_problem_kinds.map((r) => [r.key, r.count])} />}
       </Card>
     </div>
   );

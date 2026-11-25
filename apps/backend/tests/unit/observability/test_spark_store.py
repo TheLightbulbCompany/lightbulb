@@ -465,3 +465,15 @@ def test_scrub_cuts_its_input_before_any_pattern_runs():
     assert spark_store.scrub(text) == "a" * 16_000
     long = ("-----BEGIN " + "PRIVATE KEY-----") * 2000  # no END: must stay fast
     assert len(spark_store.scrub(long)) <= 16_000
+
+
+def test_unterminated_private_key_markers_scrub_fast_and_are_masked():
+    import time
+
+    marker = "-----BEGIN RSA PRIVATE KEY-----"
+    text = marker * (16_000 // len(marker))
+    t0 = time.perf_counter()
+    out = spark_store.scrub(text)
+    assert time.perf_counter() - t0 < 0.1
+    assert "-----BEGIN" not in out and len(out) < 200  # at most the stub of a marker cut by the window's end
+    assert spark_store.scrub("a " + marker + " tail with no end") == "a [redacted]"

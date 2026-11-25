@@ -85,7 +85,8 @@ def _card(m: re.Match) -> str:
 SHAPES: list[tuple[re.Pattern, object]] = [
     (re.compile(p), "[redacted]")
     for p in (
-        r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----",
+        # bounded so a pile of BEGIN markers cannot go quadratic; a BEGIN with no END in the window is masked through it
+        r"-----BEGIN [A-Z ]*PRIVATE KEY-----(?:[\s\S]{0,8000}?-----END [A-Z ]*PRIVATE KEY-----|[\s\S]{0,8000})",
         r"\bsk-[A-Za-z0-9_-]{16,}",
         r"\bgh[pousr]_[A-Za-z0-9]{30,}",
         r"\bgithub_pat_[A-Za-z0-9_]{20,}",
@@ -120,6 +121,145 @@ def scrub(text: str) -> str:
     for pattern, repl in SHAPES:
         text = pattern.sub(repl, text)
     return text
+
+
+# --- the app's log upload: rows for `turns` and `task_steps` ---------------------------------------------
+
+LOG_TYPED_MAX = 20
+LOG_STEPS_KEEP = (150, 50)  # a task with more steps keeps its first 150 and last 50
+CUT = "…[cut]"
+_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
+_LABEL = re.compile(r"[A-Za-z0-9_.:-]{1,64}")
+_SESSION = re.compile(r"vs_[0-9a-f]{32}")
+_SINCE_2020_MS = 1_577_836_800_000
+_DAY_MS = 86_400_000
+
+
+def _pat(value: object, pattern: re.Pattern) -> str | None:
+    return value if isinstance(value, str) and pattern.fullmatch(value) else None
+
+
+def _ms(value: object) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= _DAY_MS else None
+
+
+def _ts(client_ms: object, now_us: int, default: int) -> int:
+    """Epoch microseconds, never later than the server's clock: deletion by time must not miss a row because a
+    client clock runs fast. A missing or absurd (before 2020) client time is `default`."""
+    if not isinstance(client_ms, int) or isinstance(client_ms, bool) or client_ms < _SINCE_2020_MS:
+        return default
+    return min(client_ms * 1000, now_us)
+
+
+def _fit(text: object, limit: int, keep_end: bool = False) -> str | None:
+    """Cut to twice `limit` (so no regex sees more), scrub, then cut to `limit` characters in all, the marker
+    included. `keep_end` keeps the last characters; its slice starts after its first whitespace (when it has one), so a secret cut
+    in half at the slice point cannot survive as a fragment."""
+    if not isinstance(text, str):
+        return None
+    if len(text) > 2 * limit:
+        if keep_end:
+            tail = text[-2 * limit :]
+            text = tail[m.end() :] if (m := re.search(r"\s", tail)) else tail
+        else:
+            text = text[: 2 * limit]
+    text = scrub(text)
+    if len(text) <= limit:
+        return text
+    return CUT + text[-(limit - len(CUT)) :] if keep_end else text[: limit - len(CUT)] + CUT
+
+
+def log_rows(user_id: str, install_id: str, body: dict, scope: str, now_us: int, meta: dict) -> tuple[list, list]:
+    """The `turns` and `task_steps` rows of one upload (the shapes are the DDL's). Pure and CPU-bound: call it
+    off the event loop. The user is the caller's, row ids start with it (another person cannot make the same
+    ids), the clock is clamped, the scope is the server's (`problem`: a task that ended `done` keeps no text,
+    unless `scope` is "all"), and every text is cut, scrubbed and cut again whatever the app did."""
+    from core.observability import spark_events  # here: spark_events imports product_analytics
+
+    who = {"platform": meta.get("platform"), "app_version": meta.get("app_version")}
+    turns = []
+    for ln in (body.get("typed") if isinstance(body.get("typed"), list) else [])[:LOG_TYPED_MAX]:
+        ln = ln if isinstance(ln, dict) else {}
+        text = _fit(ln.get("text"), 2000)
+        if (
+            not _pat(ln.get("id"), _ID)
+            or not text
+            or not text.strip()
+            or ln.get("role", "person") not in ("person", "spark")
+        ):
+            continue
+        turns.append(
+            {
+                "row_id": str(uuid.uuid5(spark_events.NS, f"{user_id}:{install_id}:{ln['id']}")),
+                "ts": _ts(ln.get("at"), now_us, now_us),
+                "user_id": user_id,
+                "session_id": _pat(ln.get("sessionId"), _SESSION),
+                "task_id": _pat(ln.get("taskId"), spark_events.TASK_ID),
+                "role": ln.get("role", "person"),
+                "source": "typed",
+                "text": text,
+            }
+            | who
+        )
+    t = body.get("task")
+    if not isinstance(t, dict) or not _pat(t.get("id"), spark_events.TASK_ID) or t.get("status") not in STATUSES:
+        return turns, []
+    source = t.get("source") if t.get("source") in ("voice", "typed", "automation") else "voice"
+    keep = t["status"] != "done" or scope == "all"
+    started = _ts(t.get("createdAt"), now_us, now_us)
+    done = t.get("doneAt")
+    common = {
+        "user_id": user_id,
+        "task_id": t["id"],
+        "session_id": None if source == "automation" else _pat(t.get("sessionId"), _SESSION),
+        "source": source,
+        "automation_id": _pat(t.get("automationId"), _LABEL) if source == "automation" else None,
+        "text_kept": keep,
+    } | who
+
+    def row(n: int, **kw) -> dict:
+        blank = dict.fromkeys(("tool", "app", "input", "result", "ok", "ms", "status"))
+        return (
+            {"row_id": str(uuid.uuid5(spark_events.NS, f"{user_id}:{t['id']}:{n}")), "step_no": n} | blank | common | kw
+        )
+
+    span = done - t["createdAt"] if isinstance(done, int) and isinstance(t.get("createdAt"), int) else None
+    rows = [
+        row(
+            0,
+            ts=started,
+            kind="task",
+            input=_fit(t.get("request"), 4000, keep_end=True) if keep else None,
+            result=_fit(t.get("answer"), 2000) if keep else None,
+            ms=_ms(span),
+            status=t["status"],
+        )
+    ]
+    listed = t.get("steps") if isinstance(t.get("steps"), list) else []
+    head, tail = LOG_STEPS_KEEP
+    numbered = list(enumerate(listed, 1))  # a step that is not valid is skipped and keeps its number
+    for n, st in numbered if len(numbered) <= head + tail else numbered[:head] + numbered[-tail:]:
+        if not isinstance(st, dict) or st.get("kind") not in KINDS:
+            continue
+        text = keep and st["kind"] != "screenshot"
+        rows.append(
+            row(
+                n,
+                ts=_ts(st.get("at"), now_us, started),
+                kind=st["kind"],
+                tool=_pat(st.get("tool"), _LABEL),
+                app=scrub(st["app"][:48]) if isinstance(st.get("app"), str) and st["app"] else None,
+                input=_fit(st.get("input"), 1000) if text else None,
+                result=_fit(st.get("result"), 1000) if text else None,
+                ok=st["ok"] if isinstance(st.get("ok"), bool) else None,
+                ms=_ms(st.get("ms")),
+            )
+        )
+    return turns, rows
+
+
+STATUSES = ("done", "failed", "cancelled")
+KINDS = ("tool", "confirm", "error", "note", "screenshot")
 
 
 # --- opt-out --------------------------------------------------------------------------------------------

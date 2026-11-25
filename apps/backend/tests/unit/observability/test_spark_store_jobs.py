@@ -100,6 +100,9 @@ class FakeAthena:
         self.on_start = None
 
     def start_query_execution(self, QueryString, WorkGroup, ExecutionParameters=(), **kw):  # noqa: N803
+        assert not (ExecutionParameters and QueryString.startswith(("DELETE", "OPTIMIZE", "VACUUM"))), (
+            "Athena documents ExecutionParameters for SELECT, INSERT, CTAS and UNLOAD only"
+        )
         self.workgroups.add(WorkGroup)
         self.queries.append((QueryString, list(ExecutionParameters)))
         if self.s3:
@@ -183,10 +186,9 @@ async def test_forget_writes_the_marker_then_runs_pass_one(env):
         "claimed_at": None,
     }
     deletes = env.athena.sqls("DELETE")
-    assert len(deletes) == 3 and all("user_bucket = ?" in q and "ts <= ?" in q for q in deletes)
-    by_table = {q.split()[2].rsplit(".", 1)[1]: p for q, p in env.athena.queries if q.startswith("DELETE")}
-    assert by_table["turns"] == [str(BUCKET), f"'{USER}'", CUT]
-    assert by_table["events"] == [str(BUCKET), f"'{USER}'", f"'{USER}'", CUT]
+    assert len(deletes) == 3 and all(f"user_bucket = {BUCKET} AND" in q and f"ts <= {CUT}" in q for q in deletes)
+    assert all(p == [] for q, p in env.athena.queries if q.startswith("DELETE"))  # values are in the text
+    assert deletes[0].endswith(f"user_bucket = {BUCKET} AND user_id = '{USER}' AND ts <= {CUT}")
     counts = env.athena.sqls("SELECT sum(c)")
     assert len(counts) == 1 and counts[0].count("ts <= ?") == 3
     assert counts[0].count("distinct_id = ?") == 1  # the count matches the events DELETE
@@ -228,7 +230,7 @@ async def test_account_deletion_is_unbounded_and_a_repeat_only_widens(env):
     await drain()
     assert env.s3.marker()["until"] is None
     for q, p in env.athena.queries:
-        assert "ts <=" not in q and not any("TIMESTAMP" in x for x in p)
+        assert "ts <=" not in q and "TIMESTAMP" not in q and not any("TIMESTAMP" in x for x in p)
     await spark_store.forget(USER)  # a bounded repeat never narrows it
     await drain()
     assert env.s3.marker()["until"] is None
@@ -473,7 +475,7 @@ async def test_a_marker_that_cannot_be_written_still_deletes_and_is_retried(env,
     await spark_store.forget(USER)
     await drain()
     assert env.metrics.count("spark_store.forget_start_failed") == 1
-    assert len(env.athena.sqls("DELETE")) == 3 and env.athena.queries[0][1][-1] == CUT  # pass 1 ran at once
+    assert len(env.athena.sqls("DELETE")) == 3 and CUT in env.athena.queries[0][0]  # pass 1 ran at once
     m = env.s3.marker()
     assert m["requested_at"] == T0.isoformat() and m["next_pass"] == 1  # the original request time, for the tick
 
@@ -488,6 +490,41 @@ async def test_errors_sweep_deletes_only_objects_with_the_id_and_skips_huge_ones
     await jobs.forget_pass(USER, False, T0)
     assert sorted(k for k in env.s3.objects if k.startswith("errors/")) == ["errors/events/big", "errors/turns/b"]
     assert "spark_store.forget_error_objects" in env.metrics and "spark_store.forget_error_skipped" in env.metrics
+
+
+# --- the DELETE text -----------------------------------------------------------------------------------------
+
+
+def test_delete_text_is_pinned_per_table_bounded_and_unbounded(env):
+    b = spark_store.bucket("user_abc")
+    ts = "TIMESTAMP '2026-11-26 10:05:00.000000'"
+    deletes, count = jobs.forget_sql("user_abc", T0 + 5 * MIN)
+    who = {"events": "(user_id = 'user_abc' OR distinct_id = 'user_abc')"}
+    assert deletes == [
+        (f"DELETE FROM lightbulb_dev_spark.{t} WHERE user_bucket = {b} AND {who.get(t, "user_id = 'user_abc'")} AND ts <= {ts}", [])
+        for t in ("turns", "task_steps", "events")
+    ]  # fmt: skip
+    deletes, _ = jobs.forget_sql("user_abc", None)
+    assert deletes[0] == (f"DELETE FROM lightbulb_dev_spark.turns WHERE user_bucket = {b} AND user_id = 'user_abc'", [])
+    assert deletes[2][0].endswith("(user_id = 'user_abc' OR distinct_id = 'user_abc')")
+    assert count[0].count("?") == 3 + 3 + 4 and "user_abc" not in count[0]  # the count keeps its parameters
+
+
+@pytest.mark.parametrize("bad", ["a'b", "a b", "a;b", "a\\b", "usér", "a\nb", "x" * 129, "", "a\u2028b"])
+async def test_an_unsafe_user_id_is_refused_before_any_query(env, bad):
+    with pytest.raises(ValueError) as e:
+        jobs.forget_sql(bad, T0)
+    assert bad not in str(e.value) or bad == ""
+    env.s3.seed(user=bad)
+    await jobs.tick()
+    assert not env.athena.queries
+    m = next(json.loads(v[0]) for v in env.s3.objects.values())
+    assert m["attempts"] == 1 and "spark_store.jobs_failed" in env.metrics
+
+
+def test_a_clerk_style_id_and_the_longest_id_pass(env):
+    jobs.forget_sql("user_2abcDEF-xyz_9", None)
+    jobs.forget_sql("x" * 128, None)
 
 
 # --- retention -----------------------------------------------------------------------------------------------

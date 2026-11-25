@@ -317,21 +317,43 @@ async def _maintain(optimize: list[str], vacuum: list[str]) -> None:
         raise RuntimeError(f"{failed} maintenance statements failed")
 
 
+_SAFE_ID = re.compile(r"[A-Za-z0-9_-]{1,128}")  # Clerk ids look like user_2abc...
+
+
+def _id_literal(user_id: str) -> str:
+    """The ONLY way a user id reaches SQL text: a single-quoted literal of an id made of [A-Za-z0-9_-] (at most
+    128). Anything else raises, so the pass fails closed; the message does not repeat the id."""
+    if not _SAFE_ID.fullmatch(user_id):
+        raise ValueError("user id is not safe to render into SQL")
+    return f"'{user_id}'"
+
+
 def forget_sql(user_id: str, until: datetime | None) -> tuple[list[tuple[str, list]], tuple[str, list]]:
     """The three DELETEs and the one verification count, always by user_bucket; `until` bounds them to
-    ts <= until (None: no time condition, for account deletion). The count matches the DELETEs row for row."""
-    b, db = store.bucket(user_id), store.db()
-    time_cond, time_arg = (" AND ts <= ?", [until]) if until else ("", [])
-    who = {t: ("(user_id = ? OR distinct_id = ?)", 2) if t == "events" else ("user_id = ?", 1) for t in store.TABLES}
-    where = {t: f"user_bucket = ? AND {who[t][0]}{time_cond}" for t in store.TABLES}
-    args = {t: [b] + [user_id] * who[t][1] + time_arg for t in store.TABLES}
-    deletes = [(f"DELETE FROM {db}.{t} WHERE {where[t]}", args[t]) for t in store.TABLES]
+    ts <= until (None: no time condition, for account deletion). Athena documents ExecutionParameters for SELECT
+    only, so the DELETEs carry validated typed literals (int bucket, `_id_literal`, a UTC TIMESTAMP built from a
+    datetime) and no parameters; the count keeps its parameters."""
+    b, db, uid = store.bucket(user_id), store.db(), _id_literal(user_id)
+    tail = f" AND ts <= {store._literal(until)}" if until else ""
+    who = {
+        t: f"(user_id = {uid} OR distinct_id = {uid})" if t == "events" else f"user_id = {uid}" for t in store.TABLES
+    }
+    deletes = [
+        (f"DELETE FROM {db}.{t} WHERE user_bucket = {int(b)} AND {who[t]}{tail}", []) for t in store.TABLES
+    ]  # fmt: skip
+    cond = " AND ts <= ?" if until else ""
+    per = {
+        t: ("(user_id = ? OR distinct_id = ?)", [b, user_id, user_id])
+        if t == "events"
+        else ("user_id = ?", [b, user_id])
+        for t in store.TABLES
+    }
     count = (
         "SELECT sum(c) FROM ("
-        + " UNION ALL ".join(f"SELECT count(*) AS c FROM {db}.{t} WHERE {where[t]}" for t in store.TABLES)
+        + " UNION ALL ".join(f"SELECT count(*) AS c FROM {db}.{t} WHERE user_bucket = ? AND {per[t][0]}{cond}" for t in store.TABLES)
         + ")",
-        [a for t in store.TABLES for a in args[t]],
-    )
+        [a for t in store.TABLES for a in per[t][1] + ([until] if until else [])],
+    )  # fmt: skip
     return deletes, count
 
 

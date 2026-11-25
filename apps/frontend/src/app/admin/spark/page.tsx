@@ -37,7 +37,7 @@ export default async function AdminSparkPage() {
       {data ? (
         <>
           {data.truncated ? (
-            <p className="text-xs text-amber-600">Install list hit its 5000-row cap; older installs are missing.</p>
+            <p className="text-xs text-destructive">Install list hit its 5000-row cap; older installs are missing.</p>
           ) : null}
           <Headline data={data} />
           <People data={data} />

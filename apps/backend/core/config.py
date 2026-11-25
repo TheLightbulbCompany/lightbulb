@@ -67,6 +67,10 @@ class Settings(BaseSettings):
     # workspace wipe). Comma-separated, set per env by CDK (service-stack.ts).
     # Empty ⇒ nobody is admin. Never derived from an email claim.
     PLATFORM_ADMIN_USER_IDS: str = ""
+    # Extra Clerk user ids (team members, test accounts) excluded from the
+    # admin Spark metrics. Comma-separated; PLATFORM_ADMIN_USER_IDS are
+    # excluded too, and so is any PostHog person with `is_internal = true`.
+    SPARK_INTERNAL_USER_IDS: str = ""
 
     # DynamoDB
     DYNAMODB_TABLE_PREFIX: str = "lightbulb-dev-"
@@ -124,6 +128,12 @@ class Settings(BaseSettings):
     def platform_admin_user_ids(self) -> frozenset[str]:
         """Parse PLATFORM_ADMIN_USER_IDS as a comma-separated set."""
         return frozenset(u.strip() for u in self.PLATFORM_ADMIN_USER_IDS.split(",") if u.strip())
+
+    @property
+    def spark_internal_user_ids(self) -> frozenset[str]:
+        """SPARK_INTERNAL_USER_IDS plus platform admins: the accounts Spark metrics ignore."""
+        extra = {u.strip() for u in self.SPARK_INTERNAL_USER_IDS.split(",") if u.strip()}
+        return frozenset(extra) | self.platform_admin_user_ids
 
     # --- Workspace runtime networking ---
     # The VPC placement an owner's AgentCore runtime is created with

@@ -592,3 +592,34 @@ export async function getAlarms(token: string): Promise<OpsEnvelope<AlarmRow[]> 
 export async function getGrowth(token: string): Promise<OpsEnvelope<GrowthData> | null> {
   return adminFetch<OpsEnvelope<GrowthData>>(token, "/ops/growth");
 }
+
+export interface SparkCohort {
+  week: string;
+  installs: number;
+  activated: number;
+  activation_rate: number | null;
+  /** null until the cohort is old enough for a day-28 reading. */
+  w4_retained: number | null;
+  w4_retention: number | null;
+  activated_by_platform: Record<string, number>;
+}
+
+export interface SparkData {
+  generated_at: string;
+  weeks: string[];
+  wad: { rolling_7d: number; weekly: { week: string; doers: number }[] };
+  platforms: string[];
+  cohorts: SparkCohort[];
+  task_success: {
+    weekly: { week: string; completed: number; failed: number; rate: number | null }[];
+    top_failed_reasons: { key: string; count: number }[];
+    top_problem_kinds: { key: string; count: number }[];
+  };
+  funnel: { stage: string; users: number }[];
+  reliability: { unhealthy_installs_24h: number };
+  failed_queries: string[];
+}
+
+export async function getSpark(token: string): Promise<OpsEnvelope<SparkData | null> | null> {
+  return adminFetch<OpsEnvelope<SparkData | null>>(token, "/ops/spark");
+}

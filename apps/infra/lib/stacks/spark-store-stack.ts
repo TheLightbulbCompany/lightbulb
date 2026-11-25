@@ -18,7 +18,7 @@ const GB = 1024 ** 3;
 /**
  * Spark data store: an S3 bucket holding Iceberg tables (created by
  * scripts/spark_store_ddl.py, not CDK: Firehose only delivers to tables made through
- * the Iceberg Glue catalog), two Athena workgroups, and the role and log group the
+ * the Iceberg Glue catalog), three Athena workgroups, and the role and log group the
  * Firehose delivery streams use, plus one delivery stream per table.
  */
 export class SparkStoreStack extends cdk.Stack {
@@ -45,7 +45,8 @@ export class SparkStoreStack extends cdk.Stack {
       lifecycleRules: [
         { id: "AbortIncompleteUploads", abortIncompleteMultipartUploadAfter: cdk.Duration.days(1) },
         { id: "ExpireAthenaResults", prefix: "athena-results/", expiration: cdk.Duration.days(7) },
-        { id: "ExpireJobState", prefix: "jobs/", expiration: cdk.Duration.days(7) },
+        // Only the daily run markers expire; jobs/forget/ delete requests must never be dropped unrun.
+        { id: "ExpireRetentionMarkers", prefix: "jobs/retention/", expiration: cdk.Duration.days(7) },
         { id: "ExpireFirehoseErrors", prefix: "errors/", expiration: cdk.Duration.days(3) },
       ],
     });
@@ -69,6 +70,8 @@ export class SparkStoreStack extends cdk.Stack {
     workgroup("AppWorkGroup", n.workgroup, 1 * GB, "app");
     // Team SQL and the DDL script: 20 GB cap.
     workgroup("AdhocWorkGroup", n.adhocWorkgroup, 20 * GB, "adhoc");
+    // Backend jobs (user deletes, OPTIMIZE, VACUUM, retention): they read whole data files, so 100 GB.
+    workgroup("JobsWorkGroup", n.jobsWorkgroup, 100 * GB, "jobs");
 
     const logGroup = new logs.LogGroup(this, "FirehoseLogGroup", {
       logGroupName: n.logGroup,

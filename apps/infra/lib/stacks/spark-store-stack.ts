@@ -1,5 +1,6 @@
 import * as cdk from "aws-cdk-lib";
 import * as athena from "aws-cdk-lib/aws-athena";
+import * as firehose from "aws-cdk-lib/aws-kinesisfirehose";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as kms from "aws-cdk-lib/aws-kms";
 import * as logs from "aws-cdk-lib/aws-logs";
@@ -18,7 +19,7 @@ const GB = 1024 ** 3;
  * Spark data store: an S3 bucket holding Iceberg tables (created by
  * scripts/spark_store_ddl.py, not CDK: Firehose only delivers to tables made through
  * the Iceberg Glue catalog), two Athena workgroups, and the role and log group the
- * Firehose delivery streams will use. The streams themselves come in a later change.
+ * Firehose delivery streams use, plus one delivery stream per table.
  */
 export class SparkStoreStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props: SparkStoreStackProps) {
@@ -120,5 +121,43 @@ export class SparkStoreStack extends cdk.Stack {
         resources: [logGroup.logGroupArn],
       }),
     );
+
+    // One DirectPut stream per Iceberg table (never two on one table: Iceberg commits conflict).
+    // Creating a stream does not need the table to exist (Firehose only checks it at create time
+    // when UniqueKeys are set), so prod gets its streams before the prod DDL has run.
+    // Firehose will not create the log streams, so they are created here, one per table.
+    const tables = ["turns", "task_steps", "events"];
+    tables.forEach((table, i) => {
+      const logStream = new logs.LogStream(this, `${table}LogStream`, {
+        logGroup,
+        logStreamName: table,
+        removalPolicy: cdk.RemovalPolicy.DESTROY,
+      });
+      const stream = new firehose.CfnDeliveryStream(this, `${table}Stream`, {
+        deliveryStreamName: n.streams[i],
+        deliveryStreamType: "DirectPut",
+        deliveryStreamEncryptionConfigurationInput: { keyType: "CUSTOMER_MANAGED_CMK", keyArn: props.kmsKey.keyArn },
+        icebergDestinationConfiguration: {
+          catalogConfiguration: { catalogArn: `${catalog}:catalog` },
+          roleArn: role.roleArn,
+          destinationTableConfigurationList: [
+            { destinationDatabaseName: n.database, destinationTableName: table, s3ErrorOutputPrefix: `errors/${table}/` },
+          ],
+          appendOnly: true,
+          bufferingHints: { intervalInSeconds: prod ? 900 : 60, sizeInMBs: 128 },
+          retryOptions: { durationInSeconds: 3600 },
+          s3BackupMode: "FailedDataOnly",
+          s3Configuration: {
+            bucketArn: bucket.bucketArn,
+            roleArn: role.roleArn,
+            errorOutputPrefix: `errors/${table}/`,
+            encryptionConfiguration: { kmsEncryptionConfig: { awskmsKeyArn: props.kmsKey.keyArn } },
+          },
+          cloudWatchLoggingOptions: { enabled: true, logGroupName: n.logGroup, logStreamName: table },
+        },
+      });
+      // The role's policy must exist first or the create fails on a role with no permissions.
+      stream.node.addDependency(role, logStream);
+    });
   }
 }

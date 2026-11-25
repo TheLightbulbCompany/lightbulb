@@ -455,12 +455,14 @@ SIGNALS = [
     ["automation_fired", "true/true", 5, 2, 2, 0],
     ["automation_fired", "true/false", 3, 3, 1, 0],
     ["automation_fired", "false/true", 2, 1, 1, 0],
+    ["automation_fired", "*", 10, 5, 3, 0],
     ["feature_used", "dictation", 6, 3, 2, 0],
     ["feature_used", "marks", 1, 1, 0, 0],
     ["feature_used", "automation_created", 2, 2, 1, 0],
     ["voice_session_ended", "hold", 20, 4, 3, 2],
     ["voice_session_ended", "typed", 4, 1, 1, 1],
     ["voice_session_ended", "-", 1, 1, 1, 0],
+    ["voice_session_ended", "*", 25, 7, 5, 2],
     ["problem_raised", "-", 3, 2, 2, 0],
     ["app_opened", "1.0", 50, 6, 4, 0],
     ["app_opened", "1.1", 30, 3, 3, 0],
@@ -493,17 +495,18 @@ def test_signals_stops_as_k_of_started_with_how_split():
 def test_signals_automations_started_k_of_runs_and_brain():
     a = sm.derive(_rows(signals=SIGNALS), NOW)["signals"]["automations"]
     assert a["runs"] == 10 and a["ok"] == {"k": 8, "n": 10} and a["with_brain"] == {"k": 7, "n": 10}
-    assert a["people_30d"] == 3  # lower bound: the biggest row (a person in two rows is not double counted)
+    assert a["people_30d"] == 5  # from the `*` row: exact, not the biggest per-key row
 
 
 def test_signals_features_ordered_by_people_with_full_access_from_the_sixth_column():
     f = sm.derive(_rows(signals=SIGNALS), NOW)["signals"]["features"]
-    assert f[0] == {"feature": "push to talk", "people_30d": 4, "people_7d": 3}
+    assert f[0]["feature"] == "automation ran"  # 5 people, the most
+    assert {"feature": "push to talk", "people_30d": 4, "people_7d": 3} in f
     by = {x["feature"]: x for x in f}
     assert by["full access"] == {"feature": "full access", "people_30d": 2, "people_7d": None}  # only a 30d column
     assert by["typing"] == {"feature": "typing", "people_30d": 1, "people_7d": 1}
     assert by["dictation"]["people_30d"] == 3 and by["marks"]["people_30d"] == 1
-    assert by["automation ran"]["people_30d"] == 3
+    assert by["automation ran"] == {"feature": "automation ran", "people_30d": 5, "people_7d": 3}
     assert by["created an automation"] == {"feature": "created an automation", "people_30d": 2, "people_7d": 1}
     assert by["unknown"]["people_30d"] == 1  # a missing voice kind
     keys = [(-x["people_30d"], x["feature"]) for x in f]
@@ -535,3 +538,37 @@ def test_signals_parts_are_none_until_their_events_exist():
     only_open = sm.derive(_rows(signals=[["app_opened", "1.0", 5, 2, 2, 0]]), NOW)["signals"]
     assert only_open["stopped"] is None and only_open["automations"] is None and only_open["features"] is None
     assert only_open["crash"] == {"k": 0, "n": 2} and only_open["versions"] == [{"version": "1.0", "people_7d": 2}]
+
+
+def test_signals_people_come_from_the_star_rows_not_the_biggest_key():
+    rows = [
+        ["voice_session_ended", "hold", 9, 2, 2, 2],  # two full-access people who only hold
+        ["voice_session_ended", "handsFree", 9, 3, 3, 3],  # three others who only use hands-free
+        ["voice_session_ended", "*", 18, 5, 5, 5],
+        ["automation_fired", "true/true", 4, 2, 1, 0],  # different people in each key
+        ["automation_fired", "true/false", 3, 3, 2, 0],
+        ["automation_fired", "*", 7, 5, 3, 0],
+    ]
+    s = sm.derive(_rows(signals=rows), NOW)["signals"]
+    by = {f["feature"]: f for f in s["features"]}
+    assert by["full access"]["people_30d"] == 5
+    assert by["automation ran"] == {"feature": "automation ran", "people_30d": 5, "people_7d": 3}
+    assert s["automations"]["people_30d"] == 5 and s["automations"]["runs"] == 7
+    assert not any("*" in f["feature"] for f in s["features"])
+    assert s["versions"] is None and s["updates"] is None
+
+
+def test_signals_automations_are_no_data_without_their_star_row():
+    rows = [["automation_fired", "true/true", 4, 2, 1, 0], ["voice_session_ended", "hold", 3, 2, 2, 1]]
+    s = sm.derive(_rows(signals=rows), NOW)["signals"]
+    assert s["automations"] is None
+    assert [f["feature"] for f in s["features"]] == ["push to talk"]  # no full access, no automation ran
+
+
+def test_signals_query_unions_exact_totals_with_the_team_filter_and_30_days_in_both_halves():
+    q = sm.build_queries()["signals"]
+    assert q.count("union all") == 1 and "'*' as k" in q
+    first, second = q.split("union all")
+    for half in (first, second):
+        assert "timestamp >= now() - interval 30 day" in half and "person_id not in" in half or "1 = 1" in half
+        assert "toString(properties.product) = 'spark'" in half

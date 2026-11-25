@@ -196,8 +196,18 @@ def build_queries() -> dict[str, str]:
         # Last 30d, one row per (event, key): event, key, count, distinct persons, persons in the last 7d, persons
         # with full access (voice only). Key: task_stopped.how, automation_fired '<ok>/<brain>', feature_used.feature,
         # voice_session_ended.kind, app_opened/update_installed version, else '-'. task_started = human tasks (n of
-        # the stop share); problem_raised only kind crash. derive() turns the rows into the `signals` payload.
+        # the stop share); problem_raised only kind crash. The first half adds one exact TOTAL row (key '*') for
+        # automation_fired and voice_session_ended: distinct people cannot be summed across keys.
+        # derive() turns the rows into the `signals` payload.
         "signals": f"""
+            select event, '*' as k, count(), uniq(person_id),
+              uniqIf(person_id, timestamp >= now() - interval 7 day),
+              uniqIf(person_id, toString(properties.full_access) = 'true')
+            from events
+            where event in ('automation_fired', 'voice_session_ended')
+              and toString(properties.product) = 'spark' and {w} and timestamp >= now() - interval 30 day
+            group by event
+            union all
             select event,
               coalesce(nullIf(toString(multiIf(
                 event = 'task_stopped', properties.how,
@@ -366,8 +376,9 @@ def _signals(rows: list) -> dict:
     by: dict[str, dict[str, _Row]] = {}
     for event, k, *nums in rows:
         by.setdefault(event, {})[str(k)] = _Row(*(int(x) for x in nums))
+    # exact distinct people per event (key '*'); the per-key rows only feed the breakdowns
+    star = {e: keys.pop("*") for e, keys in by.items() if "*" in keys}
     total = lambda e, f="count": sum(getattr(r, f) for r in by.get(e, {}).values())  # noqa: E731
-    biggest = lambda e, f: max((getattr(r, f) for r in by.get(e, {}).values()), default=0)  # noqa: E731
 
     stopped = None
     if "task_stopped" in by:
@@ -383,29 +394,28 @@ def _signals(rows: list) -> dict:
             ],
         }
     automations = None
-    if "automation_fired" in by:
-        runs = total("automation_fired")
+    if "automation_fired" in star:
+        runs = star["automation_fired"].count
         fired = by["automation_fired"]
-        # ponytail: a person in two rows (ok and not ok) is counted once at best, so this is a lower bound
         automations = {
             "runs": runs,
             "ok": _kn(sum(r.count for k, r in fired.items() if k.startswith("true/")), runs),
             "with_brain": _kn(sum(r.count for k, r in fired.items() if k.endswith("/true")), runs),
-            "people_30d": biggest("automation_fired", "people_30d"),
+            "people_30d": star["automation_fired"].people_30d,
         }
     feats = [
         {"feature": LABELS.get(k, k), "people_30d": r.people_30d, "people_7d": r.people_7d}
         for e in ("voice_session_ended", "feature_used")
         for k, r in by.get(e, {}).items()
     ]
-    if full := biggest("voice_session_ended", "full_access"):
+    if full := star["voice_session_ended"].full_access if "voice_session_ended" in star else 0:
         feats.append({"feature": "full access", "people_30d": full, "people_7d": None})
     if automations:
         feats.append(
             {
                 "feature": "automation ran",
                 "people_30d": automations["people_30d"],
-                "people_7d": biggest("automation_fired", "people_7d"),
+                "people_7d": star["automation_fired"].people_7d,
             }
         )
     opened = sorted(

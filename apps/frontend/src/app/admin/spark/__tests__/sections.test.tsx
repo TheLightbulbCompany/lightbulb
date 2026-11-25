@@ -127,6 +127,8 @@ describe("spark sections", () => {
     expect(screen.getByText(/2 \/ 7 \(29%\)/)).toBeTruthy(); // crashed people / active people
     expect(screen.getByText("1.1")).toBeTruthy();
     expect(screen.queryByText(/succeeded/)).toBeNull();
+    expect(screen.getByText(/the work finished\. 3 people\./)).toBeTruthy();
+    expect(screen.queryByText(/At least/)).toBeNull();
   });
 
   it("shows stops without a percentage when they exceed the starts", () => {

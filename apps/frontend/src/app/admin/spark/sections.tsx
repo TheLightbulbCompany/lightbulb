@@ -252,7 +252,7 @@ export function Signals({ data }: { data: SparkData }) {
                 Runs {automations.runs}; started {kn(automations.ok)}; with a brain {kn(automations.with_brain)}
               </p>
               <p className="text-muted-foreground">
-                Started = the actions were started, not that the work finished. At least {automations.people_30d} people.
+                Started = the actions were started, not that the work finished. {automations.people_30d} people.
               </p>
             </div>
           ) : (

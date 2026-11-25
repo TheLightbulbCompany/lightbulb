@@ -664,6 +664,19 @@ export interface SparkData {
     permissions: { permission: string; prompted: number; denied: Kn }[];
     unfinished: Kn | null;
   } | null;
+  /** Last 30 days. Each part is null until its events were seen. */
+  signals: {
+    /** k = task_stopped, n = human task_started; how = the split by pressed / said / other. */
+    stopped: { k: number; n: number; how: SparkCount[] } | null;
+    /** ok = the actions were started (not that the work finished). people_30d is a lower bound. */
+    automations: { runs: number; ok: Kn; with_brain: Kn; people_30d: number } | null;
+    /** people_7d null = no 7-day figure (full access). */
+    features: { feature: string; people_30d: number; people_7d: number | null }[] | null;
+    /** k = people with a crash in 7 days, n = people who opened the app in 7 days (about). */
+    crash: Kn | null;
+    versions: { version: string; people_7d: number }[] | null;
+    updates: { to_version: string; installs_30d: number }[] | null;
+  };
 }
 
 export type SparkCount = { key: string; count: number };

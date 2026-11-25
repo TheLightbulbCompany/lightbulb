@@ -181,17 +181,38 @@ def build_queries() -> dict[str, str]:
               and {w} and timestamp >= now() - interval 30 day
             group by event, k, a limit 200""",
         # Last 30d, tasks started (not automation) >= 30 min ago: n; those with no task_completed/task_failed
-        # carrying the same task_id: k. One row: (k, n).
+        # or task_stopped carrying the same task_id: k. One row: (k, n).
         "tasks_unfinished": f"""
             select countIf(fin = 0), count() from (
               select toString(properties.task_id) as tid,
                 countIf(event = 'task_started' and coalesce(toString(properties.source), '') != 'automation') as st,
                 minIf(timestamp, event = 'task_started') as first_start,
-                countIf(event in ('task_completed', 'task_failed')) as fin
+                countIf(event in ('task_completed', 'task_failed', 'task_stopped')) as fin
               from events
-              where event in ('task_started', 'task_completed', 'task_failed')
+              where event in ('task_started', 'task_completed', 'task_failed', 'task_stopped')
                 and {w} and timestamp >= now() - interval 30 day and toString(properties.task_id) != ''
               group by tid having st > 0 and first_start < now() - interval 30 minute) limit 1""",
+        # Last 30d, one row per (event, key): event, key, count, distinct persons, persons in the last 7d, persons
+        # with full access (voice only). Key: task_stopped.how, automation_fired '<ok>/<brain>', feature_used.feature,
+        # voice_session_ended.kind, app_opened/update_installed version, else '-'. task_started = human tasks (n of
+        # the stop share); problem_raised only kind crash. derive() turns the rows into the `signals` payload.
+        "signals": f"""
+            select event,
+              coalesce(nullIf(toString(multiIf(
+                event = 'task_stopped', properties.how,
+                event = 'automation_fired', concat(toString(properties.ok), '/', toString(properties.brain)),
+                event = 'feature_used', properties.feature, event = 'voice_session_ended', properties.kind,
+                event = 'app_opened', properties.app_version, event = 'update_installed', properties.to_version, '')), ''), '-') as k,
+              count(), uniq(person_id),
+              uniqIf(person_id, timestamp >= now() - interval 7 day),
+              uniqIf(person_id, toString(properties.full_access) = 'true')
+            from events
+            where (event in ('task_started', 'task_stopped', 'automation_fired', 'feature_used',
+                             'voice_session_ended', 'app_opened', 'update_installed')
+                   or (event = 'problem_raised' and toString(properties.kind) = 'crash'))
+              and (event != 'task_started' or coalesce(toString(properties.source), '') != 'automation')
+              and toString(properties.product) = 'spark' and {w} and timestamp >= now() - interval 30 day
+            group by event, k limit 500""",
     }
 
 
@@ -311,6 +332,66 @@ def _setup(rows: dict[str, list]) -> dict | None:
             if e == "permission_prompted"
         ],
         "unfinished": kn(int(stuck[0]), int(stuck[1])) if int(stuck[1]) else None,
+    }
+
+
+SIGNAL_LABELS = {"hold": "push to talk", "handsFree": "hands-free", "wakeWord": "wake word", "typed": "typing"}
+STOP_HOW = ("pressed", "said", "other")
+
+
+def _signals(rows: list) -> dict:
+    """Stops, automations, features, crashes and versions from the `signals` rows (30d). Each part is None
+    until its events were seen ("no data yet"), never a table of zeros. Counts only; shares are k and n."""
+    by: dict[str, list] = {}
+    for event, k, count, p30, p7, full in rows:
+        by.setdefault(event, []).append((str(k), int(count), int(p30), int(p7), int(full)))
+    total = lambda e, i=1: sum(r[i] for r in by.get(e, []))  # noqa: E731
+    biggest = lambda e, i: max((r[i] for r in by.get(e, [])), default=0)  # noqa: E731
+
+    stopped = None
+    if "task_stopped" in by:
+        how = {k: n for k, n, *_ in by["task_stopped"]}
+        stopped = {
+            "k": total("task_stopped"),
+            "n": total("task_started"),
+            "how": [{"key": h, "count": how.get(h, 0)} for h in STOP_HOW],
+        }
+    automations = None
+    if "automation_fired" in by:
+        runs = total("automation_fired")
+        started = sum(n for k, n, *_ in by["automation_fired"] if k.startswith("true/"))
+        brain = sum(n for k, n, *_ in by["automation_fired"] if k.endswith("/true"))
+        # ponytail: a person in two rows (ok and not ok) is counted once at best, so this is a lower bound
+        automations = {
+            "runs": runs,
+            "ok": {"k": started, "n": runs},
+            "with_brain": {"k": brain, "n": runs},
+            "people_30d": biggest("automation_fired", 2),
+        }
+    feats = [
+        {"feature": SIGNAL_LABELS.get(k, k), "people_30d": p30, "people_7d": p7}
+        for e in ("voice_session_ended", "feature_used")
+        for k, _, p30, p7, _ in by.get(e, [])
+    ]
+    if "voice_session_ended" in by and biggest("voice_session_ended", 4):
+        feats.append({"feature": "full access", "people_30d": biggest("voice_session_ended", 4), "people_7d": None})
+    if automations:
+        feats.append(
+            {
+                "feature": "automation ran",
+                "people_30d": automations["people_30d"],
+                "people_7d": biggest("automation_fired", 3),
+            }
+        )
+    opened = sorted(((k, p7) for k, _, _, p7, _ in by.get("app_opened", [])), key=lambda x: -x[1])
+    return {
+        "stopped": stopped,
+        "automations": automations,
+        "features": sorted(feats, key=lambda f: -f["people_30d"]) or None,
+        # about: a person who updated during the week is in two versions
+        "crash": {"k": total("problem_raised", 3), "n": sum(p for _, p in opened)} if opened else None,
+        "versions": [{"version": k, "people_7d": p} for k, p in opened] or None,
+        "updates": [{"to_version": k, "installs_30d": n} for k, n, *_ in by.get("update_installed", [])] or None,
     }
 
 
@@ -462,6 +543,7 @@ def derive(rows: dict[str, list], now: datetime) -> dict:
             for c, (a, n, i) in sorted(heard.items(), key=lambda x: -x[1][2])
         ],
         "setup": _setup(rows),
+        "signals": _signals(rows["signals"]),
     }
 
 

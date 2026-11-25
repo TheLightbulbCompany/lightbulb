@@ -70,7 +70,7 @@ def install(
 def _rows(**over):
     names = (
         "doers_weekly doers_7d installs success_weekly success_version success_provider problems downloads"
-        " voice_monthly subs setup_steps tasks_unfinished"
+        " voice_monthly subs setup_steps tasks_unfinished signals"
     )
     return {**{k: [] for k in names.split()}, **over}
 
@@ -85,9 +85,9 @@ def test_internal_filter_excludes_by_person_and_drops_unsafe_ids():
     assert "'user_a'" in f and "'user_admin'" in f and "1=1" not in f
 
 
-def test_queries_define_human_task_bound_scans_and_count_at_most_twelve():
+def test_queries_define_human_task_bound_scans_and_count_at_most_thirteen():
     qs = sm.build_queries()
-    assert len(qs) <= 12
+    assert len(qs) <= 13  # 12 + `signals`
     for name in ("doers_weekly", "doers_7d", "success_weekly", "success_version"):
         assert "!= 'automation'" in qs[name], name
     assert ">= 2" in qs["doers_weekly"] and "uniq(toDate(toTimeZone(timestamp, 'UTC')))" in qs["doers_weekly"]
@@ -244,6 +244,8 @@ def test_new_query_definitions():
     assert "'onboarding_step'" in qs["installs"] and "spark_heard_from" in qs["installs"]
     q = qs["tasks_unfinished"]
     assert "task_id" in q and "interval 30 minute" in q and "interval 30 day" in q and "fin = 0" in q
+    assert "event in ('task_completed', 'task_failed', 'task_stopped')" in q  # a stop is a finish
+    assert q.count("'task_stopped'") == 2  # the finish count and the outer event list
     for q in qs.values():  # every query is team-filtered
         assert "person_id not in" in q or "1 = 1" in q
 
@@ -409,7 +411,7 @@ def test_setup_no_data_when_onboarding_never_seen():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("failing", ["voice_monthly", "subs", "setup_steps", "tasks_unfinished"])
+@pytest.mark.parametrize("failing", ["voice_monthly", "subs", "setup_steps", "tasks_unfinished", "signals"])
 async def test_a_failed_new_query_means_no_figures(failing):
     names = list(sm.build_queries())
 
@@ -420,3 +422,93 @@ async def test_a_failed_new_query_means_no_figures(failing):
     with patch("core.services.posthog_admin.hogql", AsyncMock(side_effect=fake)):
         data, state, errors = await sm.compute()
     assert data is None and state == "partial" and errors[0]["domain"] == f"posthog:{failing}" and failing in names
+
+
+# ---- signals: stops, automations, features, crashes, versions ---------------------------------------
+
+
+def test_signals_query_reads_the_new_events_and_never_feeds_the_doer_or_success_queries():
+    qs = sm.build_queries()
+    q = qs["signals"]
+    for e in (
+        "task_stopped",
+        "automation_fired",
+        "feature_used",
+        "voice_session_ended",
+        "app_opened",
+        "update_installed",
+    ):
+        assert f"'{e}'" in q, e
+    assert "task_rated" not in q and "interval 30 day" in q
+    assert "!= 'automation'" in q  # started n counts human tasks only
+    assert "properties.how" in q and "properties.feature" in q
+    for name in ("doers_weekly", "doers_7d", "success_weekly", "success_version", "success_provider"):
+        for e in ("task_stopped", "automation_fired", "feature_used"):
+            assert e not in qs[name], (name, e)
+
+
+# columns: event, key, count, people 30d, people 7d, people with full access
+SIGNALS = [
+    ["task_started", "-", 12, 4, 3, 0],
+    ["task_stopped", "pressed", 2, 2, 1, 0],
+    ["task_stopped", "said", 1, 1, 1, 0],
+    ["automation_fired", "true/true", 5, 2, 2, 0],
+    ["automation_fired", "true/false", 3, 3, 1, 0],
+    ["automation_fired", "false/true", 2, 1, 1, 0],
+    ["feature_used", "dictation", 6, 3, 2, 0],
+    ["feature_used", "marks", 1, 1, 0, 0],
+    ["voice_session_ended", "hold", 20, 4, 3, 2],
+    ["voice_session_ended", "typed", 4, 1, 1, 1],
+    ["problem_raised", "-", 3, 2, 2, 0],
+    ["app_opened", "1.0", 50, 6, 4, 0],
+    ["app_opened", "1.1", 30, 3, 3, 0],
+    ["update_installed", "1.1", 3, 3, 3, 0],
+]
+
+
+def test_signals_stops_as_k_of_started_with_how_split():
+    s = sm.derive(_rows(signals=SIGNALS), NOW)["signals"]
+    assert s["stopped"] == {
+        "k": 3,
+        "n": 12,
+        "how": [{"key": "pressed", "count": 2}, {"key": "said", "count": 1}, {"key": "other", "count": 0}],
+    }
+    assert "rated" not in s
+
+
+def test_signals_automations_started_k_of_runs_and_brain():
+    a = sm.derive(_rows(signals=SIGNALS), NOW)["signals"]["automations"]
+    assert a["runs"] == 10 and a["ok"] == {"k": 8, "n": 10} and a["with_brain"] == {"k": 7, "n": 10}
+    assert a["people_30d"] == 3  # lower bound: the biggest row (a person in two rows is not double counted)
+
+
+def test_signals_features_ordered_by_people_with_full_access_from_the_sixth_column():
+    f = sm.derive(_rows(signals=SIGNALS), NOW)["signals"]["features"]
+    assert f[0] == {"feature": "push to talk", "people_30d": 4, "people_7d": 3}
+    by = {x["feature"]: x for x in f}
+    assert by["full access"] == {"feature": "full access", "people_30d": 2, "people_7d": None}  # only a 30d column
+    assert by["typing"] == {"feature": "typing", "people_30d": 1, "people_7d": 1}
+    assert by["dictation"]["people_30d"] == 3 and by["marks"]["people_30d"] == 1
+    assert by["automation ran"]["people_30d"] == 3 and "automation_created" not in by
+    assert [x["people_30d"] for x in f] == sorted((x["people_30d"] for x in f), reverse=True)
+
+
+def test_signals_crash_versions_and_updates():
+    s = sm.derive(_rows(signals=SIGNALS), NOW)["signals"]
+    assert s["crash"] == {"k": 2, "n": 7}  # crash people 7d / sum of per-version people 7d (about)
+    assert s["versions"] == [{"version": "1.0", "people_7d": 4}, {"version": "1.1", "people_7d": 3}]
+    assert s["updates"] == [{"to_version": "1.1", "installs_30d": 3}]
+
+
+def test_signals_parts_are_none_until_their_events_exist():
+    assert sm.derive(_rows(), NOW)["signals"] == {
+        "stopped": None,
+        "automations": None,
+        "features": None,
+        "crash": None,
+        "versions": None,
+        "updates": None,
+    }
+    only_open = sm.derive(_rows(signals=[["app_opened", "1.0", 5, 2, 2, 0]]), NOW)["signals"]
+    assert only_open["stopped"] is None and only_open["automations"] is None and only_open["features"] is None
+    assert only_open["crash"] == {"k": 0, "n": 2} and only_open["versions"] == [{"version": "1.0", "people_7d": 2}]

@@ -20,21 +20,8 @@ const ENV_CONFIG: Record<string, { removalPolicy: cdk.RemovalPolicy }> = {
 export class DatabaseStack extends cdk.Stack {
   public readonly usersTable: dynamodb.Table;
   public readonly containersTable: dynamodb.Table;
-  public readonly billingTable: dynamodb.Table;
-  public readonly usageCountersTable: dynamodb.Table;
-  public readonly companySlugsTable: dynamodb.Table;
-  public readonly agentEmailAddressesTable: dynamodb.Table;
-  public readonly slackInstallsTable: dynamodb.Table;
-  public readonly agentMailInboxTable: dynamodb.Table;
   public readonly webhookDedupTable: dynamodb.Table;
   public readonly adminActionsTable: dynamodb.Table;
-  public readonly metronomeFastGateTable: dynamodb.Table;
-  public readonly openrouterKeysTable: dynamodb.Table;
-  public readonly openrouterRequestsTable: dynamodb.Table;
-  public readonly oauthTokensTable: dynamodb.Table;
-  public readonly oauthStateTable: dynamodb.Table;
-  public readonly integrationsTable: dynamodb.Table;
-  public readonly paperclipCompaniesTable: dynamodb.Table;
 
 
   constructor(scope: Construct, id: string, props: DatabaseStackProps) {
@@ -92,102 +79,12 @@ export class DatabaseStack extends cdk.Stack {
 
     this.containersTable = createTable("ContainersTable", "containers", {
       partitionKey: { name: "owner_id", type: dynamodb.AttributeType.STRING },
-      // Only per-task AgentCore session rows (`__session__#<owner>#task#<task>`, super-agent
-      // per-task VMs) carry it: a task's warm estimate is dead 8 h after its claim.
+      // Spark's voice-session rows (core/voice/os_voice.py) live here, found through status-index.
       timeToLiveAttribute: "session_ttl",
     });
     this.containersTable.addGlobalSecondaryIndex({
       indexName: "status-index",
       partitionKey: { name: "status", type: dynamodb.AttributeType.STRING },
-    });
-
-    this.billingTable = createTable("BillingTable", "billing-accounts", {
-      partitionKey: { name: "owner_id", type: dynamodb.AttributeType.STRING },
-    });
-    this.billingTable.addGlobalSecondaryIndex({
-      indexName: "stripe-customer-index",
-      partitionKey: { name: "stripe_customer_id", type: dynamodb.AttributeType.STRING },
-    });
-    // App Store Server Notifications identify a subscription only by its
-    // originalTransactionId — they carry no owner_id — so renewals, expiries
-    // and refunds resolve the account through this index.
-    //
-    // SPARSE by construction: billing_repo.set_apple_subscription is the only
-    // writer and refuses an empty value, because an empty string on a GSI key
-    // attribute makes DynamoDB reject the ENTIRE PutItem. On this table's
-    // read-then-put writers that would brick every unrelated billing write for
-    // the owner — the shape of the 2026-08-02 paperclip-companies outage. Test
-    // fixtures must mirror this index or they cannot catch that class at all.
-    this.billingTable.addGlobalSecondaryIndex({
-      indexName: "apple-original-transaction-index",
-      partitionKey: {
-        name: "apple_original_transaction_id",
-        type: dynamodb.AttributeType.STRING,
-      },
-    });
-
-    // Company Stripe account (the owner's own business account on the same
-    // Connect platform). Webhooks for that account (account.updated, Standard
-    // OAuth deauthorize) identify the account only by its acct_… id, so this
-    // resolves the owning row the same way apple-original-transaction-index
-    // resolves App Store notifications above.
-    this.billingTable.addGlobalSecondaryIndex({
-      indexName: "company-stripe-account-index",
-      partitionKey: { name: "company_stripe_account_id", type: dynamodb.AttributeType.STRING },
-      projectionType: dynamodb.ProjectionType.ALL,
-    });
-
-    this.usageCountersTable = createTable("UsageCountersTable", "usage-counters", {
-      partitionKey: { name: "owner_id", type: dynamodb.AttributeType.STRING },
-      sortKey: { name: "period", type: dynamodb.AttributeType.STRING },
-    });
-
-    this.companySlugsTable = createTable("CompanySlugsTable", "company-slugs", {
-      partitionKey: { name: "slug", type: dynamodb.AttributeType.STRING },
-    });
-    this.companySlugsTable.addGlobalSecondaryIndex({
-      indexName: "by-owner",
-      partitionKey: { name: "owner_id", type: dynamodb.AttributeType.STRING },
-    });
-
-    this.agentEmailAddressesTable = createTable(
-      "AgentEmailAddressesTable",
-      "agent-email-addresses",
-      {
-        partitionKey: { name: "address", type: dynamodb.AttributeType.STRING },
-      },
-    );
-    this.agentEmailAddressesTable.addGlobalSecondaryIndex({
-      indexName: "by-owner",
-      partitionKey: { name: "owner_id", type: dynamodb.AttributeType.STRING },
-    });
-
-    // One Lightbulb Slack app serves every workspace; Slack posts to ONE URL
-    // with team_id in the body, so this is the team_id → owner routing table.
-    // Same shape as agent-email-addresses (address → owner). The bot token is
-    // NOT here — it lives in Secrets Manager under the owner's integrations
-    // prefix; this row carries only its secret name.
-    this.slackInstallsTable = createTable("SlackInstallsTable", "slack-installs", {
-      partitionKey: { name: "team_id", type: dynamodb.AttributeType.STRING },
-    });
-    this.slackInstallsTable.addGlobalSecondaryIndex({
-      indexName: "by-owner",
-      partitionKey: { name: "owner_id", type: dynamodb.AttributeType.STRING },
-    });
-
-    // Stored inbound agent mail (inbox the agent reads on demand — OTPs etc.).
-    // PK = the agent's address, SK = "{received_at}#{message_id}" so a query
-    // is newest-first by ISO timestamp. 30-day TTL: the inbox is a working
-    // buffer, not an archive.
-    this.agentMailInboxTable = createTable("AgentMailInboxTable", "agent-mail-inbox", {
-      partitionKey: { name: "address", type: dynamodb.AttributeType.STRING },
-      sortKey: { name: "received_key", type: dynamodb.AttributeType.STRING },
-      timeToLiveAttribute: "ttl",
-      ephemeral: true,
-    });
-    this.agentMailInboxTable.addGlobalSecondaryIndex({
-      indexName: "by-message-id",
-      partitionKey: { name: "message_id", type: dynamodb.AttributeType.STRING },
     });
 
     // Webhook event dedup table — shared by Stripe and Clerk webhooks
@@ -223,126 +120,6 @@ export class DatabaseStack extends cdk.Stack {
     new cdk.CfnOutput(this, "AdminActionsTableName", {
       value: this.adminActionsTable.tableName,
       exportName: `${this.stackName}-admin-actions-table`,
-    });
-
-    // The DDB credit ledger (credits + credit-transactions tables) was
-    // retired 2026-07-14 — Metronome is the sole biller and these tables
-    // had no remaining consumers.
-
-    // Metronome local fast-gate flag. A disposable per-owner projection of
-    // Metronome balance that the SYNCHRONOUS chat gate reads, since
-    // Metronome's balance read is async with no low-latency SLA. Fed by the
-    // Metronome low-balance webhook + the gate's lazy getNetBalance refresh
-    // (Metronome fires no recovery webhook on a top-up). Carries no
-    // money-correctness burden (Metronome is the SoR). The per-owner
-    // metronome_customer_id lives on the billing row, not here — this
-    // projection is wipeable cache state. PK owner_id.
-    this.metronomeFastGateTable = createTable("MetronomeFastGateTable", "metronome-fast-gate", {
-      partitionKey: { name: "owner_id", type: dynamodb.AttributeType.STRING },
-    });
-
-    this.openrouterKeysTable = createTable("OpenRouterKeysTable", "openrouter-keys", {
-      partitionKey: { name: "owner_id", type: dynamodb.AttributeType.STRING },
-    });
-
-    this.openrouterRequestsTable = createTable("OpenRouterRequestsTable", "openrouter-requests", {
-      partitionKey: { name: "request_id", type: dynamodb.AttributeType.STRING },
-    });
-    this.openrouterRequestsTable.addGlobalSecondaryIndex({
-      indexName: "state-created-index",
-      partitionKey: { name: "state", type: dynamodb.AttributeType.STRING },
-      sortKey: { name: "created_at", type: dynamodb.AttributeType.NUMBER },
-    });
-
-    // ChatGPT OAuth bootstrap tokens — Fernet-encrypted access + refresh
-    // tokens captured during signup, used once when staging the user's EFS
-    // codex/auth.json file at container provision. Per spec §5.1.
-    this.oauthTokensTable = createTable("OAuthTokensTable", "oauth-tokens", {
-      partitionKey: { name: "user_id", type: dynamodb.AttributeType.STRING },
-    });
-
-    // Short-lived OAuth dance state (PKCE verifier + state nonce). TTL'd, CMK, DESTROY (mirrors the webhook-event-dedup table).
-    this.oauthStateTable = createTable("OauthStateTable", "oauth-state", {
-      partitionKey: { name: "state", type: dynamodb.AttributeType.STRING },
-      timeToLiveAttribute: "ttl",
-      ephemeral: true,
-    });
-
-    // Secret-free integration STATUS index (credential-layer redesign). Holds
-    // which providers an owner has connected; the credential itself lives in
-    // Secrets Manager (backend-custodian providers) or the container EFS
-    // keyring (actor-refresh providers), never here. Same shape as the old
-    // connections vault (owner_id PK + provider SK) minus any credential payload.
-    this.integrationsTable = createTable("IntegrationsTable", "integrations", {
-      partitionKey: { name: "owner_id", type: dynamodb.AttributeType.STRING },
-      sortKey: { name: "provider", type: dynamodb.AttributeType.STRING },
-    });
-
-    // Paperclip companies — maps Isol8 user_id → their Paperclip company
-    // record + encrypted credentials. GSI by-status-purge-at lets the
-    // cleanup cron find disabled rows past their grace window. Per the
-    // paperclip-rebuild plan (Task 2). Customer-managed KMS to match the
-    // rest of this stack (deviates from the plan template's AWS_MANAGED).
-    this.paperclipCompaniesTable = createTable("PaperclipCompaniesTable", "paperclip-companies", {
-      partitionKey: { name: "user_id", type: dynamodb.AttributeType.STRING },
-    });
-    this.paperclipCompaniesTable.addGlobalSecondaryIndex({
-      indexName: "by-status-purge-at",
-      partitionKey: { name: "status", type: dynamodb.AttributeType.STRING },
-      sortKey: { name: "scheduled_purge_at", type: dynamodb.AttributeType.STRING },
-      projectionType: dynamodb.ProjectionType.KEYS_ONLY,
-    });
-    // GSI for org-scoped lookups: get_org_company_id, count_org_members,
-    // _find_org_owner, and the organization.deleted webhook sweep all
-    // partition by org_id. Projection ALL because the org-owner lookup
-    // and company_id resolution both consume full row data, not just keys.
-    this.paperclipCompaniesTable.addGlobalSecondaryIndex({
-      indexName: "by-org-id",
-      partitionKey: { name: "org_id", type: dynamodb.AttributeType.STRING },
-      projectionType: dynamodb.ProjectionType.ALL,
-    });
-    // Reverse lookup companyId -> member user_ids for the inbound Paperclip
-    // plugin-event receiver (routers/paperclip_events.py): push-notification
-    // audience resolution. INCLUDE status so the active-row filter needs no
-    // base-table chase (rows also carry encrypted creds — do not project ALL).
-    this.paperclipCompaniesTable.addGlobalSecondaryIndex({
-      indexName: "by-company-id",
-      partitionKey: { name: "company_id", type: dynamodb.AttributeType.STRING },
-      projectionType: dynamodb.ProjectionType.INCLUDE,
-      nonKeyAttributes: ["status"],
-    });
-
-    new cdk.CfnOutput(this, "OAuthTokensTableName", {
-      value: this.oauthTokensTable.tableName,
-      exportName: `${this.stackName}-oauth-tokens-table`,
-    });
-    new cdk.CfnOutput(this, "OauthStateTableName", {
-      value: this.oauthStateTable.tableName,
-      exportName: `${this.stackName}-oauth-state-table`,
-    });
-    new cdk.CfnOutput(this, "PaperclipCompaniesTableName", {
-      value: this.paperclipCompaniesTable.tableName,
-      exportName: `${this.stackName}-paperclip-companies-table`,
-    });
-    new cdk.CfnOutput(this, "IntegrationsTableName", {
-      value: this.integrationsTable.tableName,
-      exportName: `${this.stackName}-integrations-table`,
-    });
-
-    // Guided-setup requests from the public /request-setup form, one row per
-    // submission keyed by a random id; the backend writes via
-    // get_table("setup-requests"). Covered by the backend wildcard table grant.
-    createTable("SetupRequestsTable", "setup-requests", {
-      partitionKey: { name: "id", type: dynamodb.AttributeType.STRING },
-    });
-
-    // Integration credentials under a KMS envelope (integration_secret_store, phase 2 task 5):
-    // one row per owner + provider instead of one $0.40/mo Secrets Manager secret each. The row
-    // holds ciphertext only; the data key is wrapped by the stage CMK with {owner_id, provider}
-    // as encryption context. Covered by the backend wildcard table grant; swept by the owner wipe.
-    createTable("CredentialEnvelopesTable", "credential-envelopes", {
-      partitionKey: { name: "owner_id", type: dynamodb.AttributeType.STRING },
-      sortKey: { name: "provider", type: dynamodb.AttributeType.STRING },
     });
 
     // Spark voice transcripts (os_voice): one row per turn, keyed by person, `<startedAt>#<sessionId>#<seq>`.

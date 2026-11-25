@@ -17,7 +17,7 @@ async def test_disabled_when_agent_email_domain_empty(monkeypatch):
     fake_client = MagicMock()
     monkeypatch.setattr(ses_email, "_client", lambda: fake_client)
 
-    result = await ses_email.send_ses_reply(
+    result = await ses_email.send_ses_email(
         from_addr="friday@acme.isol8.co",
         to="alice@x.com",
         subject="Re: hi",
@@ -35,7 +35,7 @@ async def test_happy_path_returns_message_id_and_builds_raw_mime(monkeypatch):
     fake_client.send_email.return_value = {"MessageId": "ses-123"}
     monkeypatch.setattr(ses_email, "_client", lambda: fake_client)
 
-    result = await ses_email.send_ses_reply(
+    result = await ses_email.send_ses_email(
         from_addr="friday@acme.isol8.co",
         to="alice@x.com",
         subject="Re: Need help",
@@ -69,7 +69,7 @@ async def test_no_html_alternative_when_body_html_omitted(monkeypatch):
     fake_client.send_email.return_value = {"MessageId": "ses-456"}
     monkeypatch.setattr(ses_email, "_client", lambda: fake_client)
 
-    await ses_email.send_ses_reply(
+    await ses_email.send_ses_email(
         from_addr="friday@acme.isol8.co",
         to="alice@x.com",
         subject="Re: hi",
@@ -89,7 +89,7 @@ async def test_never_raises_when_client_send_errors(monkeypatch):
     fake_client.send_email.side_effect = RuntimeError("boom")
     monkeypatch.setattr(ses_email, "_client", lambda: fake_client)
 
-    result = await ses_email.send_ses_reply(
+    result = await ses_email.send_ses_email(
         from_addr="friday@acme.isol8.co",
         to="alice@x.com",
         subject="Re: hi",
@@ -109,7 +109,7 @@ async def test_never_raises_when_client_lookup_itself_errors(monkeypatch):
 
     monkeypatch.setattr(ses_email, "_client", _boom)
 
-    result = await ses_email.send_ses_reply(
+    result = await ses_email.send_ses_email(
         from_addr="friday@acme.isol8.co",
         to="alice@x.com",
         subject="Re: hi",
@@ -205,7 +205,7 @@ async def test_send_stamps_configuration_set_and_tenant(monkeypatch):
     fake = MagicMock()
     fake.send_email.return_value = {"MessageId": "m"}
     monkeypatch.setattr(ses_email, "_client", lambda: fake)
-    await ses_email.send_ses_reply(
+    await ses_email.send_ses_email(
         from_addr="f@a.isol8.co", to="t@x.y", subject="s", body_text="b", tenant_name="owner-user_1"
     )
     kwargs = fake.send_email.call_args.kwargs
@@ -222,7 +222,7 @@ async def test_send_omits_stamps_when_unset(monkeypatch):
     fake = MagicMock()
     fake.send_email.return_value = {"MessageId": "m"}
     monkeypatch.setattr(ses_email, "_client", lambda: fake)
-    await ses_email.send_ses_reply(from_addr="f@a.isol8.co", to="t@x.y", subject="s", body_text="b")
+    await ses_email.send_ses_email(from_addr="f@a.isol8.co", to="t@x.y", subject="s", body_text="b")
     kwargs = fake.send_email.call_args.kwargs
     assert "ConfigurationSetName" not in kwargs and "TenantName" not in kwargs
 
@@ -235,7 +235,7 @@ async def test_a_display_name_from_sends_the_bare_envelope_address(monkeypatch):
     fake_client.send_email.return_value = {"MessageId": "ses-1"}
     monkeypatch.setattr(ses_email, "_client", lambda: fake_client)
 
-    await ses_email.send_ses_reply(
+    await ses_email.send_ses_email(
         from_addr='"Friday · Acme agents" <agents@acme.isol8.co>', to="t@x.y", subject="s", body_text="b"
     )
 

@@ -8,15 +8,6 @@ import pytest
 from moto import mock_aws
 
 
-@pytest.fixture(autouse=True)
-def _stub_reconcile_dispatch(monkeypatch):
-    """Live subscription events dispatch a durable reconcile (a Step Functions execution), and a
-    dispatch that cannot start raises so Stripe redelivers. Stub it so no test reaches AWS."""
-    dispatch = AsyncMock(return_value=True)
-    monkeypatch.setattr("core.services.provision_dispatch.dispatch_reconcile", dispatch)
-    return dispatch
-
-
 @pytest.fixture
 def dedup_table_and_settings(monkeypatch):
     """Provision a moto-mocked dedup table and point the Settings at it."""
@@ -65,25 +56,9 @@ async def test_replayed_stripe_webhook_processed_once(dedup_table_and_settings, 
         lambda body, sig, secret: fake_event,
     )
 
-    # Spy on the handler run for customer.subscription.updated.
+    # Spy on the Spark handler.
     handler = AsyncMock(return_value=None)
-    with (
-        patch.dict(
-            "routers.billing.STRIPE_WEBHOOK_HANDLERS",
-            {"customer.subscription.updated": handler},
-        ),
-        patch(
-            "core.repositories.billing_repo.list_by_stripe_customer_id",
-            new=AsyncMock(
-                return_value=[
-                    {
-                        "owner_id": "user_replay_test",
-                        "stripe_customer_id": "cus_x",
-                    }
-                ]
-            ),
-        ),
-    ):
+    with patch("routers.billing.os_billing.stripe_handler", return_value=handler):
         body = json.dumps(fake_event)
         first = await async_client.post(
             "/api/v1/billing/webhooks/stripe",

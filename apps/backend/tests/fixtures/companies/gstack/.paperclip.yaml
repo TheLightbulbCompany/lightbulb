@@ -1,8 +1,0 @@
-schema: paperclip/v1
-agents:
-  release-engineer:
-    inputs:
-      env:
-        GH_TOKEN:
-          kind: secret
-          requirement: optional

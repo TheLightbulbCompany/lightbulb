@@ -44,7 +44,6 @@ function buildTemplate(envName: "dev" | "prod"): Template {
 
     const cluster = new ecs.Cluster(supportStack, "Cluster", { vpc });
 
-
     const taskDef = new ecs.FargateTaskDefinition(
       supportStack,
       "TaskDef",
@@ -88,21 +87,11 @@ function buildTemplate(envName: "dev" | "prod"): Template {
       backendLogGroupName: `/ecs/isol8-${envName}`,
       alb,
       targetGroup: tg,
-      engineTargetGroup: engineTg,
       cluster,
       databaseTables: {
         usersTable: `${tablePrefix(envName)}users`,
         containersTable: `${tablePrefix(envName)}containers`,
-        billingTable: `${tablePrefix(envName)}billing-accounts`,
-        companySlugsTable: `${tablePrefix(envName)}company-slugs`,
-        agentEmailAddressesTable: `${tablePrefix(envName)}agent-email-addresses`,
-        messagingTable: `${tablePrefix(envName)}messaging`,
-      },
-      messaging: {
-        workQueueName: `${resourcePrefix(envName)}openclaw-work.fifo`,
-        workDlqName: `${resourcePrefix(envName)}openclaw-work-dlq.fifo`,
-        projectorFunctionName: `${resourcePrefix(envName)}messaging-projector`,
-        appsyncEventApiId: "test-event-api-id",
+        sparkTranscriptsTable: `${tablePrefix(envName)}spark-transcripts`,
       },
     };
 
@@ -343,26 +332,7 @@ describe("ObservabilityStack", () => {
     // deleted in Task 10, plus W77-messaging-rpc-errors added in the
     // whole-branch review fix round) + 3 x 7 per-table DDB + remaining
     // AWS-native + 2 cost
-    expect(count).toBeGreaterThanOrEqual(65);
-  });
-
-  test("P35 pages on the bridge's member-key-contested stream", () => {
-    template.hasResourceProperties("AWS::CloudWatch::Alarm", {
-      AlarmName: "lightbulb-dev-P35-network-member-key-contested",
-      Namespace: "LightbulbAI",
-      MetricName: "network.member_key_contested",
-      Threshold: 1,
-      Period: 600,
-      ComparisonOperator: "GreaterThanOrEqualToThreshold",
-      Dimensions: Match.arrayWith([
-        Match.objectLike({ Name: "service", Value: "hermes-bridge" }),
-      ]),
-      AlarmActions: [{ Ref: Match.stringLikeRegexp("^AlertsPage") }],
-    });
-  });
-
-  test("creates 1 CloudWatch dashboard", () => {
-    template.resourceCountIs("AWS::CloudWatch::Dashboard", 1);
+    expect(count).toBeGreaterThanOrEqual(25);
   });
 
   // GuardDuty + Access Analyzer already exist at account level — not created by CDK.
@@ -453,18 +423,6 @@ describe("ObservabilityStack", () => {
   // page nobody: the inline-timeout emission landed on a dimension stream no
   // alarm watched. Pin the binding (metric + status dimension), not just the
   // name, so the alarm cannot silently drift off the emitter's stream.
-  test("P15 pages on the inline-provision-timeout stream", () => {
-    template.hasResourceProperties("AWS::CloudWatch::Alarm", {
-      AlarmName: "lightbulb-dev-P15-provision-inline-timeout",
-      Namespace: "LightbulbAI",
-      MetricName: "container.provision",
-      Threshold: 0,
-      Period: 60,
-      Dimensions: Match.arrayWith([
-        Match.objectLike({ Name: "status", Value: "inline_timeout" }),
-      ]),
-    });
-  });
 
   // The prod subscriptions CloudFormation believed it owned had been deleted
   // by SNS, and CFN still reported them CREATE_COMPLETE — only a NEW construct
@@ -529,57 +487,9 @@ describe("ObservabilityStack", () => {
 
   // The consumer is a Lambda; per-message failures are batch items, so Errors
   // means the function cannot run at all.
-  test("messaging work consumer pages on Lambda errors", () => {
-    template.hasResourceProperties("AWS::CloudWatch::Alarm", {
-      AlarmName: "lightbulb-dev-P19-messaging-worker-errors",
-      Namespace: "AWS/Lambda",
-      MetricName: "Errors",
-      Dimensions: [{ Name: "FunctionName", Value: "lightbulb-dev-openclaw-work-consumer" }],
-      Statistic: "Sum",
-      Period: 60,
-      Threshold: 1,
-      EvaluationPeriods: 5,
-      DatapointsToAlarm: 3,
-      ComparisonOperator: "GreaterThanOrEqualToThreshold",
-      TreatMissingData: "notBreaching",
-      AlarmActions: [{ Ref: Match.stringLikeRegexp("^AlertsPage") }],
-    });
-  });
-
-  test("warns at 70% of the GPT-Live concurrent-session tier", () => {
-    template.hasResourceProperties("AWS::CloudWatch::Alarm", {
-      AlarmName: "lightbulb-dev-W84-voice-sessions-near-tier",
-      Namespace: "LightbulbAI",
-      MetricName: "voice.calls.open",
-      Statistic: "Maximum",
-      Period: 60,
-      Threshold: 17.5,
-      EvaluationPeriods: 3,
-      DatapointsToAlarm: 2,
-      ComparisonOperator: "GreaterThanOrEqualToThreshold",
-      AlarmActions: [{ Ref: Match.stringLikeRegexp("^AlertsWarn") }],
-    });
-  });
 
   // The messaging table is the product's busiest table and had no DynamoDB
   // alarm at all until it joined the shared table set.
-  test("the messaging table is in the DynamoDB alarm set", () => {
-    for (const prefix of ["W40-ddb-read", "W41-ddb-write", "W42-ddb-errors"]) {
-      template.hasResourceProperties("AWS::CloudWatch::Alarm", {
-        AlarmName: `lightbulb-dev-${prefix}-messaging`,
-        Namespace: "AWS/DynamoDB",
-        Dimensions: [
-          { Name: "TableName", Value: `${tablePrefix("dev")}messaging` },
-        ],
-      });
-    }
-  });
-
-  test("dashboard has correct name", () => {
-    template.hasResourceProperties("AWS::CloudWatch::Dashboard", {
-      DashboardName: "lightbulb-dev-orr",
-    });
-  });
 
   test("ALB host-count alarms (W28/W48) carry BOTH LoadBalancer and TargetGroup dimensions", () => {
     // HealthyHostCount / UnHealthyHostCount are per-target-group metrics: an
@@ -611,27 +521,6 @@ describe("ObservabilityStack", () => {
     }
   });
 
-  test("W85 warns on ERROR lines from the voice routers", () => {
-    template.hasResourceProperties("AWS::Logs::MetricFilter", {
-      LogGroupName: "/ecs/isol8-dev",
-      FilterPattern: '{ $.level = "ERROR" && $.logger = "routers.voice*" }',
-      MetricTransformations: [
-        Match.objectLike({
-          MetricNamespace: "LightbulbAI/Voice/dev",
-          MetricName: "voice.errors",
-        }),
-      ],
-    });
-    template.hasResourceProperties("AWS::CloudWatch::Alarm", {
-      AlarmName: "lightbulb-dev-W85-voice-errors",
-      Namespace: "LightbulbAI/Voice/dev",
-      MetricName: "voice.errors",
-      Threshold: 3,
-      TreatMissingData: "notBreaching",
-      AlarmActions: [Match.anyValue()],
-    });
-  });
-
   // -------------------------------------------------------------------
   // Alarm <-> emitter dimension contract
   // -------------------------------------------------------------------
@@ -640,7 +529,7 @@ describe("ObservabilityStack", () => {
     const bindings = isol8MetricBindings(template);
     // Anti-vacuity: a CloudFormation shape change that stops the walker from
     // finding anything would otherwise make this test pass on an empty list.
-    expect(bindings.length).toBeGreaterThan(30);
+    expect(bindings.length).toBeGreaterThan(3);
 
     const offenders = bindings
       .map((b) => {
@@ -691,14 +580,6 @@ describe("ObservabilityStack", () => {
           `emitter publishes ${EMITTING_SERVICE[b.metricName] ?? DEFAULT_EMITTING_SERVICE}`,
       );
     expect(offenders).toEqual([]);
-
-    // Anti-vacuity, and the point of the whole test: the non-default case is
-    // actually present, so the map is not dead weight.
-    expect(
-      isol8MetricBindings(template).filter(
-        (b) => b.service === "messaging-projector",
-      ),
-    ).toHaveLength(1);
   });
 
   // The LightbulbAI dimension-contract test above cannot catch this: it only
@@ -752,47 +633,6 @@ describe("ObservabilityStack", () => {
   // live page-tier liveness alarm with it. The hash is not decoration: CDK
   // derives `<construct id><path hash>`, so pinning the bare
   // "ReaperHeartbeatAlarm" would cause the very deletion the pin prevents.
-  test("the backend-liveness alarm keeps its deployed logical id", () => {
-    for (const env of ["dev", "prod"] as const) {
-      expect(
-        Object.keys(
-          buildTemplate(env).findResources("AWS::CloudWatch::Alarm"),
-        ),
-      ).toContain("ReaperHeartbeatAlarm31FA055D");
-    }
-  });
-
-  test("P12 divides the heartbeat by the live instance count", () => {
-    template.hasResourceProperties("AWS::CloudWatch::Alarm", {
-      AlarmName: "lightbulb-dev-P12-backend-liveness",
-      ComparisonOperator: "LessThanThreshold",
-      Threshold: 8,
-      TreatMissingData: "breaching",
-      Metrics: Match.arrayWith([
-        Match.objectLike({ Id: "beatsPerInstance", Expression: "beats / hosts" }),
-        Match.objectLike({
-          Id: "beats",
-          MetricStat: Match.objectLike({
-            Stat: "SampleCount",
-            Metric: Match.objectLike({
-              Namespace: "LightbulbAI",
-              MetricName: "gateway.running.count",
-            }),
-          }),
-        }),
-        Match.objectLike({
-          Id: "hosts",
-          MetricStat: Match.objectLike({
-            Stat: "Minimum",
-            Metric: Match.objectLike({
-              Namespace: "AWS/ApplicationELB",
-              MetricName: "HealthyHostCount",
-            }),
-          }),
-        }),
-      ]),
-    });
-  });
 
   // NOTE: the former "reaper-crash alarm" test (Sum gateway.idle_checker.crash)
   // and the "scale-to-zero dashboard widgets" test (gateway.running.count.by_tier
@@ -803,44 +643,6 @@ describe("ObservabilityStack", () => {
   // and had been failing on main since Phase 1. The heartbeat test above still
   // holds — Phase 1 kept gateway.running.count, renaming its alarm to
   // backend-liveness.
-});
-
-describe("ObservabilityStack — watchdog alarms P48-P51 (dev + prod, spec 11)", () => {
-  const dev = buildTemplate("dev");
-  const alarm = (id: string) =>
-    (Object.values(dev.findResources("AWS::CloudWatch::Alarm")) as any[])
-      .map((a) => a.Properties)
-      .find((p) => String(p.AlarmName).startsWith(`lightbulb-dev-${id}-`));
-
-  test("dev synth has P48-P51 with thresholds, all warn", () => {
-    const p48 = alarm("P48");
-    expect(p48).toMatchObject({
-      AlarmName: "lightbulb-dev-P48-watchdog-silent",
-      MetricName: "watchdog.tick",
-      Statistic: "SampleCount",
-      Threshold: 0,
-      Period: 900,
-      EvaluationPeriods: 1,
-      ComparisonOperator: "LessThanOrEqualToThreshold",
-      TreatMissingData: "breaching",
-    });
-    expect(alarm("P49")).toMatchObject({ MetricName: "watchdog.write", Threshold: 300, Period: 3600 });
-    expect(alarm("P50")).toMatchObject({ MetricName: "watchdog.cap_hit", Threshold: 0, Period: 3600 });
-    expect(alarm("P51")).toMatchObject({ MetricName: "watchdog.judge.cost", Threshold: 5, Period: 86400 });
-    for (const id of ["P49", "P50", "P51"]) {
-      expect(alarm(id).ComparisonOperator).toBe("GreaterThanThreshold");
-      expect(alarm(id).TreatMissingData).toBe("notBreaching");
-    }
-    for (const id of ["P48", "P49", "P50", "P51"]) {
-      expect(alarm(id).AlarmActions).toEqual([{ Ref: expect.stringMatching(/^AlertsWarn/) }]);
-      const dims = Object.fromEntries(alarm(id).Dimensions.map((d: any) => [d.Name, d.Value]));
-      expect(dims).toEqual({ env: "dev", service: "lightbulb-backend" });
-    }
-  });
-
-  test("prod synth has the watchdog alarms", () => {
-    expect(JSON.stringify(PROD_TEMPLATE.findResources("AWS::CloudWatch::Alarm"))).toMatch(/watchdog/i);
-  });
 });
 
 describe("ObservabilityStack — CloudWatch alarms can publish", () => {
@@ -1081,50 +883,6 @@ describe("ObservabilityStack — prod-only paths", () => {
   // W79 (warn, <$5) + P25 (page, <$1) — dev and prod share ONE OpenRouter
   // account, so these are account-wide and PROD-GATED like the Bedrock/Budget
   // alarms above (an ungated pair would double-page on the same balance).
-  test("prod pages on OpenRouter balance <$1 and warns <$5", () => {
-    template.hasResourceProperties("AWS::CloudWatch::Alarm", {
-      AlarmName: "lightbulb-prod-W79-openrouter-balance-low",
-      Namespace: "LightbulbAI",
-      MetricName: "openrouter.account.balance_usd",
-      Threshold: 5,
-      ComparisonOperator: "LessThanThreshold",
-      TreatMissingData: "notBreaching",
-      AlarmActions: [{ Ref: Match.stringLikeRegexp("^AlertsWarn") }],
-    });
-    template.hasResourceProperties("AWS::CloudWatch::Alarm", {
-      AlarmName: "lightbulb-prod-P25-openrouter-balance-critical",
-      Namespace: "LightbulbAI",
-      MetricName: "openrouter.account.balance_usd",
-      Threshold: 1,
-      ComparisonOperator: "LessThanThreshold",
-      TreatMissingData: "notBreaching",
-      AlarmActions: [{ Ref: Match.stringLikeRegexp("^AlertsPage") }],
-    });
-  });
-
-  test.each(["dev", "prod"] as const)("%s warns when the OpenRouter settlement worker keeps failing", (env) => {
-    buildTemplate(env).hasResourceProperties("AWS::CloudWatch::Alarm", {
-      AlarmName: `lightbulb-${env}-W80-openrouter-settlement-errors`,
-      Namespace: "AWS/Lambda",
-      MetricName: "Errors",
-      Dimensions: [{ Name: "FunctionName", Value: `lightbulb-${env}-openrouter-settlement` }],
-      Threshold: 3,
-      ComparisonOperator: "GreaterThanOrEqualToThreshold",
-      AlarmActions: [{ Ref: Match.stringLikeRegexp("^AlertsWarn") }],
-    });
-  });
-
-  test.each(["dev", "prod"] as const)("%s warns when OpenRouter settlement overshoots its reservation", (env) => {
-    buildTemplate(env).hasResourceProperties("AWS::CloudWatch::Alarm", {
-      AlarmName: `lightbulb-${env}-W81-openrouter-settlement-overshoot`,
-      Namespace: "LightbulbAI",
-      MetricName: "openrouter.settlement.overshoot_microcents",
-      Dimensions: Match.arrayWith([{ Name: "service", Value: "openrouter-settlement" }]),
-      Threshold: 0,
-      ComparisonOperator: "GreaterThanThreshold",
-      AlarmActions: [{ Ref: Match.stringLikeRegexp("^AlertsWarn") }],
-    });
-  });
 
   test.each(["dev", "prod"] as const)("%s warns when a deleted person's tenant wipe fails a step", (env) => {
     buildTemplate(env).hasResourceProperties("AWS::CloudWatch::Alarm", {
@@ -1145,91 +903,5 @@ describe("ObservabilityStack — prod-only paths", () => {
     expect(rendered).not.toContain("openrouter.account.balance_usd");
   });
 
-  test("P29 pages on 2+ free-tier first-turn failures in 2 h", () => {
-    template.hasResourceProperties("AWS::CloudWatch::Alarm", {
-      AlarmName: "lightbulb-prod-P29-free-tier-first-turn-failures",
-      MetricName: "messaging.run.first_turn_failed",
-      Period: 7200,
-      Threshold: 2,
-      ComparisonOperator: "GreaterThanOrEqualToThreshold",
-      AlarmActions: [{ Ref: Match.stringLikeRegexp("^AlertsPage") }],
-    });
-  });
-
-  test("P26 pages when most Jev decisions fail in an hour, from 3 decisions up", () => {
-    // Prod peaks at 12-29 decisions per hour: a floor above that never fires (2026-09-27).
-    template.hasResourceProperties("AWS::CloudWatch::Alarm", {
-      AlarmName: "lightbulb-prod-P26-jev-decision-error-rate",
-      Threshold: 50,
-      AlarmActions: [{ Ref: Match.stringLikeRegexp("^AlertsPage") }],
-      Metrics: Match.arrayWith([
-        Match.objectLike({
-          Expression: "IF(all >= 3, 100 * (FILL(e, 0) + FILL(f, 0) + FILL(t, 0) + FILL(r, 0)) / all, 0)",
-        }),
-        Match.objectLike({ Id: "all", MetricStat: Match.objectLike({ Period: 3600 }) }),
-        // The gateway's 403 (the 2026-09-27 outage) is metered as "forbidden", not "error".
-        Match.objectLike({
-          Id: "f",
-          MetricStat: Match.objectLike({
-            Metric: Match.objectLike({
-              Dimensions: Match.arrayWith([{ Name: "outcome", Value: "forbidden" }]),
-            }),
-          }),
-        }),
-      ]),
-    });
-  });
 });
 
-describe("ObservabilityStack: engine service alarms", () => {
-  const dev = buildTemplate("dev");
-  const alarms = Object.values(dev.findResources("AWS::CloudWatch::Alarm")).map((r: any) => r.Properties);
-  const engineDims = (a: any) => JSON.stringify(a.Dimensions ?? []).includes("EngineTG");
-
-  test.each([
-    ["HTTPCode_Target_5XX_Count", "W87-engine-5xx"],
-    ["UnHealthyHostCount", "W88-engine-unhealthy-hosts"],
-  ])("%s on the engine target group warns", (metric, name) => {
-    const alarm = alarms.find((a) => a.AlarmName?.endsWith(name));
-    expect(alarm).toBeDefined();
-    expect(alarm.MetricName).toBe(metric);
-    expect(alarm.Namespace).toBe("AWS/ApplicationELB");
-    expect(engineDims(alarm)).toBe(true);
-    expect(JSON.stringify(alarm.AlarmActions)).toContain("AlertsWarn");
-  });
-
-  test("W89 warns when no engine target is healthy for 10 min, not on one Spot replacement", () => {
-    const alarm = alarms.find((a) => a.AlarmName?.endsWith("W89-engine-healthy-hosts"));
-    expect(alarm).toBeDefined();
-    expect(alarm).toMatchObject({
-      MetricName: "HealthyHostCount",
-      Statistic: "Maximum",
-      Period: 300,
-      Threshold: 1,
-      ComparisonOperator: "LessThanThreshold",
-      EvaluationPeriods: 2,
-      DatapointsToAlarm: 2,
-      TreatMissingData: "breaching",
-    });
-    expect(engineDims(alarm)).toBe(true);
-    expect(JSON.stringify(alarm.AlarmActions)).toContain("AlertsWarn");
-  });
-
-  test("W89 pages in prod after 3 min with no healthy engine target", () => {
-    const prod = Object.values(buildTemplate("prod").findResources("AWS::CloudWatch::Alarm")).map((r: any) => r.Properties);
-    const alarm = prod.find((a) => a.AlarmName?.endsWith("W89-engine-healthy-hosts"));
-    expect(alarm).toMatchObject({
-      MetricName: "HealthyHostCount",
-      Statistic: "Maximum",
-      Period: 60,
-      Threshold: 1,
-      ComparisonOperator: "LessThanThreshold",
-      EvaluationPeriods: 3,
-      DatapointsToAlarm: 3,
-      TreatMissingData: "breaching",
-    });
-    expect(engineDims(alarm)).toBe(true);
-    expect(JSON.stringify(alarm.AlarmActions)).toContain("AlertsPage");
-    expect(JSON.stringify(alarm.AlarmActions)).not.toContain("AlertsWarn");
-  });
-});

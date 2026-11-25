@@ -95,13 +95,8 @@ export function buildApiStack(
     env,
     environment,
     vpc: network.vpc,
-    albV2: network.albV2,
     albHttpListenerArn: network.albHttpListenerArn,
     albSecurityGroup: network.albSecurityGroup,
-    clerkIssuerSecretName: `lightbulb/${environment}/clerk_issuer`,
-    // Pass secret name + KMS key ARN as plain strings — same cross-stack
-    // pattern as lightbulb-stage.ts (avoids KMS auto-grant cycles).
-    paperclipKmsKeyArn: `arn:aws:kms:us-east-1:877352799272:key/test-key`,
   });
 
   return api;

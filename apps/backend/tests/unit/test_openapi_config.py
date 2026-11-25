@@ -4,7 +4,7 @@ Tests for OpenAPI configuration on the FastAPI app.
 Validates that the generated OpenAPI spec includes:
 - Correct title, version, and description
 - Server list with all environments
-- Tag descriptions for all 8 route groups
+- Tag descriptions
 - BearerAuth (JWT) security scheme
 """
 
@@ -12,13 +12,7 @@ import pytest
 from httpx import AsyncClient, ASGITransport
 
 
-EXPECTED_TAGS = [
-    "users",
-    "billing",
-    "container",
-    "debug",
-    "health",
-]
+EXPECTED_TAGS = ["health"]
 
 
 @pytest.fixture
@@ -54,10 +48,8 @@ class TestOpenAPIMetadata:
 
     @pytest.mark.asyncio
     async def test_description(self, openapi_spec):
-        """Spec should have a non-empty description mentioning agents."""
-        description = openapi_spec["info"]["description"]
-        assert len(description) > 0
-        assert "agent" in description.lower()
+        """Spec should have a non-empty description naming Spark."""
+        assert "spark" in openapi_spec["info"]["description"].lower()
 
 
 class TestOpenAPIServers:

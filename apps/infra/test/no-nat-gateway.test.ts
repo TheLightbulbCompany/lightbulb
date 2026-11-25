@@ -20,7 +20,7 @@ function synthStage(env: "dev" | "prod") {
   return { network: get("-network"), service: get("-service") };
 }
 
-const BACKEND_SERVICES = ["backend", "temporal-worker", "temporal-watchdog"];
+const BACKEND_SERVICES = ["backend"];
 
 function assertNoNat(t: { network: Template; service: Template }) {
   t.network.resourceCountIs("AWS::EC2::NatGateway", 0);
@@ -70,7 +70,7 @@ function assertNoNat(t: { network: Template; service: Template }) {
 }
 
 describe("no NAT gateway (phase 2 task 6)", () => {
-  test.each(["dev", "prod"] as const)("%s: 0 NAT gateways, backend + Temporal tasks get a public IP", (env) => {
+  test.each(["dev", "prod"] as const)("%s: 0 NAT gateways, the backend task gets a public IP", (env) => {
     assertNoNat(synthStage(env));
   });
 });

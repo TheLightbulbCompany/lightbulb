@@ -6,10 +6,6 @@ on:
     branches: [main]
     paths:
       - 'apps/backend/**'
-      - 'apps/infra/lambda/ses-inbound/**'
-      - 'apps/infra/lambda/pub-authorizer/**'
-      - 'apps/infra/lambda/messaging-projector/**'
-      - 'apps/infra/lambda/openrouter-settlement/**'
       - '.github/workflows/backend.yml'
 
 # `github.ref` is refs/pull/<n>/merge, so a new push supersedes only its own PR's run.
@@ -53,26 +49,10 @@ jobs:
       - name: Run tests
         env:
           CLERK_ISSUER: https://test.clerk.accounts.dev
-          HUGGINGFACE_TOKEN: test_token
           AWS_DEFAULT_REGION: us-east-1
           AWS_ACCESS_KEY_ID: testing
           AWS_SECRET_ACCESS_KEY: testing
           DEBUG: "false"
           BACKEND_TEST_SHARD: ${{ matrix.shard }}/4
         run: uv run pytest tests/ -q -n auto
-        working-directory: apps/backend
-
-      # The Python Lambdas' own suites: the backend suite does not collect them.
-      - name: Run Lambda tests
-        if: matrix.shard == 1 && (success() || failure())
-        env:
-          AWS_DEFAULT_REGION: us-east-1
-          AWS_ACCESS_KEY_ID: testing
-          AWS_SECRET_ACCESS_KEY: testing
-        run: |
-          for l in ses-inbound pub-authorizer messaging-projector; do
-            uv run pytest "../infra/lambda/$l" -q
-          done
-          # Settlement uses unittest, not pytest.
-          uv run python -m unittest discover -s ../infra/lambda/openrouter-settlement -t ../infra/lambda/openrouter-settlement -v
         working-directory: apps/backend

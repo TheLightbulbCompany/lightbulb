@@ -13,9 +13,7 @@ from core.services.webhook_dedup import (
     WebhookDedupResult,
     begin_event_processing,
     complete_event_processing,
-    get_active_top_up,
     record_event_or_skip,
-    set_active_top_up_status,
 )
 
 
@@ -189,25 +187,3 @@ async def test_processing_lease_retries_only_after_expiry_and_completed_events_s
         await complete_event_processing("msg_delete", first)
     await complete_event_processing("msg_delete", replacement)
     assert await begin_event_processing("msg_delete", source="clerk", lease_seconds=30) is None
-
-
-@pytest.mark.asyncio
-async def test_old_request_acknowledgement_cannot_advance_new_pointer(dedup_table, monkeypatch):
-    monkeypatch.setenv("WEBHOOK_DEDUP_TABLE", dedup_table)
-    table = boto3.resource("dynamodb", region_name="us-east-1").Table(dedup_table)
-    table.put_item(
-        Item={
-            "event_id": "metronome-top-up-active:org_1",
-            "kind": "metronome-top-up-active",
-            "owner_id": "org_1",
-            "intent_event_id": "intent_B",
-            "status": "pending",
-            "metronome_customer_id": "metro_1",
-            "metronome_contract_id": "contract_1",
-        }
-    )
-    assert (
-        await set_active_top_up_status("org_1", "metro_1", "contract_1", "requested", intent_event_id="intent_A")
-        is False
-    )
-    assert (await get_active_top_up("org_1"))["status"] == "pending"

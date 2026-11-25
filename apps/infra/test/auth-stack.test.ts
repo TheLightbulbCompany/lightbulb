@@ -41,29 +41,3 @@ describe("AuthStack — gog file-keyring password secret", () => {
   });
 });
 
-describe("AuthStack — gate bearer HMAC key", () => {
-  test("creates a dedicated generated secret, separate from encryption_key", () => {
-    buildStack("dev").hasResourceProperties("AWS::SecretsManager::Secret", {
-      Name: "lightbulb/dev/gate_bearer_hmac_key",
-      GenerateSecretString: Match.objectLike({ PasswordLength: 64, ExcludePunctuation: true }),
-    });
-  });
-});
-
-describe("AuthStack — hook grant signing key", () => {
-  test("creates a separate generated secret", () => {
-    buildStack("dev").hasResourceProperties("AWS::SecretsManager::Secret", {
-      Name: "lightbulb/dev/hook_grant_signing_key",
-      GenerateSecretString: Match.objectLike({ PasswordLength: 64, ExcludePunctuation: true }),
-    });
-  });
-});
-
-describe("AuthStack: engine service token", () => {
-  test("engine_service_token secret exists", () => {
-    buildStack("dev").hasResourceProperties("AWS::SecretsManager::Secret", {
-      Name: "lightbulb/dev/engine_service_token",
-      GenerateSecretString: Match.objectLike({ PasswordLength: 64, ExcludePunctuation: true }),
-    });
-  });
-});

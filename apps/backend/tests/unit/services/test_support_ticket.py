@@ -19,19 +19,6 @@ async def test_submit_ticket_enriches_and_sends(monkeypatch):
 
     with (
         patch(
-            "core.services.support_ticket.container_repo.get_by_owner_id",
-            new=AsyncMock(
-                return_value={
-                    "status": "running",
-                    "agentcore_runtime_arn": "arn:aws:bedrock-agentcore:us-east-1:1:runtime/r1",
-                }
-            ),
-        ),
-        patch(
-            "core.services.support_ticket.billing_repo.get_by_owner_id",
-            new=AsyncMock(return_value={"subscription_status": "active", "provider_choice": "bedrock_claude"}),
-        ),
-        patch(
             "core.services.support_ticket.email_service.send_email",
             new=AsyncMock(return_value="email_1"),
         ) as mock_send,
@@ -48,13 +35,6 @@ async def test_submit_ticket_enriches_and_sends(monkeypatch):
     assert "Bug report" in body
     assert "```json" in body
     assert "user_123" in body
-    # The runtime ARN, not the retired ECS service name -- it is the one identifier an operator
-    # pastes straight into ``aws bedrock-agentcore get-agent-runtime`` from the ticket. A field
-    # the row no longer carries would render as null on every ticket, silently.
-    assert "arn:aws:bedrock-agentcore:us-east-1:1:runtime/r1" in body
-    assert "service_name" not in body
-    assert "running" in body  # container status
-    assert "bedrock_claude" in body  # provider
     assert "380894" in body  # posthog person link
 
 
@@ -64,8 +44,6 @@ async def test_submit_ticket_escapes_user_message(monkeypatch):
     req = SupportTicketRequest(message="<script>alert(1)</script>")
 
     with (
-        patch("core.services.support_ticket.container_repo.get_by_owner_id", new=AsyncMock(return_value=None)),
-        patch("core.services.support_ticket.billing_repo.get_by_owner_id", new=AsyncMock(return_value=None)),
         patch(
             "core.services.support_ticket.email_service.send_email",
             new=AsyncMock(return_value="id"),
@@ -79,33 +57,6 @@ async def test_submit_ticket_escapes_user_message(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_submit_ticket_survives_enrichment_failure():
-    """A repo/DynamoDB failure during enrichment must not break delivery —
-    the ticket still sends, just without that metadata (no 500)."""
-    auth = AuthContext(user_id="user_1", email="x@y.com", human_session=True)
-    req = SupportTicketRequest(message="help")
-
-    with (
-        patch(
-            "core.services.support_ticket.container_repo.get_by_owner_id",
-            new=AsyncMock(side_effect=RuntimeError("ddb down")),
-        ),
-        patch(
-            "core.services.support_ticket.billing_repo.get_by_owner_id",
-            new=AsyncMock(side_effect=RuntimeError("ddb down")),
-        ),
-        patch(
-            "core.services.support_ticket.email_service.send_email",
-            new=AsyncMock(return_value="email_1"),
-        ) as mock_send,
-    ):
-        result = await support_ticket.submit_ticket(auth, req)
-
-    assert result == "email_1"
-    mock_send.assert_awaited_once()
-
-
-@pytest.mark.asyncio
 async def test_undelivered_ticket_is_logged_with_its_content(caplog):
     """The email is the ONLY capture path — no ticket table exists — so a failed
     send must leave support something actionable, not just a user id."""
@@ -113,8 +64,6 @@ async def test_undelivered_ticket_is_logged_with_its_content(caplog):
     req = SupportTicketRequest(message="I'd like to use Instagram.", category="Integration request")
 
     with (
-        patch("core.services.support_ticket.container_repo.get_by_owner_id", new=AsyncMock(return_value=None)),
-        patch("core.services.support_ticket.billing_repo.get_by_owner_id", new=AsyncMock(return_value=None)),
         patch("core.services.support_ticket.email_service.send_email", new=AsyncMock(return_value=None)),
         caplog.at_level("WARNING", logger="core.services.support_ticket"),
     ):
@@ -137,8 +86,6 @@ async def test_undelivered_log_bounds_the_message(caplog):
     req = SupportTicketRequest(message="A" * 8000, category="Other")
 
     with (
-        patch("core.services.support_ticket.container_repo.get_by_owner_id", new=AsyncMock(return_value=None)),
-        patch("core.services.support_ticket.billing_repo.get_by_owner_id", new=AsyncMock(return_value=None)),
         patch("core.services.support_ticket.email_service.send_email", new=AsyncMock(return_value=None)),
         caplog.at_level("WARNING", logger="core.services.support_ticket"),
     ):

@@ -23,14 +23,11 @@ path, so every failure is swallowed (logged) rather than raised.
 
 from __future__ import annotations
 
-import asyncio
 import logging
-import uuid
 from typing import Any
 
 
 from core.config import settings
-from core.services.trial_cap import utc_today
 
 logger = logging.getLogger(__name__)
 
@@ -128,115 +125,3 @@ def _send(client: Any, distinct_id: str, event: str, props: dict, event_uuid: st
             client.capture(distinct_id, event, props)
     except Exception:
         logger.warning("PostHog capture failed (event=%s owner=%s)", event, distinct_id, exc_info=True)
-
-
-# Bounded in-process dedup for once-per-owner-per-day capture events
-# (``trial_cap_reached``, ``trial_expired_block``) — both fire from a
-# decision point a caller re-evaluates on every poll/turn once the
-# blocking condition holds (the daily cap, an expired local trial), so
-# without this an owner stuck behind either block would spam the same
-# event on every retry. Insertion-ordered dict used as a bounded FIFO set
-# — same idiom as ``run_analytics._seen_run_ids``.
-# In-process, SINGLE-BACKEND-INSTANCE scope: a restart (or a fleet running
-# more than one backend task) simply re-fires the event once more per
-# instance — acceptable for a funnel count, where "roughly once a day"
-# beats persisting extra DynamoDB state for exact-once dedup.
-_DAILY_DEDUP_CAP = 4096
-_daily_dedup_seen: dict[tuple[str, str, str], None] = {}
-
-
-def capture_once_per_owner_per_day(
-    *,
-    owner_id: str,
-    event: str,
-    properties: dict | None = None,
-    distinct_id: str | None = None,
-) -> None:
-    """``capture_product_event`` gated to at most once per (event, owner,
-    UTC day) via the in-process dedup set above.
-
-    ``owner_id`` is the workspace (a Clerk org id) and is stamped on the event
-    as ``workspace_id``; the PostHog PERSON is ``distinct_id`` — the human who
-    hit the door — so the event lands on the same timeline as the browser's
-    ``$identify``. Callers with no human in hand (server-side wake paths)
-    omit it and the workspace's creator becomes the person (see the identity
-    rule in ``capture_product_event``).
-    """
-    key = (event, owner_id, utc_today())
-    if key in _daily_dedup_seen:
-        return
-    # Insert BEFORE capturing so a burst of near-simultaneous callers (a
-    # retried request racing the original) can't all slip through as if
-    # none of them had been seen yet.
-    _daily_dedup_seen[key] = None
-    while len(_daily_dedup_seen) > _DAILY_DEDUP_CAP:
-        oldest = next(iter(_daily_dedup_seen))
-        del _daily_dedup_seen[oldest]
-    props = {"workspace_id": owner_id, **(properties or {})}
-    capture_product_event(distinct_id=distinct_id or owner_id, event=event, properties=props)
-
-
-# ---------------------------------------------------------------------------
-# trial_first_agent_response — a trial owner's first agent reply, once ever
-# ---------------------------------------------------------------------------
-
-# Owners this process has already RESOLVED (fired, already stamped, or not
-# on a trial). Added only after the durable check answered, never before an
-# await, so a cancelled task cannot leave an owner marked resolved with
-# nothing emitted. Unbounded on purpose: one string per owner per process.
-_first_response_done: set[str] = set()
-
-# Same-day belt for the durable gate below — PostHog dedups a repeated uuid
-# only within one UTC day (ClickHouse sorts on toDate(timestamp)), so this is
-# NOT a lifetime key; the billing-row CAS is what makes the event once-ever.
-_TRIAL_FIRST_RESPONSE_NS = uuid.uuid5(uuid.NAMESPACE_URL, "lightbulb:trial_first_agent_response")
-
-
-def schedule_trial_first_agent_response(owner_id: str, distinct_id: str | None = None) -> "asyncio.Task[None] | None":
-    """Spawn the once-ever ``trial_first_agent_response`` capture for an owner.
-
-    Synchronous and I/O-free — safe on the gateway reader loop. Returns the
-    task for the caller's drain set, or None when the PostHog bridge is off
-    (unit tests, local dev) or this process already resolved the owner.
-
-    ``distinct_id`` is the human whose message the agent answered, so the
-    event lands on their PostHog timeline; ``owner_id`` (the workspace) rides
-    along as ``workspace_id``. Without a human in hand the workspace id is
-    the person.
-
-    Invariants:
-    - Once ever per owner: gated by a conditional write of
-      ``first_agent_response_at`` on the billing row, which also records the
-      time-to-first-value. Survives restarts, deploys and races; the uuid is
-      only a same-day belt.
-    - Trial workspaces only (``subscription_status == trial_local`` at the
-      moment of the reply); a paid workspace never fires it.
-    - Never raises; a failed write is logged and the owner is NOT memoised, so
-      a later reply retries.
-    """
-    if not settings.POSTHOG_PROJECT_WRITE_KEY:
-        return None
-    if owner_id in _first_response_done:
-        return None
-    return asyncio.create_task(_capture_trial_first_agent_response(owner_id, distinct_id))
-
-
-async def _capture_trial_first_agent_response(owner_id: str, distinct_id: str | None = None) -> None:
-    try:
-        from core.repositories import billing_repo
-
-        won = await billing_repo.mark_trial_first_agent_response(owner_id)
-    except asyncio.CancelledError:
-        raise
-    except Exception:
-        logger.warning("trial_first_agent_response: billing CAS failed for %s", owner_id, exc_info=True)
-        return
-    _first_response_done.add(owner_id)
-    if not won:
-        return
-    capture_product_event(
-        distinct_id=distinct_id or owner_id,
-        event="trial_first_agent_response",
-        properties={"workspace_id": owner_id},
-        event_uuid=str(uuid.uuid5(_TRIAL_FIRST_RESPONSE_NS, f"{owner_id}:{utc_today()}")),
-    )

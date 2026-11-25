@@ -2,9 +2,7 @@
 
 Everything the platform sends leaves through ``send_ses_email``:
 
-- agent replies, FROM a per-owner subdomain address
-  (``agents@{slug}.{domain}``) — via the ``send_ses_reply`` wrapper
-- the app's own welcome / support-ticket mail, FROM ``hello@isol8.co`` /
+- the app's own support-ticket mail, FROM ``hello@isol8.co`` /
   ``tickets@isol8.co`` — via ``email_service.send_email``, which adds the
   app-mail concerns (``[ENV]`` subject tagging) on top of this transport
 
@@ -178,28 +176,3 @@ async def send_ses_email(
         put_metric("email.send", dimensions={"result": "error", "kind": kind})
         logger.exception("send_ses_email failed for %s to %s", kind, _log_to(kind, to))
         return None
-
-
-async def send_ses_reply(
-    *,
-    from_addr: str,
-    to: str,
-    subject: str,
-    body_text: str,
-    body_html: str | None = None,
-    headers: dict[str, str] | None = None,
-    tenant_name: str | None = None,
-) -> str | None:
-    """Send an agent reply. Thin wrapper over send_ses_email that pins the
-    metric kind — kept as its own name because ``agent_mail_reply`` treats a
-    None return as the load-bearing "not_sent" signal."""
-    return await send_ses_email(
-        from_addr=from_addr,
-        to=to,
-        subject=subject,
-        body_text=body_text,
-        body_html=body_html,
-        headers=headers,
-        kind="agent_reply_ses",
-        tenant_name=tenant_name,
-    )

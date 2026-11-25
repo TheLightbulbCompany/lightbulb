@@ -46,36 +46,13 @@ const bindDevHostToPreview = (host: string) => ({
 // a recursive rm at the start of every run (install-pnpm/run.ts). Two jobs
 // setting pnpm up at the same moment race that removal and one dies with
 // "ENOTEMPTY: directory not empty, rmdir '/home/prasiddha/setup-pnpm/...'".
-// Structural rather than a rare interleaving: DeployVercelProd and
-// DeployCompanyProd share a `needs` set, so they start in the same second --
-// both at 07:12:17Z in run 33239214668, where VercelProd was the one that died.
-// `runner.temp` is per-runner-instance, so it keeps them apart. Same fix that
+// // `runner.temp` is per-runner-instance, so it keeps them apart. Same fix that
 // frontend-ci.yml and mobile-ci.yml already carry.
 const setupPnpmStep = () => ({
   name: "Setup pnpm",
   uses: "pnpm/action-setup@v6",
   with: { dest: "${{ runner.temp }}/setup-pnpm" },
 });
-
-// The holding-company site (apps/company, thelightbulb.company) is a second
-// Vercel project: same token and org, its own project id. Like the frontend,
-// its Root Directory (apps/company) is a PROJECT SETTING on Vercel and the CLI
-// runs from the repo root — building inside apps/company instead makes the
-// output trace pnpm's store at a path relative to the app, and
-// `vercel deploy --prebuilt` then fails with "File does not exist:
-// node_modules/.pnpm/…" (reproduced 2026-08-29).
-const companyVercelEnv = { ...vercelEnv, VERCEL_PROJECT_ID: "${{ secrets.VERCEL_PROJECT_ID_COMPANY }}" };
-// The product took the apex (2026-10); the holding-company page lives on `about.`.
-const COMPANY_DOMAIN = "about.thelightbulb.company";
-const companyVercelSteps = (prod: boolean) => [
-  // Vercel needs no git credentials; do not leave the token in the checkout.
-  { name: "Checkout", uses: "actions/checkout@v7", with: { "persist-credentials": false } },
-  setupPnpmStep(),
-  { name: "Setup Node.js", uses: "actions/setup-node@v7", with: { "node-version": "20", cache: "pnpm" } },
-  { name: "Install Vercel CLI", run: "npm install -g vercel@63.1.0" },
-  { name: "Pull Vercel Settings", run: `vercel pull --yes${prod ? " --environment=production" : ""} --token=$VERCEL_TOKEN`, env: companyVercelEnv },
-  { name: "Build Company Site", run: `vercel build${prod ? " --prod" : ""} --token=$VERCEL_TOKEN`, env: companyVercelEnv },
-];
 
 // cdk-pipelines-github's `Runner` has a private constructor and its only
 // self-hosted factory force-prepends the `self-hosted` label, so there is no
@@ -184,28 +161,11 @@ const pipeline = new GitHubWorkflow(app, "isol8-pipeline", {
       "rm -rf cdk.out",
       "npx cdk synth",
     ],
-    // Stripe flat-fee Price IDs (voice plan, Spark) are baked into the per-env ECS task env at
-    // synth time by service-stack.ts. Empty string is tolerated: that plan cannot be bought.
+    // Spark's Stripe Price ID is baked into the per-env ECS task env at synth time by
+    // service-stack.ts. Empty string is tolerated: Spark then offers no checkout link.
     env: {
-      STRIPE_VOICE_PLAN_PRICE_ID_DEV: "${{ secrets.STRIPE_VOICE_PLAN_PRICE_ID_DEV }}",
-      STRIPE_VOICE_PLAN_PRICE_ID_PROD: "${{ secrets.STRIPE_VOICE_PLAN_PRICE_ID_PROD }}",
       STRIPE_SPARK_PRICE_ID_DEV: "${{ secrets.STRIPE_SPARK_PRICE_ID_DEV }}",
       STRIPE_SPARK_PRICE_ID_PROD: "${{ secrets.STRIPE_SPARK_PRICE_ID_PROD }}",
-      OPENROUTER_WORKSPACE_ID_DEV: "${{ vars.OPENROUTER_WORKSPACE_ID_DEV }}",
-      OPENROUTER_WORKSPACE_ID_PROD: "${{ vars.OPENROUTER_WORKSPACE_ID_PROD }}",
-      OPENROUTER_MANAGED_MODEL_ID_DEV: "${{ vars.OPENROUTER_MANAGED_MODEL_ID_DEV }}",
-      OPENROUTER_MANAGED_MODEL_ID_PROD: "${{ vars.OPENROUTER_MANAGED_MODEL_ID_PROD }}",
-      OPENROUTER_MODEL_POLICY_JSON_DEV: "${{ vars.OPENROUTER_MODEL_POLICY_JSON_DEV }}",
-      OPENROUTER_MODEL_POLICY_JSON_PROD: "${{ vars.OPENROUTER_MODEL_POLICY_JSON_PROD }}",
-      // Same secrets the Vercel build job already consumes (lines below).
-      // Re-exported here so service-stack.ts can bake the publishable key
-      // into the backend container env at synth time — the paperclip-proxy
-      // bootstrap HTML needs it to load the Clerk SDK.
-      NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY_DEV: "${{ secrets.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY_DEV }}",
-      NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY_PROD: "${{ secrets.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY_PROD }}",
-      // OpenAI plugin portal's domain token, served at /.well-known/openai-apps-challenge. Empty = 404.
-      OPENAI_APPS_CHALLENGE_TOKEN_DEV: "${{ vars.OPENAI_APPS_CHALLENGE_TOKEN_DEV }}",
-      OPENAI_APPS_CHALLENGE_TOKEN_PROD: "${{ vars.OPENAI_APPS_CHALLENGE_TOKEN_PROD }}",
     },
     primaryOutputDirectory: "apps/infra/cdk.out",
   }),
@@ -299,13 +259,6 @@ pipeline.addStageWithGitHubOptions(devStage, {
           run: `vercel alias \${{ steps.vercel-deploy-dev.outputs.DEPLOY_URL }} dev.${LAUNCH_DOMAIN} --token=$VERCEL_TOKEN`,
           env: vercelEnv,
         },
-      ],
-    }),
-    // The holding-company site. Preview only in dev.
-    new GitHubActionStep("DeployCompanyDev", {
-      jobSteps: [
-        ...companyVercelSteps(false),
-        { name: "Deploy to Vercel (Preview)", run: "vercel deploy --prebuilt --archive=tgz --token=$VERCEL_TOKEN", env: companyVercelEnv },
       ],
     }),
   ],
@@ -431,29 +384,6 @@ pipeline.addStageWithGitHubOptions(prodStage, {
         },
       ],
     }),
-    // Gated by the same JsonPatch mechanism as DeployVercelProd (below).
-    new GitHubActionStep("DeployCompanyProd", {
-      jobSteps: [
-        ...companyVercelSteps(true),
-        {
-          name: "Deploy to Vercel (Production)",
-          id: "company-deploy-prod",
-          run: 'DEPLOY_URL=$(vercel deploy --prebuilt --archive=tgz --prod --token=$VERCEL_TOKEN) && echo "DEPLOY_URL=$DEPLOY_URL" >> $GITHUB_OUTPUT',
-          env: companyVercelEnv,
-        },
-        // Register before aliasing — the same SSO-wall trap as the product apex.
-        {
-          name: `Register ${COMPANY_DOMAIN} project domain`,
-          run: `vercel domains add ${COMPANY_DOMAIN} company --force --token="$VERCEL_TOKEN"`,
-          env: companyVercelEnv,
-        },
-        {
-          name: `Alias to ${COMPANY_DOMAIN}`,
-          run: `vercel alias \${{ steps.company-deploy-prod.outputs.DEPLOY_URL }} ${COMPANY_DOMAIN} --token=$VERCEL_TOKEN`,
-          env: companyVercelEnv,
-        },
-      ],
-    }),
   ],
 });
 
@@ -484,7 +414,6 @@ pipeline.workflowFile.patch(
   // it cannot land on the wrong job: rename the step and RFC 6902 fails to
   // resolve the path and synth throws, rather than gating something else.
   JsonPatch.add("/jobs/prod-DeployVercelProd/if", PROD_PROMOTE_IF),
-  JsonPatch.add("/jobs/prod-DeployCompanyProd/if", PROD_PROMOTE_IF),
 
   // Queue pending runs instead of evicting them.
   //

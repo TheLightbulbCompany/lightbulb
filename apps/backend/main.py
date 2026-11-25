@@ -5,8 +5,6 @@ load_dotenv()
 
 import asyncio
 import logging
-import os
-import time
 from contextlib import asynccontextmanager
 
 from core.observability.logging import configure_logging
@@ -14,8 +12,6 @@ from core.observability.logging import configure_logging
 configure_logging(level="INFO")
 
 from fastapi import Depends, FastAPI
-from fastapi.exception_handlers import request_validation_exception_handler
-from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 from fastapi.openapi.utils import get_openapi
@@ -23,47 +19,15 @@ from fastapi.responses import JSONResponse
 
 from core.auth import get_current_user
 from core.config import settings
-from core.observability.e2e_correlation import E2ECorrelationMiddleware
-from core.repositories import container_repo
-from core.services.messaging import ApiProblem
-from core.services.update_service import run_scheduled_worker
-from core.voice import engine_hooks
 from routers import (
-    agent_mail,
-    apple_iap,
-    automations,
-    voice_meet,
-    voice_owner,
-    voice_phone,
+    admin,
     billing,
-    config,
-    connections,
-    container,
-    debug,
-    engine_callbacks,
-    hooks,
-    huddles,
-    meet_audio,
-    meet_bot,
-    meetings,
-    messaging,
-    meta_webhook,
-    metronome_webhook,
-    oauth,
     ops,
     os as os_router,
     os_billing as os_billing_router,
-    platform_info,
-    runtime_rpc,
-    ses_inbound,
-    setup_requests,
     support_tickets,
-    users,
     webhooks,
-    website_logins,
-    workspace_files,
 )
-from routers.teams import router as teams_router
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 logger = logging.getLogger(__name__)
@@ -118,98 +82,18 @@ class SecurityHeadersMiddleware:
         await self.app(scope, receive, send_with_headers)
 
 
-async def _running_count_gauge_loop():
-    """Emit gateway.running.count every 60 s: the P12 backend-liveness canary expects a steady stream.
-
-    P12 binds the fleet {env, service} identity only -- the emitting ECS task id is
-    NOT a metric dimension: it is a new CloudWatch metric identity per task per
-    deploy, the same unbounded-cardinality class core/observability/metrics.py's
-    _DENIED_DIMENSIONS already refuses for container_id. It rides a structured log
-    field instead, so a dead loop is still attributable in Logs Insights without
-    minting a fresh metric identity on every deploy. This loop deliberately stays
-    UNADMITTED (no pass-admission lease): it is the liveness canary, and a canary
-    admitted once per window only proves that *some* instance is alive, not that
-    this one is.
-
-    Also piggybacks the OpenRouter account-balance check here (throttled to
-    every ~15 min via a monotonic timestamp) rather than adding a second
-    scheduler -- see core.services.openrouter_keys.check_account_balance.
-    """
-    from core.observability.metrics import gauge
-    from core.services.openrouter_keys import check_account_balance
-
-    instance = os.getenv("HOSTNAME") or "local"
-    balance_check_interval_s = 900
-    last_balance_check = time.monotonic()  # first check after 15 min of uptime, never at boot (tests boot the app)
-    while True:
-        try:
-            rows = await container_repo.get_by_status("running")
-            gauge("gateway.running.count", len(rows))
-            logger.info("running_count", extra={"instance": instance, "count": len(rows)})
-        except Exception:
-            logger.warning("running_gauges loop iteration failed", exc_info=True)
-        if time.monotonic() - last_balance_check >= balance_check_interval_s:
-            last_balance_check = time.monotonic()
-            await check_account_balance()
-        await asyncio.sleep(60)
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan handler."""
-    # Startup
     logger.info("Starting application...")
     # A starting app instance is not shutting down. Resetting here (not only at
-    # shutdown) keeps the flag scoped to this instance's lifecycle, so a reused-app
-    # lifespan (e.g. one ASGI test client per hypothesis example) never inherits a
-    # stale "shutting down" from a prior shutdown.
+    # shutdown) keeps the flag scoped to this instance's lifecycle.
     set_shutting_down(False)
 
-    from core.services.durable_activity import run_trial_idle_sweeper
-    from core.services.run_ledger import run_ledger_sweeper
-    from core.services.browser_control import run_autosave_sweeper
-    from core.services.memory_api import run_memory_sweeper
-    from core.voice.voice_calls import voice_call_sweeper
     from core.voice.os_voice import os_voice_sweeper
 
-    scheduled_worker_task = asyncio.create_task(run_scheduled_worker())
-    idle_sweeper_stop = asyncio.Event()
-    idle_sweeper_task = asyncio.create_task(run_trial_idle_sweeper(idle_sweeper_stop))
-    run_sweeper_stop = asyncio.Event()
-    run_sweeper_task = asyncio.create_task(run_ledger_sweeper(run_sweeper_stop))
-    browser_autosave_stop = asyncio.Event()
-    browser_autosave_task = asyncio.create_task(run_autosave_sweeper(browser_autosave_stop))
-    voice_sweeper_stop = asyncio.Event()
-    voice_sweeper_task = asyncio.create_task(voice_call_sweeper(voice_sweeper_stop))
     os_voice_stop = asyncio.Event()
     os_voice_task = asyncio.create_task(os_voice_sweeper(os_voice_stop))
-    memory_sweeper_stop = asyncio.Event()
-    memory_sweeper_task = asyncio.create_task(run_memory_sweeper(memory_sweeper_stop))
-
-    gauge_task = asyncio.create_task(_running_count_gauge_loop())
-
-    # Register background tasks so /admin/system/health can surface their state.
-    from core.services import system_health
-
-    system_health.BACKGROUND_TASKS.update(
-        {
-            "scheduled_worker": scheduled_worker_task,
-            "trial_idle_sweeper": idle_sweeper_task,
-            "run_ledger_sweeper": run_sweeper_task,
-            "browser_autosave_sweeper": browser_autosave_task,
-            "voice_call_sweeper": voice_sweeper_task,
-            "os_voice_sweeper": os_voice_task,
-            "memory_sweeper": memory_sweeper_task,
-            "running_gauges": gauge_task,
-        }
-    )
-
-    # Temporal client, connected in the background so startup never waits on it:
-    # until it lands, or if it fails (bad key, Cloud outage), get_client() raises TemporalUnavailable and
-    # every existing route still serves. temporalio is imported only in this branch.
-    from core.temporal.client import connect_and_set
-
-    temporal_task = asyncio.create_task(connect_and_set())
 
     # Startup complete — flip the liveness gate so /health returns 200.
     global _started
@@ -217,107 +101,28 @@ async def lifespan(app: FastAPI):
 
     yield
 
-    # Shutdown — request every producer's stop before draining. (The openclaw-work
-    # FIFO is drained by its own Lambda, scripts/work_lambda.py, not by this process.)
     logger.info("Shutting down application...")
-    if temporal_task is not None:
-        from core.temporal.client import set_client as set_temporal_client
-
-        temporal_task.cancel()
-        set_temporal_client(None)
     set_shutting_down(True)  # 503 new business requests; /health stays green for ALB drain
-    from core.services.update_service import request_worker_stop
-
-    request_worker_stop()
-    idle_sweeper_stop.set()
-    run_sweeper_stop.set()
-    browser_autosave_stop.set()
-    voice_sweeper_stop.set()
     os_voice_stop.set()
-    memory_sweeper_stop.set()
-    gauge_task.cancel()
     try:
         async with asyncio.timeout(20):
-            # No provision-dispatch handoff: dispatch holds no per-owner
-            # state (Phase 1 deleted the inline runner) — a roll mid-dispatch
-            # just drops that poll's submit, and the next poll retries.
-            cleanup = [
-                scheduled_worker_task,
-                idle_sweeper_task,
-                run_sweeper_task,
-                browser_autosave_task,
-                voice_sweeper_task,
-                os_voice_task,
-                memory_sweeper_task,
-                gauge_task,
-            ]
-            await asyncio.gather(*cleanup, return_exceptions=True)
+            await asyncio.gather(os_voice_task, return_exceptions=True)
     except asyncio.TimeoutError:
         logger.error("Graceful shutdown exceeded 20s budget; cancelling process-local workers")
-        for task in (
-            scheduled_worker_task,
-            idle_sweeper_task,
-            run_sweeper_task,
-            browser_autosave_task,
-            voice_sweeper_task,
-            os_voice_task,
-            memory_sweeper_task,
-            gauge_task,
-        ):
-            task.cancel()
-        await asyncio.gather(
-            scheduled_worker_task,
-            idle_sweeper_task,
-            run_sweeper_task,
-            browser_autosave_task,
-            voice_sweeper_task,
-            os_voice_task,
-            memory_sweeper_task,
-            gauge_task,
-            return_exceptions=True,
-        )
-    finally:
-        system_health.BACKGROUND_TASKS.clear()
+        os_voice_task.cancel()
+        await asyncio.gather(os_voice_task, return_exceptions=True)
 
 
 openapi_tags = [
-    {
-        "name": "users",
-        "description": "User registration and sync.",
-    },
-    {
-        "name": "billing",
-        "description": "Billing, usage tracking, and subscription management.",
-    },
-    {
-        "name": "container",
-        "description": "OpenClaw container RPC proxy for the control panel.",
-    },
-    {
-        "name": "integrations",
-        "description": "MCP server and ClawHub integration management.",
-    },
-    {
-        "name": "messaging",
-        "description": "Canonical multiplayer rooms, messages, and runtime commands.",
-    },
-    {
-        "name": "debug",
-        "description": "Dev-only container provisioning.",
-    },
     {
         "name": "health",
         "description": "Root and health check endpoints for verifying API availability.",
     },
 ]
 
-engine_hooks.register()  # engine code in this process asks the products through core.engine.hooks
-
 app = FastAPI(
     title="Lightbulb API",
-    description=(
-        "AI agent platform powered by OpenClaw. Personal agents with persistent memory and streaming LLM inference."
-    ),
+    description=("Backend for Spark, the Mac voice assistant."),
     version="2.0.0",
     # Schema off in prod like /docs — nothing consumes it there, and it maps
     # the full route inventory (admin/debug/webhook shapes) for free.
@@ -335,27 +140,6 @@ app = FastAPI(
     openapi_tags=openapi_tags,
     lifespan=lifespan,
 )
-
-
-@app.exception_handler(ApiProblem)
-async def messaging_api_problem_handler(request, exc: ApiProblem):
-    return JSONResponse(status_code=exc.status_code, content=exc.body())
-
-
-@app.exception_handler(RequestValidationError)
-async def messaging_validation_error_handler(request, exc: RequestValidationError):
-    if request.url.path.startswith(
-        (
-            "/api/v1/messaging",
-            "/api/v1/runtime",
-            # huddles too: a rejected turn would echo a live transcript.
-            "/api/v1/internal/huddles",
-            "/api/v1/internal/voice",
-        )
-    ):
-        problem = ApiProblem("INVALID_REQUEST", "Request validation failed.")
-        return JSONResponse(status_code=problem.status_code, content=problem.body())
-    return await request_validation_exception_handler(request, exc)
 
 
 # Request-ID middleware — generates/propagates X-Request-ID for log correlation.
@@ -412,9 +196,6 @@ app.add_middleware(
         "Content-Type",
         "Authorization",
         "X-Requested-With",
-        "X-E2E-Run-Id",
-        "Mcp-Session-Id",
-        "Mcp-Protocol-Version",
     ],
     # Expose X-Request-ID (set on every response by RequestContextMiddleware) so
     # cross-origin browser JS can read it. Without this, response.headers.get(
@@ -422,13 +203,8 @@ app.add_middleware(
     # gap in local dev). The frontend attaches recent request IDs to support
     # tickets for log correlation. Named explicitly rather than "*" as the
     # mode-agnostic, future-proof choice — unrelated to credentials.
-    expose_headers=["X-Request-ID", "Mcp-Session-Id", "WWW-Authenticate"],
+    expose_headers=["X-Request-ID", "WWW-Authenticate"],
 )
-
-# E2E correlation middleware — binds X-E2E-Run-Id header to log context so
-# every log line emitted while handling an e2e harness request carries the
-# same e2e_run_id field. No-op for traffic that doesn't send the header.
-app.add_middleware(E2ECorrelationMiddleware)
 
 # Security response headers (nosniff / frame-options / referrer-policy). Added
 # last so it wraps outermost and stamps every response, including ones a
@@ -464,147 +240,17 @@ def custom_openapi():
 app.openapi = custom_openapi
 
 # Routes
-app.include_router(users.router, prefix="/api/v1/users", tags=["users"])
 app.include_router(os_router.router, prefix="/api/v1/os", tags=["os"])
 app.include_router(os_billing_router.router, prefix="/api/v1/os", tags=["os"])
-
-# Clerk webhook events (user lifecycle)
+# Clerk webhook (user.deleted ends the person's Spark account)
 app.include_router(webhooks.router, prefix="/api/v1/webhooks", tags=["webhooks"])
-
-# SES-inbound agent-email ingest (provisioned agent email, inbound leg).
-# A Lambda parses raw SES mail and POSTs the clean JSON payload here.
-app.include_router(ses_inbound.router, prefix="/api/v1/webhooks", tags=["webhooks"])
-
-# Browser/mobile canonical messaging and the guarded HTTP runtime bridge.
-app.include_router(messaging.router, prefix="/api/v1", tags=["messaging"])
-# The engine service's calls back into Lightbulb Phone and Meetings (service bearer).
-app.include_router(engine_callbacks.router, prefix="/api/v1/internal/engine", tags=["engine"])
-app.include_router(runtime_rpc.router, prefix="/api/v1/runtime", tags=["messaging"])
-
-# Recall's per-person Meet audio: the bv- raw-WS door (/api/v1/gateway/*), the only raw-WS path that edge forwards.
-app.include_router(meet_audio.router, prefix="/api/v1/gateway", tags=["meetings"])
-
-# Billing routes
+# Stripe webhook (Spark subscriptions) at /api/v1/billing/webhooks/stripe
 app.include_router(billing.router, prefix="/api/v1/billing", tags=["billing"])
-app.include_router(huddles.router, prefix="/api/v1", tags=["huddles"])
-app.include_router(meetings.router, prefix="/api/v1", tags=["meetings"])
-app.include_router(meet_bot.router, prefix="/api/v1", tags=["meetings"])
-
-# Apple In-App Purchase: the app's link endpoint + Apple's notification
-# receiver. The router carries its own /billing and /webhooks paths because the
-# two live on different auth models (Clerk token vs JWS signature), so it is
-# mounted at the API root rather than under either prefix.
-app.include_router(apple_iap.router, prefix=settings.API_V1_STR, tags=["billing"])
-
-# Support ticket capture
+# The site's /support page
 app.include_router(support_tickets.router, prefix="/api/v1/support", tags=["support"])
-
-# Metronome ledger webhook (low-balance -> local fast-gate flag, Phase 2).
-# Route is /webhooks/metronome; mounting under API_V1_STR yields
-# /api/v1/webhooks/metronome alongside the Clerk/Stripe webhook surface.
-app.include_router(metronome_webhook.router, prefix=settings.API_V1_STR, tags=["billing"])
-
-# Container lifecycle management (GET /status, POST /retry)
-app.include_router(container.router, prefix="/api/v1/container", tags=["container"])
-
-# AgentCore Browser live view (GET /browser/live-view) -- lives in routers/container.py but
-# mounts on its own prefix, since the panel's URL is /api/v1/browser/live-view.
-app.include_router(container.browser_router, prefix="/api/v1/browser", tags=["browser"])
-app.include_router(container.browser_internal_router, prefix="/api/v1/internal/browser", tags=["browser"])
-app.include_router(container.provision_events_router, prefix="/api/v1/internal/provisioning", tags=["container"])
-
-# Workspace website logins (the store behind every agent's browser vault)
-app.include_router(website_logins.internal_router, prefix="/api/v1/internal/website-logins", tags=["browser"])
-
-# Config read/patch over the owner's roster profiles
-app.include_router(config.router, prefix="/api/v1/config", tags=["config"])
-
-
-# Connections (Bucket A paste-key integrations: list / connect / disconnect)
-app.include_router(connections.router, prefix="/api/v1", tags=["connections"])
-# Public OAuth callback surface (provider redirects the unauthenticated browser here)
-app.include_router(connections.oauth_router, prefix="/api/v1", tags=["connections"])
-
-# 1-click Automations trigger seeding (connect an app, pick an event, get a
-# pre-filled webhook-triggered routine) + the Stripe guided-paste whsec_
-# write. See routers/automations.py.
-app.include_router(automations.router, prefix="/api/v1", tags=["automations"])
-app.include_router(voice_phone.router, prefix="/api/v1", tags=["voice"])  # the phone receptionist worker
-app.include_router(voice_meet.router, prefix="/api/v1", tags=["voice"])  # the meeting agent worker
-app.include_router(voice_owner.router, prefix="/api/v1", tags=["voice"])  # owner mode: Live in the DM is the Router
-
-# Workspace file browser (the agent's S3 Hermes profile)
-app.include_router(workspace_files.router, prefix="/api/v1/container", tags=["container"])
-
-# Debug routes (dev-only container provisioning)
-app.include_router(debug.router, prefix="/api/v1/debug", tags=["debug"])
-
-
-# ChatGPT OAuth (device-code flow for BYO ChatGPT-token billing)
-app.include_router(oauth.router, prefix="/api/v1")
-
-# Webhook automation fires at /api/v1/hooks/t/{owner_id}/{public_id}: no edge auth, the
-# backend verifies each delivery against its HOOK# row. See routers/hooks.py.
-app.include_router(hooks.router, prefix="/api/v1/hooks", tags=["hooks"])
-# App-LEVEL Meta ingress at /api/v1/hooks/meta — deliberately ownerless, because
-# a Meta app has ONE callback URL for every user. Routed by the asset id in the
-# payload, authenticated by the app-secret signature. See routers/meta_webhook.py.
-app.include_router(meta_webhook.router, prefix="/api/v1/hooks", tags=["hooks"])
-# Human operator diagnostics; every route requires a Clerk platform admin.
+# Platform-admin console: /admin/me and the Spark metrics tab (/ops/spark).
+app.include_router(admin.router, prefix="/api/v1")
 app.include_router(ops.router, prefix="/api/v1/ops", tags=["ops"])
-# Public /request-setup form (unauthenticated, rate-limited per IP).
-app.include_router(setup_requests.router, prefix="/api/v1/setup-requests", tags=["setup-requests"])
-
-# Public connectable catalog (integrations + channels) read live by the baked
-# isol8 skill from inside per-owner containers. No auth — non-sensitive catalog
-# data. See routers/platform_info.py.
-app.include_router(platform_info.router, prefix="/api/v1/platform-info", tags=["platform-info"])
-
-# Agent mail (container routes under /u/{owner_id}/… use hook-token auth;
-# /addresses routes use Clerk). Policy lives in core/services/agent_mail_send.
-app.include_router(agent_mail.router, prefix="/api/v1/agent-mail", tags=["agent-mail"])
-
-# Admin dashboard — every endpoint gated by Depends(require_platform_admin).
-from routers import admin as admin_router  # noqa: E402
-
-app.include_router(admin_router.router, prefix="/api/v1")
-
-# Teams BFF — native UI for Paperclip. The router itself carries the
-# /teams prefix; mounting under /api/v1 yields /api/v1/teams/*.
-app.include_router(teams_router, prefix="/api/v1")
-
-# Stripe Link Agent Wallet (every route 404s until Link's OAuth client is configured).
-from routers import company_link_wallet  # noqa: E402
-
-app.include_router(company_link_wallet.router, prefix="/api/v1/company/link-wallet", tags=["company-link-wallet"])
-app.include_router(
-    company_link_wallet.internal_router, prefix="/api/v1/internal/link-wallet", tags=["company-link-wallet"]
-)
-
-from routers import company_slug  # noqa: E402
-
-app.include_router(company_slug.router, prefix="/api/v1/company", tags=["company-slug"])
-
-# Super-agent Questions (wave2-Q): /needs-you, /tasks/{id}/questions. Mounted before routers/tasks.py.
-from routers import questions as questions_router  # noqa: E402
-
-app.include_router(questions_router.router, prefix="/api/v1", tags=["questions"])
-
-# The owner's voice surfaces (spec 2026-11-07 §5): /voice/timeline, /voice/agent.
-from routers import voice as voice_router  # noqa: E402
-
-app.include_router(voice_router.router, prefix="/api/v1", tags=["voice"])
-
-# Super-agent task API (wave2-O Task 8, C15). After questions so /tasks/{id}/questions stays theirs.
-from routers import tasks as tasks_router  # noqa: E402
-
-app.include_router(tasks_router.router, prefix="/api/v1", tags=["tasks"])
-
-# A person reviews (lists, deletes) what the workspace's agents remember.
-from routers import memory as memory_router  # noqa: E402
-
-app.include_router(memory_router.router, prefix="/api/v1/memory", tags=["memory"])
-app.include_router(memory_router.internal_router, prefix="/api/v1/internal/memory", tags=["memory"])
 
 
 @app.get(

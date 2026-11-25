@@ -1,7 +1,6 @@
 """Build, enrich, and deliver a support ticket.
 
-Identity + account/container state are derived server-side from the JWT +
-repos — the client is never trusted for them. Delivered via email_service to
+Identity is derived server-side from the JWT — the client is never trusted for it. Delivered via email_service to
 the support@ inbox, From a dedicated tickets@ identity so the agent can
 filter app tickets from direct customer mail. Best-effort: returns the email
 id or None.
@@ -15,7 +14,6 @@ from datetime import datetime, timedelta, timezone
 from core.auth import AuthContext, resolve_owner_id
 from core.config import settings
 from core.observability.logging import request_id_var
-from core.repositories import billing_repo, container_repo
 from core.services import cloudwatch_url, email_service
 from schemas.support import SupportTicketRequest
 
@@ -35,21 +33,9 @@ def _admin_user_url(user_id: str) -> str:
     return f"https://admin.{settings.frontend_host}/admin/users/{user_id}"
 
 
-async def _safe_fetch(repo_get, owner_id: str) -> dict | None:
-    """Enrichment is best-effort: a repo / DynamoDB hiccup must degrade
-    gracefully (omit that metadata), never 500 the ticket submission."""
-    try:
-        return await repo_get(owner_id)
-    except Exception:
-        logger.warning("ticket enrichment fetch failed for %s", owner_id, exc_info=True)
-        return None
-
-
 async def _build_metadata(auth: AuthContext, req: SupportTicketRequest) -> dict:
     owner_id = resolve_owner_id(auth)
     now = datetime.now(timezone.utc)
-    container = await _safe_fetch(container_repo.get_by_owner_id, owner_id)
-    billing = await _safe_fetch(billing_repo.get_by_owner_id, owner_id)
 
     cloudwatch = cloudwatch_url.build_insights_url(
         user_id=auth.user_id,
@@ -69,20 +55,6 @@ async def _build_metadata(auth: AuthContext, req: SupportTicketRequest) -> dict:
             "email": auth.email,
             "owner_id": owner_id,
             "env": settings.ENVIRONMENT or "local",
-        },
-        "billing": {
-            "subscription_status": (billing or {}).get("subscription_status"),
-            "provider_choice": (billing or {}).get("provider_choice"),
-            "byo_provider": (billing or {}).get("byo_provider"),
-        },
-        "container": {
-            "status": (container or {}).get("status"),
-            "substatus": (container or {}).get("substatus"),
-            # The runtime ARN, not the retired ECS service name: it is what an operator pastes
-            # into ``aws bedrock-agentcore get-agent-runtime`` from the ticket.
-            "agentcore_runtime_arn": (container or {}).get("agentcore_runtime_arn"),
-            "last_error": (container or {}).get("last_error"),
-            "last_provisioned_at": (container or {}).get("updated_at"),
         },
         "client": {
             "route": req.route,

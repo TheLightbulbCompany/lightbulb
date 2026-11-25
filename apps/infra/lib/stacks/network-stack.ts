@@ -8,7 +8,6 @@ import * as sns from "aws-cdk-lib/aws-sns";
 import * as wafv2 from "aws-cdk-lib/aws-wafv2";
 import { Construct } from "constructs";
 import { alertTopicArn, resourcePrefix } from "../table-names";
-import enginePaths from "../engine-paths.json";
 
 export interface NetworkStackProps extends cdk.StackProps {
   environment: string;
@@ -309,12 +308,6 @@ export class NetworkStack extends cdk.Stack {
       resourceArn: named.alb.loadBalancerArn,
       webAclArn: webAcl.attrArn,
     });
-
-    this.albSecurityGroup.addIngressRule(
-      ec2.Peer.ipv4(this.vpc.vpcCidrBlock),
-      ec2.Port.tcp(8081),
-      "CloudFront VPC origin to browser-view relay (path-capped by listener rule)",
-    );
   }
 
   private buildAlb(
@@ -381,48 +374,10 @@ export class NetworkStack extends cdk.Stack {
       defaultTargetGroups: [targetGroup],
     });
 
-    // Browser-view listener (:8081) — the ONLY WebSocket-capable door to the
-    // backend. api[-env] is an API Gateway HTTP API, and HTTP APIs do not pass
-    // WebSocket upgrades (verified live: the upgrade dies with an ALB 400 and
-    // never reaches uvicorn), so the machine gateway relay
-    // (routers/gateway_relay.py) rides CloudFront → VPC origin → this listener
-    // instead (api-stack.ts, BrowserViewDistribution). The construct ids keep
-    // their BrowserView names: renaming one replaces the listener and the
-    // distribution, and the container-browser live view they were named for is
-    // gone, not the door.
-    //
-    // A dedicated port because path scoping must live HERE: CloudFront VPC
-    // origins put their ENIs behind an AWS-managed security group that only
-    // exists after the first deploy, so the ALB ingress rule admits the VPC
-    // CIDR — meaning anything in-VPC (per-user containers included) can reach
-    // this port. The fixed-404 default + single path rule cap that at exactly
-    // the one Clerk-authenticated relay route, which is the same exposure the
-    // public CloudFront door grants anyway. Widening this listener's routing
-    // widens what a hostile container can reach.
-    const browserViewListener = alb.addListener("BrowserViewListener", {
-      port: 8081,
-      protocol: elbv2.ApplicationProtocol.HTTP,
-      defaultAction: elbv2.ListenerAction.fixedResponse(404, {
-        contentType: "application/json",
-        messageBody: '{"detail":"Not found"}',
-      }),
-    });
-    browserViewListener.addAction("BrowserViewRelay", {
-      priority: 10,
-      // The raw machine-relay WS door (routers/gateway_relay.py — desktop node
-      // hosts) is the only route left on this listener:
-      // /api/v1/browser-view/* went with routers/browser_view.py, so the cap is
-      // narrowed to match. A device or service token authenticates at the
-      // application layer; widening this pattern widens what a hostile in-VPC
-      // caller can reach.
-      conditions: [elbv2.ListenerCondition.pathPatterns(["/api/v1/gateway/*"])],
-      action: elbv2.ListenerAction.forward([targetGroup]),
-    });
-
-    // Engine listener (:8082): the engine service (`uvicorn engine_main:app`, service-stack) for the
-    // backend-image processes in the VPC. API Gateway integrates with the :80 listener only, so nothing
-    // public reaches it. `open: false` keeps CDK from adding a 0.0.0.0/0 rule; service-stack adds the
-    // one ingress rule, from the service SG.
+    // ponytail: one-deploy pin. The engine service is gone, but the service and observability
+    // stacks still import this target group on their deployed templates and deploy after this
+    // stack, so CloudFormation refuses to drop it this time. Delete it, the :8082 listener and
+    // the exportValue lines in a follow-up after one green deploy.
     const engineTargetGroup = new elbv2.ApplicationTargetGroup(this, "EngineTargetGroup", {
       vpc: this.vpc,
       port: 8000,
@@ -445,15 +400,11 @@ export class NetworkStack extends cdk.Stack {
       open: false,
       defaultTargetGroups: [engineTargetGroup],
     });
-    // The agent runtime calls one base URL (the public API, through API Gateway to :80). Its callbacks that land on
-    // engine code go to the engine service by path (engine-paths.json); every other path, the engine's own
-    // /api/v1/internal/engine/* callbacks into the products included, stays on the backend (the default action).
-    // The engine's SG admits the ALB on 8000, which covers this listener too.
-    httpListener.addAction("EngineRuntimePaths", {
-      priority: 10,
-      conditions: [elbv2.ListenerCondition.pathPatterns(enginePaths.paths)],
-      action: elbv2.ListenerAction.forward([engineTargetGroup]),
-    });
+    this.exportValue(engineTargetGroup.targetGroupArn);
+    // Same pin: the deployed api (bv- door) and service stacks import the ALB's ARN and DNS name.
+    this.exportValue(alb.loadBalancerArn);
+    this.exportValue(alb.loadBalancerDnsName);
+    this.exportValue(engineTargetGroup.targetGroupFullName);
 
     return { alb, targetGroup, engineTargetGroup, httpListenerArn: httpListener.listenerArn, httpsListenerArn };
   }

@@ -1,7 +1,6 @@
 # Favicons — the adaptive pack
 
-From the designer's favicon pack (trimmed from its USAGE.md). Two marks:
-`product` (Lightbulb app) and `company` (thelightbulb.company).
+From the designer's favicon pack (trimmed from its USAGE.md).
 
 - The adaptive SVGs carry both colourways and switch on
   `prefers-color-scheme`. Modern browsers use the SVG and ignore the PNGs;
@@ -19,11 +18,6 @@ From the designer's favicon pack (trimmed from its USAGE.md). Two marks:
 conventions, no manual `<link>`s:
 `icon.svg` (adaptive), `icon1.png` (32), `icon2.png` (16), `icon.png` (512),
 `apple-icon.png` (opaque 180), `favicon.ico`.
-
-**Company site** (`apps/company/public/`) — declared via `metadata.icons` in
-`src/app/layout.tsx`:
-`favicon.svg` (adaptive), `favicon-32.png`, `favicon-16.png`, `icon-512.png`,
-`apple-touch-icon.png` (opaque 180).
 
 ## Regenerating
 

@@ -494,13 +494,22 @@ def store_bucket() -> str:
     return f"lightbulb-{settings.ENVIRONMENT}-spark-store"
 
 
-def _literal(v: str | int) -> str:
-    """An Athena execution-parameter value: strings must be single-quoted (quotes doubled), numbers are bare."""
+def _literal(v: str | int | datetime) -> str:
+    """An Athena execution-parameter value: strings must be single-quoted (quotes doubled), numbers are bare, a
+    datetime is a `TIMESTAMP '...'` literal in UTC (what a `timestamp` column compares against)."""
+    if isinstance(v, datetime):
+        return "TIMESTAMP '" + v.astimezone(UTC).strftime("%Y-%m-%d %H:%M:%S.%f") + "'"
     return str(int(v)) if isinstance(v, int) else "'" + v.replace("'", "''") + "'"
 
 
-async def query(sql: str, params: list[str | int], timeout_s: float = 20, unfiltered: bool = False) -> list[dict]:
-    """Run `sql` on the app workgroup with `?` placeholders bound through ExecutionParameters, wait for it and
+async def query(
+    sql: str,
+    params: list[str | int | datetime],
+    timeout_s: float = 20,
+    unfiltered: bool = False,
+    workgroup: str | None = None,
+) -> list[dict]:
+    """Run `sql` on `workgroup` (default: the app workgroup `lightbulb-{env}-spark`) with `?` placeholders bound through ExecutionParameters, wait for it and
     return the rows as dicts (all values strings). Refuses a statement with no `dt` or `user_bucket` (a missing
     partition filter would scan the table) unless `unfiltered`, which only the retention job and VACUUM use.
     Past `timeout_s` the query is stopped and TimeoutError raised; a failed query raises RuntimeError (state only)."""
@@ -515,7 +524,10 @@ async def query(sql: str, params: list[str | int], timeout_s: float = 20, unfilt
         )
     kw = {"ExecutionParameters": [_literal(p) for p in params]} if params else {}
     started = await run_in_thread(
-        _athena.start_query_execution, QueryString=sql, WorkGroup=f"lightbulb-{settings.ENVIRONMENT}-spark", **kw
+        _athena.start_query_execution,
+        QueryString=sql,
+        WorkGroup=workgroup or f"lightbulb-{settings.ENVIRONMENT}-spark",
+        **kw,
     )
     qid, deadline, settled = started["QueryExecutionId"], time.monotonic() + timeout_s, False
     try:
@@ -554,20 +566,20 @@ async def query(sql: str, params: list[str | int], timeout_s: float = 20, unfilt
 
 async def forget(user_id: str) -> None:
     """The person opted out or deleted their account: write the job marker (so a restart cannot lose the request),
-    then run pass 1 in the background. Never raises; runs whether or not SPARK_STORE_ENABLED is on, because data
-    written before a rollback must still be deletable. Passes 2 and 3 are the job runner's."""
-    if settings.ENVIRONMENT not in ("dev", "prod"):
+    then run pass 1 in the background. Never raises. Gated by SPARK_STORE_DELETES, not SPARK_STORE_ENABLED: data
+    written before a rollback must still be deletable. If the marker cannot be written, pass 1 still runs now and
+    the marker write is retried in the background (a minute apart, for an hour). Passes 2 and 3 are the runner's."""
+    if not (settings.SPARK_STORE_DELETES and settings.ENVIRONMENT in ("dev", "prod")):
         return
-    try:
-        from core.observability import spark_store_jobs as jobs  # here: the jobs module imports this one
-        from core.voice.os_voice import spawn
+    from core.observability import spark_store_jobs as jobs  # here: the jobs module imports this one
+    from core.voice.os_voice import spawn
 
-        try:
-            await asyncio.wait_for(jobs.request_forget(user_id), 5)
-            spawn(jobs.step(jobs.forget_key(user_id)))
-        except Exception as e:  # noqa: BLE001 -- the type only
-            put_metric("spark_store.forget_start_failed")
-            logger.warning("spark store forget marker failed: %s", type(e).__name__)
-            spawn(jobs.forget_pass(user_id, compact=False))  # no marker: still delete now
-    except Exception as e:  # noqa: BLE001
-        logger.warning("spark store forget failed: %s", type(e).__name__)
+    at = jobs._now()
+    try:
+        await asyncio.wait_for(jobs.request_forget(user_id, at), 5)
+        spawn(jobs.bounded(jobs.step(jobs.forget_key(user_id))))
+    except Exception as e:  # noqa: BLE001 -- the type only
+        put_metric("spark_store.forget_start_failed")
+        logger.warning("spark store forget marker failed: %s", type(e).__name__)
+        spawn(jobs.bounded(jobs.forget_pass(user_id, False, at + jobs.CUTOFF_SLACK)))
+        spawn(jobs.retry_marker(user_id, at))

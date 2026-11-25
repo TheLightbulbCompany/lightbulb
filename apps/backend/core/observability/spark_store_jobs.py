@@ -1,13 +1,15 @@
 """Spark data store, delete and retention jobs, run by one in-process loop (`run`) started in main.py's lifespan.
 
 State lives in the store bucket under `jobs/`, so a restart loses nothing and several backend tasks share it:
-  jobs/forget/<sha256(user_id)>.json   {user_id, requested_at, passes_done, claimed_at}
-  jobs/retention/<YYYY-MM-DD>.json     {claimed_at, done}
-A job is claimed with an S3 conditional write: create with IfNoneMatch="*", update with IfMatch=<etag>. The loser
-of a race gets 412/409 and stays silent. A claim older than 30 minutes without completion may be re-claimed (the
-task that held it died). Forget passes: 1 at once, 2 when the marker is 45 minutes old, 3 (compacting) at 24 hours,
-then the marker is deleted; every `forget` request clears pass 1 from `passes_done` so it runs again.
-Nothing here logs user text; failures are counted (`spark_store.jobs_failed`) and retried by a later tick.
+  jobs/forget/<sha256(user_id)>.json   {user_id, requested_at, next_pass, not_before, attempts, claimed_at}
+  jobs/retention/<YYYY-MM-DD>.json     {not_before, attempts, done, claimed_at}
+`_job` claims a marker with an S3 conditional write (create: IfNoneMatch "*", update: IfMatch <etag>; the loser of
+a race is silent; a claim older than 30 minutes may be re-claimed), runs the work, and finishes with another
+conditional write. Forget passes: 1 at once, 2 at requested_at + 45 min, 3 (compacting) at + 24 h, then the marker
+is deleted. A failed pass keeps its number and backs off (10 min * 2^attempts, at most 24 h).
+Every delete is bounded to rows with ts <= requested_at + 5 min: a person who opts back in keeps their new data.
+NOT deleted: events sent before sign-in under an install id (no free text; gone with the 90-day retention) and other
+people's rows that quote this person. Nothing here logs user text; failures are counted, never raised.
 """
 
 from __future__ import annotations
@@ -19,6 +21,7 @@ import hashlib
 import json
 import logging
 import re
+from collections.abc import Awaitable, Callable
 from datetime import UTC, date, datetime, time, timedelta
 
 import boto3
@@ -35,19 +38,22 @@ logger = logging.getLogger(__name__)
 FIRST_TICK_S = 60
 TICK_S = 600
 TICK_BOUND_S = 20 * 60  # under the claim lifetime, so a live claim is never stolen by the next tick
+PASSES_PER_TICK = 5
 CLAIM_STALE = timedelta(minutes=30)
-PASS_AFTER = {1: timedelta(0), 2: timedelta(minutes=45), 3: timedelta(hours=24)}
-STUCK_AFTER = timedelta(days=3)
+PASS_AT = {2: timedelta(minutes=45), 3: timedelta(hours=24)}  # next_pass -> offset from requested_at
+CUTOFF_SLACK = timedelta(minutes=5)  # the opt-out cache is up to 60 s stale in other tasks
+BACKOFF_BASE, BACKOFF_MAX, STUCK_ATTEMPTS = timedelta(minutes=10), timedelta(hours=24), 6
 RETENTION_AT = time(3, 30)  # UTC
 RETENTION_DAYS = 90
 QUERY_S = 300
-_LOST = {"PreconditionFailed", "ConditionalRequestConflict", "412", "409"}
+ERROR_OBJECT_MAX = 5 * 1024 * 1024
+RETRY_S, RETRY_TRIES = 60, 60  # the marker write is retried for an hour
+_LOST = {"PreconditionFailed", "ConditionalRequestConflict"}
 
 _s3 = None  # created at first use; tests put a fake here
-_retention_done: date | None = None  # today's retention is finished: skip the S3 read until tomorrow
 
 
-def _now() -> datetime:
+def _now() -> datetime:  # tests pin the clock
     return datetime.now(UTC)
 
 
@@ -62,12 +68,22 @@ def _client():
     return _s3
 
 
-def _t(iso: str) -> datetime:
-    return datetime.fromisoformat(iso)
+def _fail(e: Exception, what: str) -> None:
+    put_metric("spark_store.jobs_failed")
+    logger.warning("spark store %s failed: %s", what, type(e).__name__)  # the type only: messages can quote SQL
+
+
+def _on() -> bool:
+    return bool(settings.SPARK_STORE_DELETES) and settings.ENVIRONMENT in ("dev", "prod")
 
 
 def forget_key(user_id: str) -> str:
     return f"jobs/forget/{hashlib.sha256(user_id.encode()).hexdigest()}.json"
+
+
+async def bounded(coro: Awaitable) -> None:
+    async with asyncio.timeout(TICK_BOUND_S):
+        await coro
 
 
 # --- S3 ------------------------------------------------------------------------------------------------
@@ -83,7 +99,7 @@ async def _get(key: str) -> tuple[dict, str] | None:
     return json.loads(await run_in_thread(out["Body"].read)), out["ETag"]
 
 
-async def _put(key: str, body: dict, *, etag: str | None = None) -> str | None:
+async def _put(key: str, body: dict, etag: str | None = None) -> str | None:
     """Create (no etag: IfNoneMatch "*") or update (IfMatch etag); the new etag, or None when another task won."""
     cond = {"IfMatch": etag} if etag else {"IfNoneMatch": "*"}
     try:
@@ -122,128 +138,198 @@ async def _list(prefix: str) -> list[str]:
         token = page["NextContinuationToken"]
 
 
-def _claimed(m: dict, now: datetime) -> bool:
-    return bool(m.get("claimed_at")) and now - _t(m["claimed_at"]) < CLAIM_STALE
+# --- claim, run, finish: forget and retention both use this ---------------------------------------------
+
+
+def _held(m: dict, now: datetime) -> bool:
+    return bool(m.get("claimed_at")) and now - datetime.fromisoformat(m["claimed_at"]) < CLAIM_STALE
+
+
+def _backoff(m: dict, now: datetime) -> dict:
+    attempts = m["attempts"] + 1
+    wait = min(BACKOFF_BASE * 2**attempts, BACKOFF_MAX)
+    return m | {"attempts": attempts, "not_before": (now + wait).isoformat()}
+
+
+async def _job(
+    key: str,
+    create: dict | None,
+    due: Callable[[dict, datetime], bool],
+    work: Callable[[dict], Awaitable[bool]],
+    advance: Callable[[dict, bool], dict | None],
+) -> None:
+    """Claim `key` (creating it from `create` when missing and `create` is given), run `work(marker)` -> ok, then
+    write `advance(marker, ok)` (None deletes the marker). Never raises; a lost race is silent."""
+    try:
+        now = _now()
+        claim = now.isoformat()
+        got = await _get(key)
+        if got is None:
+            if create is None:
+                return
+            mine = create | {"claimed_at": claim}
+            etag = await _put(key, mine)
+        else:
+            m, etag = got
+            if _held(m, now) or not due(m, now):
+                return
+            mine = m | {"claimed_at": claim}
+            etag = await _put(key, mine, etag)
+        if etag is None:
+            return
+        try:
+            ok = await work(mine)
+        except Exception as e:  # noqa: BLE001
+            _fail(e, "job")
+            ok = False
+        await _finish(key, mine, lambda cur: advance(cur, ok))
+    except Exception as e:  # noqa: BLE001
+        _fail(e, "job claim")
+
+
+async def _finish(key: str, mine: dict, advance: Callable[[dict], dict | None]) -> None:
+    """Write the outcome if the marker still has my claim. If the request changed meanwhile (new requested_at),
+    only release the claim: the new request starts from its own state."""
+    for _ in range(3):
+        got = await _get(key)
+        if got is None or got[0].get("claimed_at") != mine["claimed_at"]:
+            return
+        cur, etag = got
+        new = advance(cur) if cur.get("requested_at") == mine.get("requested_at") else cur
+        if new is None:
+            if await _delete(key, etag):
+                return
+        elif await _put(key, new | {"claimed_at": None}, etag):
+            return
 
 
 # --- forget --------------------------------------------------------------------------------------------
 
 
-async def request_forget(user_id: str) -> None:
-    """Write (or bump) the marker: requested_at = now, pass 1 undone, the other passes and any live claim kept."""
-    key, now = forget_key(user_id), _now().isoformat()
+async def request_forget(user_id: str, at: datetime | None = None) -> None:
+    """Write (or bump) the marker: a new request starts all three passes again. A live claim is kept, so two
+    tasks never run a pass at once. An older request than the marker's own changes nothing."""
+    at = at or _now()
+    key = forget_key(user_id)
+    body = {
+        "user_id": user_id,
+        "requested_at": at.isoformat(),
+        "next_pass": 1,
+        "not_before": at.isoformat(),
+        "attempts": 0,
+    }
     for _ in range(5):
         got = await _get(key)
         if got is None:
-            fresh = {"user_id": user_id, "requested_at": now, "passes_done": [], "claimed_at": None}
-            if await _put(key, fresh):
+            if await _put(key, body | {"claimed_at": None}):
                 return
-        else:
-            m, etag = got
-            bumped = m | {"requested_at": now, "passes_done": [p for p in m["passes_done"] if p != 1]}
-            if await _put(key, bumped, etag=etag):
-                return
+        elif datetime.fromisoformat(got[0]["requested_at"]) >= at:
+            return
+        elif await _put(key, body | {"claimed_at": got[0].get("claimed_at")}, got[1]):
+            return
     raise RuntimeError("forget marker contended")
 
 
-def _due(m: dict, now: datetime) -> int | None:
-    age = now - _t(m["requested_at"])
-    return next((n for n, after in PASS_AFTER.items() if n not in m["passes_done"] and age >= after), None)
+async def retry_marker(user_id: str, at: datetime) -> None:
+    for _ in range(RETRY_TRIES):
+        await asyncio.sleep(RETRY_S)
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(request_forget(user_id, at), 5)
+            return
+
+
+async def _forget_work(m: dict) -> bool:
+    n = m["next_pass"]
+    cutoff = datetime.fromisoformat(m["requested_at"]) + CUTOFF_SLACK
+    left = await forget_pass(m["user_id"], compact=n == 3, until=cutoff)
+    if n == 3 and left:
+        put_metric("spark_store.forget_remaining")
+        logger.warning("spark store forget: %d rows remain after the last pass", left)
+        return False
+    return True
+
+
+def _advance_forget(m: dict, ok: bool) -> dict | None:
+    if not ok:
+        failed = _backoff(m, _now())
+        if failed["attempts"] >= STUCK_ATTEMPTS:
+            put_metric("spark_store.forget_stuck")
+        return failed
+    n = m["next_pass"]
+    if n == 3:
+        return None
+    at = datetime.fromisoformat(m["requested_at"]) + PASS_AT[n + 1]
+    return m | {"next_pass": n + 1, "not_before": at.isoformat(), "attempts": 0}
+
+
+def _forget_due(m: dict, now: datetime) -> bool:
+    return now >= datetime.fromisoformat(m["not_before"])
 
 
 async def step(key: str) -> None:
-    """Run the pass this marker is due for, if nobody else holds it. Never raises: a failure is counted and the
-    claim released, so the next tick retries (not a tight loop)."""
-    try:
-        got = await _get(key)
-        if got is None:
-            return
-        m, etag = got
-        now = _now()
-        if now - _t(m["requested_at"]) > STUCK_AFTER:
-            put_metric("spark_store.forget_stuck")
-        if _claimed(m, now) or (n := _due(m, now)) is None:
-            return
-        claim = now.isoformat()
-        if await _put(key, m | {"claimed_at": claim}, etag=etag) is None:
-            return  # another task claimed it first
+    """Run the pass this forget marker is due for, if nobody else holds it."""
+    await _job(key, None, _forget_due, _forget_work, _advance_forget)
+
+
+async def _q(sql: str, params=()) -> list[dict]:
+    return await store.query(
+        sql, list(params), timeout_s=QUERY_S, unfiltered=sql.startswith("VACUUM"), workgroup=f"lightbulb-{settings.ENVIRONMENT}-spark-jobs"
+    )  # fmt: skip
+
+
+async def _all(sqls: list[tuple[str, list]]) -> None:
+    """Run statements on different tables at once; the first failure is raised after all have finished."""
+    for r in await asyncio.gather(*(_q(sql, p) for sql, p in sqls), return_exceptions=True):
+        if isinstance(r, Exception):
+            raise r
+
+
+async def _maintain(optimize: list[str], vacuum: list[str]) -> None:
+    """OPTIMIZE every table, then VACUUM every table whether or not an OPTIMIZE failed (physical deletion must not
+    depend on compaction); each failure is counted, and the run fails after the VACUUMs were tried."""
+    failed = 0
+    for sql in optimize + vacuum:
         try:
-            remaining = await forget_pass(m["user_id"], compact=n == 3)
-        except Exception:
-            await _finish(key, claim, m["requested_at"], None)
-            raise
-        if n == 3 and remaining:
-            put_metric("spark_store.forget_remaining")
-            logger.warning("spark store forget: %d rows remain after the last pass", remaining)
-        await _finish(key, claim, m["requested_at"], None if n == 3 and remaining else n)
-    except Exception as e:  # noqa: BLE001 -- the type only
-        put_metric("spark_store.jobs_failed")
-        logger.warning("spark store forget step failed: %s", type(e).__name__)
+            await _q(sql)
+        except Exception as e:  # noqa: BLE001
+            _fail(e, "maintenance")
+            failed += 1
+    if failed:
+        raise RuntimeError(f"{failed} maintenance statements failed")
 
 
-async def _finish(key: str, claim: str, requested_at: str, done: int | None) -> None:
-    """Release our claim, recording pass `done` (pass 3: delete the marker) unless the person asked again meanwhile."""
-    for _ in range(3):
-        got = await _get(key)
-        if got is None or got[0].get("claimed_at") != claim:
-            return
-        m, etag = got
-        if done and m["requested_at"] == requested_at:
-            if done == 3:
-                if await _delete(key, etag):
-                    return
-                continue
-            m = m | {"passes_done": sorted({*m["passes_done"], done})}
-        if await _put(key, m | {"claimed_at": None}, etag=etag):
-            return
-
-
-async def _q(sql: str, params=(), unfiltered: bool = False) -> list[dict]:
-    return await store.query(sql, list(params), timeout_s=QUERY_S, unfiltered=unfiltered)
-
-
-def deletes(user_id: str) -> list[tuple[str, list]]:
-    """Pass SQL, (statement, ExecutionParameters), always filtered by user_bucket."""
+def forget_sql(user_id: str, until: datetime) -> tuple[list[tuple[str, list]], tuple[str, list]]:
+    """The three DELETEs and the one verification count, always by user_bucket and bounded to ts <= until."""
     b, db = store.bucket(user_id), store.db()
-    return [
+    deletes = [
         (f"DELETE FROM {db}.{t} WHERE user_bucket = ? AND "
-         + ("(user_id = ? OR distinct_id = ?)" if t == "events" else "user_id = ?"),
-         [b] + [user_id] * (2 if t == "events" else 1))
+         + ("(user_id = ? OR distinct_id = ?)" if t == "events" else "user_id = ?")
+         + " AND ts <= ?",
+         [b] + [user_id] * (2 if t == "events" else 1) + [until])
         for t in store.TABLES
     ]  # fmt: skip
+    one = "SELECT count(*) AS c FROM {db}.{t} WHERE user_bucket = ? AND user_id = ? AND ts <= ?"
+    count = (
+        "SELECT sum(c) FROM (" + " UNION ALL ".join(one.format(db=db, t=t) for t in store.TABLES) + ")",
+        [b, user_id, until] * len(store.TABLES),
+    )
+    return deletes, count
 
 
-def compaction(user_id: str) -> list[tuple[str, list]]:
-    b, db = store.bucket(user_id), store.db()
-    out = []
-    for t in store.TABLES:
-        # ponytail: an int we computed, inlined because Athena documents ExecutionParameters for SELECT/INSERT/CTAS/UNLOAD only
-        out.append((f"OPTIMIZE {db}.{t} REWRITE DATA USING BIN_PACK WHERE user_bucket = {int(b)}", []))
-        out.append((f"VACUUM {db}.{t}", []))  # VACUUM takes no filter
-    return out
-
-
-def counts(user_id: str) -> list[tuple[str, list]]:
-    b, db = store.bucket(user_id), store.db()
-    return [
-        (f"SELECT count(*) FROM {db}.{t} WHERE user_bucket = ? AND user_id = ?", [b, user_id]) for t in store.TABLES
-    ]
-
-
-async def forget_pass(user_id: str, compact: bool) -> int:
-    """Delete this person's rows, sweep errors/, with `compact` rewrite and vacuum the bucket's files, then count
-    what is left. Returns the count."""
-    for sql, params in deletes(user_id):
-        await _q(sql, params)
+async def forget_pass(user_id: str, compact: bool, until: datetime) -> int:
+    """Delete this person's rows up to `until`, sweep errors/, with `compact` rewrite and vacuum the bucket's
+    files, then count what is left (returned). Raises if any statement failed."""
+    deletes, count = forget_sql(user_id, until)
+    await _all(deletes)
     await _sweep_errors(user_id)
     if compact:
-        for sql, params in compaction(user_id):
-            await _q(sql, params, unfiltered=sql.startswith("VACUUM"))
-    left = 0
-    for sql, params in counts(user_id):
-        rows = await _q(sql, params)
-        left += int(next(iter(rows[0].values()))) if rows else 0
-    return left
+        db, b = store.db(), store.bucket(user_id)
+        await _maintain(
+            [f"OPTIMIZE {db}.{t} REWRITE DATA USING BIN_PACK WHERE user_bucket = {int(b)}" for t in store.TABLES],
+            [f"VACUUM {db}.{t}" for t in store.TABLES],
+        )
+    rows = await _q(*count)
+    return int(float(next(iter(rows[0].values())) or 0)) if rows else 0
 
 
 def _mentions(body: bytes, user_id: str) -> bool:
@@ -258,73 +344,81 @@ def _mentions(body: bytes, user_id: str) -> bool:
 
 
 async def _sweep_errors(user_id: str) -> None:
-    """Firehose parks rows it could not deliver under errors/; delete every object that holds this person's id."""
-    gone = 0
+    """Firehose parks rows it could not deliver under errors/. An object that mentions this person is deleted whole
+    (privacy over keeping the other rows in it). Objects over 5 MB are not read: skipped and counted."""
+    gone = skipped = 0
     for key in await _list("errors/"):
         out = await run_in_thread(_client().get_object, Bucket=store.store_bucket(), Key=key)
-        if _mentions(await run_in_thread(out["Body"].read), user_id):
+        body = out["Body"]
+        data = (
+            b""
+            if out.get("ContentLength", 0) > ERROR_OBJECT_MAX
+            else await run_in_thread(body.read, ERROR_OBJECT_MAX + 1)
+        )
+        with contextlib.suppress(Exception):
+            body.close()
+        if len(data) > ERROR_OBJECT_MAX or out.get("ContentLength", 0) > ERROR_OBJECT_MAX:
+            skipped += 1
+        elif _mentions(data, user_id):
             await run_in_thread(_client().delete_object, Bucket=store.store_bucket(), Key=key)
             gone += 1
     if gone:
         put_metric("spark_store.forget_error_objects", gone)
+    if skipped:
+        put_metric("spark_store.forget_error_skipped", skipped)
 
 
 # --- retention -----------------------------------------------------------------------------------------
 
 
-async def retention_pass() -> None:
+async def _retention_work(_: dict) -> bool:
     db = store.db()
-    for t in store.TABLES:
-        await _q(f"DELETE FROM {db}.{t} WHERE dt < current_date - interval '{RETENTION_DAYS}' day")  # whole partitions
-        await _q(f"OPTIMIZE {db}.{t} REWRITE DATA USING BIN_PACK WHERE dt >= current_date - interval '2' day")
-        await _q(f"VACUUM {db}.{t}", unfiltered=True)
+    await _all(
+        [(f"DELETE FROM {db}.{t} WHERE dt <= current_date - interval '{RETENTION_DAYS}' day", []) for t in store.TABLES]
+    )
+    await _maintain(
+        [f"OPTIMIZE {db}.{t} REWRITE DATA USING BIN_PACK WHERE dt >= current_date - interval '2' day" for t in store.TABLES],
+        [f"VACUUM {db}.{t}" for t in store.TABLES],
+    )  # fmt: skip
     oldest = _now().date() - timedelta(days=RETENTION_DAYS)
     for t in store.TABLES:
-        rows = await _q(f"SELECT min(dt) FROM {db}.{t}", unfiltered=True)
+        rows = await _q(f"SELECT min(dt) FROM {db}.{t}")
         first = next(iter(rows[0].values()), None) if rows else None
-        if first and date.fromisoformat(first) < oldest:
+        if first and date.fromisoformat(first) <= oldest:
             put_metric("spark_store.retention_late")
+    return True
 
 
 async def _retention(now: datetime) -> None:
-    global _retention_done
-    today = now.date()
-    if now.time() < RETENTION_AT or _retention_done == today:
+    if now.time() < RETENTION_AT:
         return
-    key, claim = f"jobs/retention/{today.isoformat()}.json", now.isoformat()
-    got = await _get(key)
-    if got is None:
-        etag = await _put(key, {"claimed_at": claim, "done": False})
-    else:
-        m, old = got
-        if m.get("done"):
-            _retention_done = today
-            return
-        etag = None if _claimed(m, now) else await _put(key, m | {"claimed_at": claim}, etag=old)
-    if etag is None:
-        return
-    await retention_pass()
-    await _put(key, {"claimed_at": None, "done": True}, etag=etag)
-    _retention_done = today
+    await _job(
+        f"jobs/retention/{now.date().isoformat()}.json",
+        {"done": False, "attempts": 0, "not_before": now.isoformat()},
+        lambda m, n: not m["done"] and n >= datetime.fromisoformat(m["not_before"]),
+        _retention_work,
+        lambda m, ok: m | {"done": True} if ok else _backoff(m, _now()),
+    )
 
 
 # --- loop ----------------------------------------------------------------------------------------------
 
 
 async def tick() -> None:
-    if settings.ENVIRONMENT not in ("dev", "prod"):
+    """Retention first, then the due forget markers, oldest `not_before` first, at most five passes."""
+    if not _on():
         return
+    await _retention(_now())
     try:
+        now, due = _now(), []
         for key in await _list("jobs/forget/"):
+            got = await _get(key)
+            if got and not _held(got[0], now) and _forget_due(got[0], now):
+                due.append((got[0]["not_before"], key))
+        for _, key in sorted(due)[:PASSES_PER_TICK]:
             await step(key)
-    except Exception as e:  # noqa: BLE001 -- the type only
-        put_metric("spark_store.jobs_failed")
-        logger.warning("spark store job listing failed: %s", type(e).__name__)
-    try:
-        await _retention(_now())
     except Exception as e:  # noqa: BLE001
-        put_metric("spark_store.jobs_failed")
-        logger.warning("spark store retention failed: %s", type(e).__name__)
+        _fail(e, "tick")
 
 
 async def run(stop: asyncio.Event) -> None:
@@ -337,8 +431,6 @@ async def run(stop: asyncio.Event) -> None:
             return
         delay = TICK_S
         try:
-            async with asyncio.timeout(TICK_BOUND_S):
-                await tick()
+            await bounded(tick())
         except Exception as e:  # noqa: BLE001
-            put_metric("spark_store.jobs_failed")
-            logger.warning("spark store tick failed: %s", type(e).__name__)
+            _fail(e, "tick")

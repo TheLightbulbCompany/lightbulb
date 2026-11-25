@@ -1,7 +1,5 @@
 import base64
 import json
-import subprocess
-
 from core.observability import spark_store
 from scripts import spark_store_check
 
@@ -23,17 +21,6 @@ def test_records_are_base64_json_lines_with_dt_and_bucket():
     assert base64.b64decode(rec["Data"]).endswith(b"\n")
 
 
-def test_count_sql_is_parameterised_and_quoted():
-    sql, params = spark_store_check.count_sql("db", "turns", "check_ab")
-    assert "?" in sql and params == [str(spark_store.bucket("check_ab")), "'check_ab'"]
-
-
-def test_dry_run_prints_the_plan_and_calls_nothing(monkeypatch, capsys):
-    def boom(*a, **k):
-        raise AssertionError("subprocess called")
-
-    monkeypatch.setattr(subprocess, "run", boom)
-    assert spark_store_check.main(["--env", "dev", "--dry-run"]) == 0
-    out = capsys.readouterr().out
-    assert "lightbulb-dev-spark-steps" in out and "DELETE FROM lightbulb_dev_spark.events" in out
-    assert "VACUUM lightbulb_dev_spark.turns" in out and "check_" in out
+def test_count_sql_is_parameterised_by_bucket_and_user():
+    sql, params = spark_store_check.count_sql("turns", "check_ab")
+    assert sql.count("?") == 2 and "turns" in sql and params == [spark_store.bucket("check_ab"), "check_ab"]

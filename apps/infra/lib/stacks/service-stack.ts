@@ -25,6 +25,7 @@ import {
   allTableArns,
   alertTopicArn,
   resourcePrefix,
+  sparkStoreNames,
   tableName,
   tablePrefix,
 } from "../table-names";
@@ -1275,6 +1276,63 @@ export class ServiceStack extends cdk.Stack {
       roles: [this.taskRole],
     });
 
+    // Spark data store. Everything is named from sparkStoreNames, not imported from
+    // SparkStoreStack, so this stack never waits on it (the streams do not exist yet; IAM
+    // accepts ARNs of absent resources). A ManagedPolicy for the same packing reason as
+    // TaskRoleSts. KMS is already in KmsAccess above.
+    const spark = sparkStoreNames(env);
+    const glueArn = (path: string) => `arn:aws:glue:${this.region}:${this.account}:${path}`;
+    new iam.ManagedPolicy(this, "SparkStoreAccess", {
+      managedPolicyName: `${resourcePrefix(env)}backend-spark-store`,
+      statements: [
+        new iam.PolicyStatement({
+          sid: "SparkStorePut",
+          actions: ["firehose:PutRecordBatch"],
+          resources: spark.streams.map((s) => `arn:aws:firehose:${this.region}:${this.account}:deliverystream/${s}`),
+        }),
+        // The app workgroup only, never adhoc.
+        new iam.PolicyStatement({
+          sid: "SparkStoreAthena",
+          actions: [
+            "athena:StartQueryExecution",
+            "athena:GetQueryExecution",
+            "athena:GetQueryResults",
+            "athena:StopQueryExecution",
+          ],
+          resources: [`arn:aws:athena:${this.region}:${this.account}:workgroup/${spark.workgroup}`],
+        }),
+        new iam.PolicyStatement({
+          sid: "SparkStoreGlue",
+          actions: ["glue:GetDatabase", "glue:GetTable", "glue:GetTables", "glue:GetPartitions", "glue:UpdateTable"],
+          resources: [
+            glueArn("catalog"),
+            glueArn(`database/${spark.database}`),
+            glueArn(`table/${spark.database}/*`),
+          ],
+        }),
+        // Objects only under the prefixes the backend uses: never athena-results/adhoc/ (the team's results).
+        new iam.PolicyStatement({
+          sid: "SparkStoreS3Objects",
+          actions: [
+            "s3:GetObject",
+            "s3:PutObject",
+            "s3:DeleteObject",
+            "s3:AbortMultipartUpload",
+            "s3:ListMultipartUploadParts",
+          ],
+          resources: ["warehouse/*", "athena-results/app/*", "errors/*", "jobs/*"].map(
+            (p) => `arn:aws:s3:::${spark.bucket}/${p}`,
+          ),
+        }),
+        new iam.PolicyStatement({
+          sid: "SparkStoreS3Bucket",
+          actions: ["s3:ListBucket", "s3:GetBucketLocation", "s3:ListBucketMultipartUploads"],
+          resources: [`arn:aws:s3:::${spark.bucket}`],
+        }),
+      ],
+      roles: [this.taskRole],
+    });
+
     // S3 (OpenClaw config bucket)
     // Per-user path scoping via IAM policy variables (${aws:userid}) is not
     // feasible: aws:userid resolves to the IAM role unique ID, not the app-
@@ -1745,6 +1803,10 @@ export class ServiceStack extends cdk.Stack {
           : (process.env.STRIPE_SPARK_PRICE_ID_DEV ?? ""),
       // Save Spark voice transcripts (text only, 90 days) in every env; "0" turns it off.
       SPARK_TRANSCRIPTS_ENABLED: "1",
+      // Spark data store (S3/Iceberg). "0" in prod until the store is verified there.
+      SPARK_STORE_ENABLED: env === "prod" ? "0" : "1",
+      // Work-log upload scope: "problem" keeps text only for failed or cancelled tasks.
+      SPARK_WORKLOG_SCOPE: "problem",
       METRONOME_VOICE_METRIC_ID: env === "dev"
         ? "17a42d84-c10c-4c6a-907d-feb2ab02d080"
         : "8065419d-79f8-4b8e-ad1d-d933479521cc",

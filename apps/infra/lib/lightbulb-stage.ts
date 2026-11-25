@@ -19,6 +19,7 @@ import { NetworkStack } from "./stacks/network-stack";
 import { ObservabilityStack } from "./stacks/observability-stack";
 import { SesInboundStack } from "./stacks/ses-inbound-stack";
 import { ServiceStack } from "./stacks/service-stack";
+import { SparkStoreStack } from "./stacks/spark-store-stack";
 import { resourcePrefix, tableName } from "./table-names";
 
 // Connect platform client id (ca_…) per environment. Public, not a secret. The
@@ -151,6 +152,14 @@ export class LightbulbStage extends cdk.Stage {
       });
       agentMailOutbound.addDependency(auth);
     }
+
+    // ServiceStack grants by name (sparkStoreNames), so it does not wait on this stack; the dev
+    // frontend deploy and prod promotion do.
+    new SparkStoreStack(this, `lightbulb-${env}-spark-store`, {
+      stackName: `lightbulb-${env}-spark-store`,
+      environment: env,
+      kmsKey: auth.kmsKey,
+    });
 
     const network = new NetworkStack(this, `lightbulb-${env}-network`, {
       stackName: `lightbulb-${env}-network`,

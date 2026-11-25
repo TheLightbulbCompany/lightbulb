@@ -337,6 +337,10 @@ class Settings(BaseSettings):
     #: Save Spark voice transcripts (text only, 90 days) to the spark-transcripts table. Dev only until the
     #: owner approves prod and the privacy text changes; off: nothing is saved.
     SPARK_TRANSCRIPTS_ENABLED: bool = False
+    #: Spark data store (S3/Iceberg via Firehose). Off: nothing is written there.
+    SPARK_STORE_ENABLED: bool = False
+    #: Work-log upload scope: "problem" keeps text only for failed or cancelled tasks, "all" keeps every task.
+    SPARK_WORKLOG_SCOPE: str = "problem"
     # Display dollars for STRIPE_SPARK_PRICE_ID (Spark's monthly price); lockstep with its unit amount.
     SPARK_PRICE_USD: int = 20
     # What a minute of Spark voice costs us (gpt-live-1.1): a calibration value for the margin metric, unverified.

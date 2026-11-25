@@ -694,6 +694,40 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
     });
   });
 
+  test("SparkStoreAccess: Firehose put only on the three named streams, Athena only on the app workgroup", () => {
+    const arn = (p: string) => `arn:aws:${p}`;
+    const doc = Object.values(SERVICE_TEMPLATE_DEV.findResources("AWS::IAM::ManagedPolicy")).find(
+      (r: any) => r.Properties.ManagedPolicyName === "lightbulb-dev-backend-spark-store",
+    ) as any;
+    expect(doc).toBeDefined();
+    const byAction = (action: string) =>
+      doc.Properties.PolicyDocument.Statement.filter((st: any) => (Array.isArray(st.Action) ? st.Action : [st.Action]).includes(action));
+    const flat = (st: any[]) => st.flatMap((x) => (Array.isArray(x.Resource) ? x.Resource : [x.Resource]));
+    expect(flat(byAction("firehose:PutRecordBatch"))).toEqual(
+      ["turns", "steps", "events"].map((s) =>
+        arn(`firehose:us-east-1:877352799272:deliverystream/lightbulb-dev-spark-${s}`),
+      ),
+    );
+    expect(flat(byAction("athena:StartQueryExecution"))).toEqual([
+      arn("athena:us-east-1:877352799272:workgroup/lightbulb-dev-spark"),
+    ]);
+    expect(JSON.stringify(doc.Properties.Roles)).toContain("TaskRole");
+    const stmts = doc.Properties.PolicyDocument.Statement as any[];
+    const actions = (st: any) => (Array.isArray(st.Action) ? st.Action : [st.Action]) as string[];
+    for (const a of stmts.filter((x) => actions(x).some((y) => y.startsWith("glue:"))).flatMap(actions)) {
+      expect(a).not.toMatch(/^glue:(Create|Delete)/);
+    }
+    const s3Resources = stmts.filter((x) => actions(x).some((y) => y.startsWith("s3:"))).flatMap((x) =>
+      Array.isArray(x.Resource) ? x.Resource : [x.Resource],
+    );
+    expect(s3Resources.sort()).toEqual(
+      [
+        "arn:aws:s3:::lightbulb-dev-spark-store",
+        ...["warehouse/*", "athena-results/app/*", "errors/*", "jobs/*"].map((p) => `arn:aws:s3:::lightbulb-dev-spark-store/${p}`),
+      ].sort(),
+    );
+  });
+
   test("backend STS lives in a dedicated ManagedPolicy: AssumeRole scoped to the connector role, GetCallerIdentity unscoped", () => {
     // A ManagedPolicy (not DefaultPolicy) so the near-10 KB inline document's
     // packing stays stable; the AssumeRole resource pin is the security fence

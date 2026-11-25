@@ -13,6 +13,7 @@ so `ts` is epoch microseconds (an int) and `dt` is the UTC day as `YYYY-MM-DD`. 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import functools
 import hashlib
 import json
@@ -43,7 +44,12 @@ CACHE_TTL_S = 60.0
 READ_TIMEOUT_S = 2.0  # the opt-out read: slower than this reads False
 SCRUB_MAX = 16_000  # scrub cuts its input here before any regex runs
 
+TABLES = ("turns", "task_steps", "events")
+POLL_S = 1.0  # Athena status poll
+_FILTER = re.compile(r"\b(?:dt|user_bucket)\b", re.I)
+
 _firehose = None  # created at first use; tests put a fake here
+_athena = None  # likewise
 # Firehose calls only: a Firehose outage can fill these 4 threads but never delays an opt-out read, which runs
 # on the shared pool via run_in_thread like the other DynamoDB calls.
 _POOL = ThreadPoolExecutor(max_workers=4, thread_name_prefix="spark-store")
@@ -474,3 +480,94 @@ async def _put_event(row: dict) -> None:
             await _deliver("events", [row])
     finally:
         _pending -= 1
+
+
+# --- query and forget -------------------------------------------------------------------------------------
+
+
+def db() -> str:
+    """The one place the database, bucket and workgroup names come from."""
+    return f"lightbulb_{settings.ENVIRONMENT}_spark"
+
+
+def store_bucket() -> str:
+    return f"lightbulb-{settings.ENVIRONMENT}-spark-store"
+
+
+def _literal(v: str | int) -> str:
+    """An Athena execution-parameter value: strings must be single-quoted (quotes doubled), numbers are bare."""
+    return str(int(v)) if isinstance(v, int) else "'" + v.replace("'", "''") + "'"
+
+
+async def query(sql: str, params: list[str | int], timeout_s: float = 20, unfiltered: bool = False) -> list[dict]:
+    """Run `sql` on the app workgroup with `?` placeholders bound through ExecutionParameters, wait for it and
+    return the rows as dicts (all values strings). Refuses a statement with no `dt` or `user_bucket` (a missing
+    partition filter would scan the table) unless `unfiltered`, which only the retention job and VACUUM use.
+    Past `timeout_s` the query is stopped and TimeoutError raised; a failed query raises RuntimeError (state only)."""
+    global _athena
+    if not unfiltered and not _FILTER.search(sql):
+        raise ValueError("spark store query needs a dt or user_bucket filter")
+    if _athena is None:
+        _athena = boto3.client(
+            "athena",
+            region_name=settings.AWS_REGION,
+            config=Config(connect_timeout=2, read_timeout=10, retries={"max_attempts": 2}),
+        )
+    kw = {"ExecutionParameters": [_literal(p) for p in params]} if params else {}
+    started = await run_in_thread(
+        _athena.start_query_execution, QueryString=sql, WorkGroup=f"lightbulb-{settings.ENVIRONMENT}-spark", **kw
+    )
+    qid, deadline, settled = started["QueryExecutionId"], time.monotonic() + timeout_s, False
+    try:
+        while True:
+            status = (await run_in_thread(_athena.get_query_execution, QueryExecutionId=qid))["QueryExecution"]
+            state = status["Status"]["State"]
+            if state == "SUCCEEDED":
+                settled = True
+                break
+            if state in ("FAILED", "CANCELLED"):
+                settled = True
+                raise RuntimeError(f"athena query {state}")  # the reason can quote SQL values: not repeated
+            if time.monotonic() >= deadline:
+                raise TimeoutError("athena query timed out")
+            await asyncio.sleep(POLL_S)
+    finally:
+        if not settled:  # timed out or cancelled: do not leave it running (and billing)
+            with contextlib.suppress(Exception):
+                await run_in_thread(_athena.stop_query_execution, QueryExecutionId=qid)
+    if not sql.lstrip().upper().startswith(("SELECT", "WITH")):
+        return []  # DELETE, OPTIMIZE, VACUUM have no result set
+    rows, token, header = [], None, None
+    while True:
+        page = await run_in_thread(
+            _athena.get_query_results, QueryExecutionId=qid, **({"NextToken": token} if token else {})
+        )
+        for r in page["ResultSet"]["Rows"]:
+            cells = [c.get("VarCharValue") for c in r["Data"]]
+            if header is None:
+                header = cells
+            else:
+                rows.append(dict(zip(header, cells, strict=False)))
+        if not (token := page.get("NextToken")):
+            return rows
+
+
+async def forget(user_id: str) -> None:
+    """The person opted out or deleted their account: write the job marker (so a restart cannot lose the request),
+    then run pass 1 in the background. Never raises; runs whether or not SPARK_STORE_ENABLED is on, because data
+    written before a rollback must still be deletable. Passes 2 and 3 are the job runner's."""
+    if settings.ENVIRONMENT not in ("dev", "prod"):
+        return
+    try:
+        from core.observability import spark_store_jobs as jobs  # here: the jobs module imports this one
+        from core.voice.os_voice import spawn
+
+        try:
+            await asyncio.wait_for(jobs.request_forget(user_id), 5)
+            spawn(jobs.step(jobs.forget_key(user_id)))
+        except Exception as e:  # noqa: BLE001 -- the type only
+            put_metric("spark_store.forget_start_failed")
+            logger.warning("spark store forget marker failed: %s", type(e).__name__)
+            spawn(jobs.forget_pass(user_id, compact=False))  # no marker: still delete now
+    except Exception as e:  # noqa: BLE001
+        logger.warning("spark store forget failed: %s", type(e).__name__)

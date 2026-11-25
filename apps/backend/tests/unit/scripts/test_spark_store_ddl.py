@@ -5,7 +5,15 @@ from scripts import spark_store_ddl
 
 def test_statements_in_order_with_placeholders_filled():
     stmts = spark_store_ddl.statements("dev")
-    assert [n for n, _ in stmts] == ["001_database.sql", "002_turns.sql", "003_task_steps.sql", "004_events.sql"]
+    assert [n for n, _ in stmts] == [
+        "001_database.sql",
+        "002_turns.sql",
+        "003_task_steps.sql",
+        "004_events.sql",
+        "005_turns_v.sql",
+        "006_task_steps_v.sql",
+        "007_events_v.sql",
+    ]
     sql = "\n".join(s for _, s in stmts)
     assert "{" not in sql
     assert "CREATE DATABASE IF NOT EXISTS lightbulb_dev_spark" in sql
@@ -14,6 +22,13 @@ def test_statements_in_order_with_placeholders_filled():
         assert s.count(";") == 0 and "EXTERNAL" not in s and "timestamp(" not in s
         if "CREATE TABLE" in s:
             assert "IF NOT EXISTS" in s and "PARTITIONED BY (dt, user_bucket)" in s
+
+
+def test_views_dedupe_by_row_id_over_the_right_table():
+    views = {n: s for n, s in spark_store_ddl.statements("dev") if n[:3] in ("005", "006", "007")}
+    for (name, sql), table in zip(sorted(views.items()), ("turns", "task_steps", "events"), strict=True):
+        assert sql.startswith(f"CREATE OR REPLACE VIEW lightbulb_dev_spark.{table}_v AS")
+        assert f"FROM lightbulb_dev_spark.{table} " in sql and "PARTITION BY row_id" in sql and "rn = 1" in sql
 
 
 def test_prod_names():

@@ -87,9 +87,48 @@ describe.each(["dev", "prod"] as const)("SparkStoreStack %s", (environment) => {
     });
   });
 
-  test("firehose role and log group exist, no delivery streams yet", () => {
+  test("firehose role and log group exist", () => {
     t.hasResourceProperties("AWS::IAM::Role", { RoleName: `lightbulb-${environment}-spark-firehose` });
     t.hasResourceProperties("AWS::Logs::LogGroup", { LogGroupName: `/aws/firehose/lightbulb-${environment}-spark` });
-    t.resourceCountIs("AWS::KinesisFirehose::DeliveryStream", 0);
+  });
+
+  test.each([
+    ["turns", "turns"],
+    ["steps", "task_steps"],
+    ["events", "events"],
+  ])("delivery stream %s writes append-only to table %s", (suffix, table) => {
+    t.hasResourceProperties("AWS::KinesisFirehose::DeliveryStream", {
+      DeliveryStreamName: `lightbulb-${environment}-spark-${suffix}`,
+      DeliveryStreamType: "DirectPut",
+      DeliveryStreamEncryptionConfigurationInput: { KeyType: "CUSTOMER_MANAGED_CMK", KeyARN: Match.anyValue() },
+      IcebergDestinationConfiguration: Match.objectLike({
+        AppendOnly: true,
+        s3BackupMode: "FailedDataOnly", // CloudFormation spells this one with a lowercase s
+        BufferingHints: { IntervalInSeconds: environment === "prod" ? 900 : 60, SizeInMBs: 128 },
+        RetryOptions: { DurationInSeconds: 3600 },
+        RoleARN: { "Fn::GetAtt": [Match.stringLikeRegexp("^FirehoseRole"), "Arn"] },
+        CatalogConfiguration: { CatalogArn: Match.anyValue() },
+        DestinationTableConfigurationList: [
+          {
+            DestinationDatabaseName: `lightbulb_${environment}_spark`,
+            DestinationTableName: table,
+            S3ErrorOutputPrefix: `errors/${table}/`,
+          },
+        ],
+        S3Configuration: Match.objectLike({ ErrorOutputPrefix: `errors/${table}/` }),
+        CloudWatchLoggingOptions: {
+          Enabled: true,
+          LogGroupName: `/aws/firehose/lightbulb-${environment}-spark`,
+          LogStreamName: table,
+        },
+      }),
+    });
+    t.hasResourceProperties("AWS::Logs::LogStream", { LogStreamName: table });
+  });
+
+  test("exactly three streams, each waiting for the role policy", () => {
+    const streams = Object.values(t.findResources("AWS::KinesisFirehose::DeliveryStream")) as any[];
+    expect(streams).toHaveLength(3);
+    for (const s of streams) expect(s.DependsOn.some((d: string) => d.startsWith("FirehoseRoleDefaultPolicy"))).toBe(true);
   });
 });

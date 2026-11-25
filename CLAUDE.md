@@ -13,8 +13,8 @@ built in a separate repo, `TheLightbulbCompany/lightbulb-os`. This repo holds wh
 - **The infrastructure** (`apps/infra`, AWS CDK): the single source of IaC truth.
 
 The phone receptionist, the Meet bot and the old agent-messaging platform (Hermes on AgentCore, Paperclip, rooms,
-AppSync, the marketplace, agent mail, the openrouter-gate, the Tauri and iPhone apps) are deleted or being deleted.
-Git history is the record. Do not rebuild on them. Old names in the code are leftovers, not a map: read the code.
+AppSync, the marketplace, agent mail, the openrouter-gate, the Tauri and iPhone apps) are deleted from the backend,
+infra and CI (#5396). Git history is the record. Do not rebuild on them. Old names in the code are leftovers, not a map: read the code.
 
 The network CLI (`TheLightbulbCompany/cli`) is kept. This repo only serves its pages and installer.
 
@@ -82,10 +82,11 @@ A Spark account is a few attributes on the person's `users` row (see the `os.py`
 person, never on an organisation. Auth is Clerk JWT (`core/auth.py`). DynamoDB items are plain dicts; there is no
 ORM. `core/config.py` holds the settings.
 
-After the backend cleanup (#5396) lands, the backend also keeps only: the Stripe webhook (Spark subscriptions), the
-Clerk webhook (`user.created` saves the person; `user.deleted` cancels their subscription and deletes their data),
-the support form (`POST /api/v1/support/tickets`, mailed through SES), the admin routes (`/api/v1/admin/me`,
-`/api/v1/ops/spark`), `/health`, and the voice-session sweeper.
+Besides those, the backend has only: the Stripe webhook (`POST /api/v1/billing/webhooks/stripe`, Spark
+subscriptions), the Clerk webhook (`POST /api/v1/webhooks/clerk`: `user.created` saves the person; `user.deleted`
+cancels their subscription and deletes their voice data), the support form (`POST /api/v1/support/tickets`, mailed
+through SES), the admin routes (`GET /api/v1/admin/me`, `GET /api/v1/ops/spark`), `/health`, and the voice-session
+sweeper (`os_voice_sweeper`, started in `main.py`'s lifespan).
 
 `PAPERCLIP_SERVICE_TOKEN_KEY` is a leftover name, but it is live: it signs Spark's checkout and portal links.
 
@@ -100,12 +101,15 @@ Re-runnable ops tools in `apps/backend/scripts/`:
 environments, dev and prod, and no staging. `apps/infra/lib/domains.ts` is the truth for hostnames; the product
 domain is `thelightbulb.company` in both environments.
 
-What stays after the cleanup lands: network (VPC, ALB, NAT), DNS (hosted zone, wildcard cert), auth (Secrets
-Manager and the KMS key), the ECS cluster and the backend service, the `api[-dev]` HTTP API on API Gateway
-(VPC Link V2 to the ALB), observability (the backend's alarms), five DynamoDB tables (among them `users`, `containers`,
-`spark-transcripts` and `admin-actions`), and the **spark-store** stack
-(`spark-store-stack.ts`: an S3 bucket of Iceberg tables and two Athena workgroups). Tables are named
-`lightbulb-{env}-{suffix}`.
+The stacks (`apps/infra/lib/stacks/`): network (VPC, ALB, NAT), dns (hosted zone, wildcard cert), auth (Secrets
+Manager and the KMS key), container (the ECS cluster; its AgentCore memory, browser and owner-role resources are
+unused leftovers), service (the backend on ECS Fargate), api (the `api[-dev]` HTTP API on API Gateway, VPC Link V2
+to the ALB), observability (the backend's alarms), database, and **spark-store** (`spark-store-stack.ts`: an S3
+bucket of Iceberg tables, two Athena workgroups, and one Firehose delivery stream per table).
+
+The database stack holds five DynamoDB tables, named `lightbulb-{env}-{suffix}`: `users` (the Spark account),
+`containers` (voice-session rows, found through `status-index`), `spark-transcripts`, `webhook-event-dedup` (Stripe
+and Clerk) and `admin-actions` (the admin audit log).
 
 Stacks pass secret names and KMS key ARNs, not objects, to avoid cross-stack KMS grant cycles. Environment
 variables are set by CDK; do not set them by hand.

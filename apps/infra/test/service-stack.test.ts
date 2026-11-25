@@ -712,6 +712,20 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
       arn("athena:us-east-1:877352799272:workgroup/lightbulb-dev-spark"),
     ]);
     expect(JSON.stringify(doc.Properties.Roles)).toContain("TaskRole");
+    const stmts = doc.Properties.PolicyDocument.Statement as any[];
+    const actions = (st: any) => (Array.isArray(st.Action) ? st.Action : [st.Action]) as string[];
+    for (const a of stmts.filter((x) => actions(x).some((y) => y.startsWith("glue:"))).flatMap(actions)) {
+      expect(a).not.toMatch(/^glue:(Create|Delete)/);
+    }
+    const s3Resources = stmts.filter((x) => actions(x).some((y) => y.startsWith("s3:"))).flatMap((x) =>
+      Array.isArray(x.Resource) ? x.Resource : [x.Resource],
+    );
+    expect(s3Resources.sort()).toEqual(
+      [
+        "arn:aws:s3:::lightbulb-dev-spark-store",
+        ...["warehouse/*", "athena-results/app/*", "errors/*", "jobs/*"].map((p) => `arn:aws:s3:::lightbulb-dev-spark-store/${p}`),
+      ].sort(),
+    );
   });
 
   test("backend STS lives in a dedicated ManagedPolicy: AssumeRole scoped to the connector role, GetCallerIdentity unscoped", () => {

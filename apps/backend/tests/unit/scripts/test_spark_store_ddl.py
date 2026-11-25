@@ -32,7 +32,7 @@ def test_dry_run_makes_no_subprocess_call(monkeypatch, capsys):
 def test_stops_and_exits_nonzero_on_first_failure(monkeypatch, capsys):
     calls = []
 
-    def fake_run(sql, workgroup, timeout=300):
+    def fake_run(sql, workgroup):
         calls.append(workgroup)
         return ("FAILED", "boom") if len(calls) == 2 else ("SUCCEEDED", "")
 
@@ -40,3 +40,12 @@ def test_stops_and_exits_nonzero_on_first_failure(monkeypatch, capsys):
     assert spark_store_ddl.main(["--env", "dev"]) == 1
     assert calls == ["lightbulb-dev-spark-adhoc"] * 2
     assert "002_turns.sql: FAILED boom" in capsys.readouterr().out
+
+
+def test_aws_cli_failure_prints_stderr_and_returns_1(monkeypatch, capsys):
+    def fail(*a, **k):
+        raise subprocess.CalledProcessError(254, ["aws"], stderr="AccessDeniedException: no athena")
+
+    monkeypatch.setattr(subprocess, "run", fail)
+    assert spark_store_ddl.main(["--env", "dev"]) == 1
+    assert "AccessDeniedException: no athena" in capsys.readouterr().err

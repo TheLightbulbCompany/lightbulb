@@ -44,6 +44,7 @@ export class SparkStoreStack extends cdk.Stack {
       lifecycleRules: [
         { id: "AbortIncompleteUploads", abortIncompleteMultipartUploadAfter: cdk.Duration.days(1) },
         { id: "ExpireAthenaResults", prefix: "athena-results/", expiration: cdk.Duration.days(7) },
+        { id: "ExpireJobState", prefix: "jobs/", expiration: cdk.Duration.days(7) },
         { id: "ExpireFirehoseErrors", prefix: "errors/", expiration: cdk.Duration.days(3) },
       ],
     });
@@ -110,6 +111,7 @@ export class SparkStoreStack extends cdk.Stack {
       new iam.PolicyStatement({
         actions: ["kms:GenerateDataKey", "kms:Decrypt"],
         resources: [props.kmsKey.keyArn],
+        conditions: { StringEquals: { "kms:ViaService": `s3.${this.region}.amazonaws.com` } },
       }),
     );
     role.addToPolicy(

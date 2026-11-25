@@ -153,8 +153,8 @@ export class LightbulbStage extends cdk.Stage {
       agentMailOutbound.addDependency(auth);
     }
 
-    // Nothing depends on this stack: ServiceStack grants by name (sparkStoreNames), so a failed
-    // create here fails only this stack's own job.
+    // ServiceStack grants by name (sparkStoreNames), so it does not wait on this stack; the dev
+    // frontend deploy and prod promotion do.
     new SparkStoreStack(this, `lightbulb-${env}-spark-store`, {
       stackName: `lightbulb-${env}-spark-store`,
       environment: env,

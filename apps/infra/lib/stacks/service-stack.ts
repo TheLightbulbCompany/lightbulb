@@ -1310,17 +1310,24 @@ export class ServiceStack extends cdk.Stack {
             glueArn(`table/${spark.database}/*`),
           ],
         }),
+        // Objects only under the prefixes the backend uses: never athena-results/adhoc/ (the team's results).
         new iam.PolicyStatement({
-          sid: "SparkStoreS3",
+          sid: "SparkStoreS3Objects",
           actions: [
             "s3:GetObject",
             "s3:PutObject",
             "s3:DeleteObject",
-            "s3:ListBucket",
-            "s3:GetBucketLocation",
             "s3:AbortMultipartUpload",
+            "s3:ListMultipartUploadParts",
           ],
-          resources: [`arn:aws:s3:::${spark.bucket}`, `arn:aws:s3:::${spark.bucket}/*`],
+          resources: ["warehouse/*", "athena-results/app/*", "errors/*", "jobs/*"].map(
+            (p) => `arn:aws:s3:::${spark.bucket}/${p}`,
+          ),
+        }),
+        new iam.PolicyStatement({
+          sid: "SparkStoreS3Bucket",
+          actions: ["s3:ListBucket", "s3:GetBucketLocation", "s3:ListBucketMultipartUploads"],
+          resources: [`arn:aws:s3:::${spark.bucket}`],
         }),
       ],
       roles: [this.taskRole],

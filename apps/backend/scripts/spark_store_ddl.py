@@ -18,13 +18,24 @@ import time
 from pathlib import Path
 
 SQL_DIR = Path(__file__).parent / "spark_store_sql"
+TIMEOUT = 300
+# One place for the table properties every table shares; the files carry {props}.
+PROPS = """TBLPROPERTIES (
+  'table_type'='ICEBERG',
+  'format'='PARQUET',
+  'write_compression'='ZSTD',
+  'optimize_rewrite_delete_file_threshold'='1',
+  'vacuum_max_snapshot_age_seconds'='86400',
+  'vacuum_max_metadata_files_to_keep'='20'
+)"""
 
 
-def statements(env: str, sql_dir: Path = SQL_DIR) -> list[tuple[str, str]]:
+def statements(env: str) -> list[tuple[str, str]]:
     """(file name, SQL) in file-name order, placeholders filled; one statement per file."""
-    subs = {"{db}": f"lightbulb_{env}_spark", "{bucket}": f"lightbulb-{env}-spark-store"}
+    # Names mirror sparkStoreNames() in apps/infra/lib/table-names.ts (its task_steps stream is "...-spark-steps").
+    subs = {"{props}": PROPS, "{db}": f"lightbulb_{env}_spark", "{bucket}": f"lightbulb-{env}-spark-store"}
     out = []
-    for f in sorted(sql_dir.glob("*.sql")):
+    for f in sorted(SQL_DIR.glob("*.sql")):
         sql = f.read_text()
         for k, v in subs.items():
             sql = sql.replace(k, v)
@@ -38,16 +49,16 @@ def aws(*args: str) -> dict:
     )
 
 
-def run(sql: str, workgroup: str, timeout: int = 300) -> tuple[str, str]:
+def run(sql: str, workgroup: str) -> tuple[str, str]:
     """Run one statement and wait; returns (state, reason)."""
     qid = aws("athena", "start-query-execution", "--work-group", workgroup, "--query-string", sql)["QueryExecutionId"]
-    deadline = time.monotonic() + timeout
+    deadline = time.monotonic() + TIMEOUT
     while time.monotonic() < deadline:
         status = aws("athena", "get-query-execution", "--query-execution-id", qid)["QueryExecution"]["Status"]
         if status["State"] in ("SUCCEEDED", "FAILED", "CANCELLED"):
             return status["State"], status.get("StateChangeReason", "")
         time.sleep(2)
-    return "TIMEOUT", f"query {qid} still running after {timeout}s"
+    return "TIMEOUT", f"query {qid} still running after {TIMEOUT}s"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -60,7 +71,11 @@ def main(argv: list[str] | None = None) -> int:
         if args.dry_run:
             print(f"-- {name}\n{sql};\n")
             continue
-        state, reason = run(sql, workgroup)
+        try:
+            state, reason = run(sql, workgroup)
+        except subprocess.CalledProcessError as e:
+            print(f"{name}: aws failed (exit {e.returncode}): {e.stderr}".rstrip(), file=sys.stderr)
+            return 1
         print(f"{name}: {state} {reason}".rstrip())
         if state != "SUCCEEDED":
             return 1

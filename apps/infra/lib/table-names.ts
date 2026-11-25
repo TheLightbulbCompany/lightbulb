@@ -72,6 +72,7 @@ export const tableName = (env: string, suffix: string) =>
  * from these instead of importing the stack, so a failed spark-store deploy cannot
  * hold the backend's deploy back. Glue names use underscores: Firehose rejects hyphens.
  */
+// Mirrored in apps/backend/scripts/spark_store_ddl.py. The task_steps table's stream is named "...-spark-steps".
 export const sparkStoreNames = (env: string) => {
   const p = resourcePrefix(env);
   return {

@@ -13,7 +13,7 @@ function build(environment: "dev" | "prod"): Template {
 describe.each(["dev", "prod"] as const)("SparkStoreStack %s", (environment) => {
   const t = build(environment);
 
-  test("bucket: public access blocked, KMS, not versioned, three lifecycle rules", () => {
+  test("bucket: public access blocked, KMS, not versioned, four lifecycle rules", () => {
     t.hasResourceProperties("AWS::S3::Bucket", {
       BucketName: `lightbulb-${environment}-spark-store`,
       PublicAccessBlockConfiguration: {
@@ -34,6 +34,7 @@ describe.each(["dev", "prod"] as const)("SparkStoreStack %s", (environment) => {
         Rules: [
           Match.objectLike({ Id: "AbortIncompleteUploads", AbortIncompleteMultipartUpload: { DaysAfterInitiation: 1 } }),
           Match.objectLike({ Id: "ExpireAthenaResults", Prefix: "athena-results/", ExpirationInDays: 7 }),
+          Match.objectLike({ Id: "ExpireJobState", Prefix: "jobs/", ExpirationInDays: 7 }),
           Match.objectLike({ Id: "ExpireFirehoseErrors", Prefix: "errors/", ExpirationInDays: 3 }),
         ],
       },
@@ -56,6 +57,34 @@ describe.each(["dev", "prod"] as const)("SparkStoreStack %s", (environment) => {
         }),
       });
     }
+  });
+
+  test("workgroup results are SSE_KMS encrypted", () => {
+    const wgs = Object.values(t.findResources("AWS::Athena::WorkGroup")) as any[];
+    expect(wgs).toHaveLength(2);
+    for (const w of wgs) {
+      expect(w.Properties.WorkGroupConfiguration.ResultConfiguration.EncryptionConfiguration.EncryptionOption).toBe(
+        "SSE_KMS",
+      );
+    }
+  });
+
+  test("no lifecycle rule touches warehouse/", () => {
+    const [bucket] = Object.values(t.findResources("AWS::S3::Bucket")) as any[];
+    for (const r of bucket.Properties.LifecycleConfiguration.Rules) expect(r.Prefix ?? "").not.toMatch(/^warehouse/);
+  });
+
+  test("firehose KMS use is limited to S3 via kms:ViaService", () => {
+    t.hasResourceProperties("AWS::IAM::Policy", {
+      PolicyDocument: Match.objectLike({
+        Statement: Match.arrayWith([
+          Match.objectLike({
+            Action: ["kms:GenerateDataKey", "kms:Decrypt"],
+            Condition: { StringEquals: { "kms:ViaService": "s3.us-east-1.amazonaws.com" } },
+          }),
+        ]),
+      }),
+    });
   });
 
   test("firehose role and log group exist, no delivery streams yet", () => {

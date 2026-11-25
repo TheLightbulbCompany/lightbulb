@@ -119,14 +119,27 @@ describe("spark sections", () => {
 
   it("renders the signals as counts, k / n, and the stop split", () => {
     render(<Signals data={DATA} />);
-    expect(screen.getByText("3 / 12 (25%)")).toBeTruthy(); // stopped / started
+    expect(screen.getByText(/Stopped 3 \/ started 12 \(25%\)/)).toBeTruthy(); // stopped / started
     expect(screen.getByText(/pressed 2, said 1, other 0/)).toBeTruthy();
-    expect(screen.getByText("8 / 10 (80%)")).toBeTruthy(); // automations started
-    expect(screen.getByText("7 / 10 (70%)")).toBeTruthy(); // ... with a brain
-    expect(screen.getByText("3 / 7 (43%)")).toBeTruthy(); // push to talk, 7 days, of active people
+    expect(screen.getByText(/started 8 \/ 10 \(80%\)/)).toBeTruthy(); // automations started
+    expect(screen.getByText(/with a brain 7 \/ 10 \(70%\)/)).toBeTruthy(); // ... with a brain
+    expect(screen.queryByText("3 / 7 (43%)")).toBeNull(); // features are plain people counts
     expect(screen.getByText(/2 \/ 7 \(29%\)/)).toBeTruthy(); // crashed people / active people
     expect(screen.getByText("1.1")).toBeTruthy();
     expect(screen.queryByText(/succeeded/)).toBeNull();
+  });
+
+  it("shows stops without a percentage when they exceed the starts", () => {
+    const d = { ...DATA, signals: { ...DATA.signals, stopped: { k: 4, n: 1, how: [{ key: "other", count: 4 }] } } };
+    render(<Signals data={d} />);
+    expect(screen.getByText(/Stopped 4 \/ started 1/)).toBeTruthy();
+    expect(screen.queryByText(/400%/)).toBeNull();
+  });
+
+  it("renders each versions and crashes part on its own", () => {
+    const d = { ...DATA, signals: { ...DATA.signals, versions: null, crash: null } };
+    render(<Signals data={d} />);
+    expect(screen.getByText("1.1")).toBeTruthy(); // updates still show
   });
 
   it("shows no data yet for signals never seen", () => {

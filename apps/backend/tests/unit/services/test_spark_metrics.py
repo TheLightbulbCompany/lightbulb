@@ -439,7 +439,7 @@ def test_signals_query_reads_the_new_events_and_never_feeds_the_doer_or_success_
         "update_installed",
     ):
         assert f"'{e}'" in q, e
-    assert "task_rated" not in q and "interval 30 day" in q
+    assert "interval 30 day" in q
     assert "!= 'automation'" in q  # started n counts human tasks only
     assert "properties.how" in q and "properties.feature" in q
     for name in ("doers_weekly", "doers_7d", "success_weekly", "success_version", "success_provider"):
@@ -457,12 +457,16 @@ SIGNALS = [
     ["automation_fired", "false/true", 2, 1, 1, 0],
     ["feature_used", "dictation", 6, 3, 2, 0],
     ["feature_used", "marks", 1, 1, 0, 0],
+    ["feature_used", "automation_created", 2, 2, 1, 0],
     ["voice_session_ended", "hold", 20, 4, 3, 2],
     ["voice_session_ended", "typed", 4, 1, 1, 1],
+    ["voice_session_ended", "-", 1, 1, 1, 0],
     ["problem_raised", "-", 3, 2, 2, 0],
     ["app_opened", "1.0", 50, 6, 4, 0],
     ["app_opened", "1.1", 30, 3, 3, 0],
-    ["update_installed", "1.1", 3, 3, 3, 0],
+    ["app_opened", "-", 1, 1, 1, 0],
+    ["update_installed", "1.9", 1, 1, 1, 0],
+    ["update_installed", "1.10", 2, 2, 2, 0],
 ]
 
 
@@ -473,7 +477,17 @@ def test_signals_stops_as_k_of_started_with_how_split():
         "n": 12,
         "how": [{"key": "pressed", "count": 2}, {"key": "said", "count": 1}, {"key": "other", "count": 0}],
     }
-    assert "rated" not in s
+    odd = [
+        ["task_started", "-", 1, 1, 1, 0],
+        ["task_stopped", "pressed", 3, 1, 1, 0],
+        ["task_stopped", "-", 1, 1, 1, 0],
+    ]
+    s = sm.derive(_rows(signals=odd), NOW)["signals"]["stopped"]  # a missing how folds into other; k can exceed n
+    assert s == {
+        "k": 4,
+        "n": 1,
+        "how": [{"key": "pressed", "count": 3}, {"key": "said", "count": 0}, {"key": "other", "count": 1}],
+    }
 
 
 def test_signals_automations_started_k_of_runs_and_brain():
@@ -489,15 +503,24 @@ def test_signals_features_ordered_by_people_with_full_access_from_the_sixth_colu
     assert by["full access"] == {"feature": "full access", "people_30d": 2, "people_7d": None}  # only a 30d column
     assert by["typing"] == {"feature": "typing", "people_30d": 1, "people_7d": 1}
     assert by["dictation"]["people_30d"] == 3 and by["marks"]["people_30d"] == 1
-    assert by["automation ran"]["people_30d"] == 3 and "automation_created" not in by
-    assert [x["people_30d"] for x in f] == sorted((x["people_30d"] for x in f), reverse=True)
+    assert by["automation ran"]["people_30d"] == 3
+    assert by["created an automation"] == {"feature": "created an automation", "people_30d": 2, "people_7d": 1}
+    assert by["unknown"]["people_30d"] == 1  # a missing voice kind
+    keys = [(-x["people_30d"], x["feature"]) for x in f]
+    assert keys == sorted(keys)  # ties break by label, so a refresh never reorders them
 
 
 def test_signals_crash_versions_and_updates():
     s = sm.derive(_rows(signals=SIGNALS), NOW)["signals"]
-    assert s["crash"] == {"k": 2, "n": 7}  # crash people 7d / sum of per-version people 7d (about)
-    assert s["versions"] == [{"version": "1.0", "people_7d": 4}, {"version": "1.1", "people_7d": 3}]
-    assert s["updates"] == [{"to_version": "1.1", "installs_30d": 3}]
+    # crash people 7d / sum of per-version people 7d (about)
+    assert s["crash"] == {"k": 2, "n": 8}
+    assert s["versions"] == [
+        {"version": "1.0", "people_7d": 4},
+        {"version": "1.1", "people_7d": 3},
+        {"version": "unknown", "people_7d": 1},
+    ]
+    # newest first, as numbers: 1.10 is newer than 1.9
+    assert s["updates"] == [{"to_version": "1.10", "installs_30d": 2}, {"to_version": "1.9", "installs_30d": 1}]
 
 
 def test_signals_parts_are_none_until_their_events_exist():

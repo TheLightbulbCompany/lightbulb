@@ -21,6 +21,7 @@ import statistics
 import time
 from collections import Counter
 from datetime import datetime, timedelta, timezone
+from typing import NamedTuple
 
 from core.config import settings
 from core.services import posthog_admin
@@ -302,10 +303,13 @@ def _money(rows: dict[str, list], now: datetime) -> dict:
     return {"price_usd": price, "subs": subs, "voice": voice}
 
 
+def _kn(k: int, n: int) -> dict:
+    return {"k": k, "n": n}
+
+
 def _setup(rows: dict[str, list]) -> dict | None:
     """Onboarding losses, sign-in failures, permission denials (distinct persons, 30d), tasks never finished.
     None = no onboarding_step ever seen (the app that sends them is not out yet)."""
-    kn = lambda k, n: {"k": k, "n": n}  # noqa: E731
     seen = {(e, str(k), a): int(n) for e, k, a, n in rows["setup_steps"]}
     if not any(e == "onboarding_step" for e, _, _ in seen):
         return None
@@ -316,8 +320,8 @@ def _setup(rows: dict[str, list]) -> dict | None:
             {
                 "step": s,
                 "shown": step(s, "shown"),
-                "completed": kn(step(s, "completed"), step(s, "shown")),
-                "skipped": kn(step(s, "skipped"), step(s, "shown")),
+                "completed": _kn(step(s, "completed"), step(s, "shown")),
+                "skipped": _kn(step(s, "skipped"), step(s, "shown")),
             }
             for s in STEP_ORDER
         ],
@@ -327,71 +331,95 @@ def _setup(rows: dict[str, list]) -> dict | None:
             if e == "brain_signin_failed"
         ],
         "permissions": [
-            {"permission": p, "prompted": n, "denied": kn(seen.get(("permission_denied", p, ""), 0), n)}
+            {"permission": p, "prompted": n, "denied": _kn(seen.get(("permission_denied", p, ""), 0), n)}
             for (e, p, _), n in sorted(seen.items())
             if e == "permission_prompted"
         ],
-        "unfinished": kn(int(stuck[0]), int(stuck[1])) if int(stuck[1]) else None,
+        "unfinished": _kn(int(stuck[0]), int(stuck[1])) if int(stuck[1]) else None,
     }
 
 
-SIGNAL_LABELS = {"hold": "push to talk", "handsFree": "hands-free", "wakeWord": "wake word", "typed": "typing"}
-STOP_HOW = ("pressed", "said", "other")
+LABELS = {
+    "hold": "push to talk",
+    "handsFree": "hands-free",
+    "wakeWord": "wake word",
+    "typed": "typing",
+    "automation_created": "created an automation",
+    "-": "unknown",  # a missing value
+}
+
+
+class _Row(NamedTuple):
+    count: int
+    people_30d: int
+    people_7d: int
+    full_access: int
+
+
+def _version_key(v: str) -> tuple[int, ...]:
+    return tuple(int(x) for x in v.split(".") if x.isdigit())  # numbers, not strings: 2.1.10 > 2.1.9
 
 
 def _signals(rows: list) -> dict:
     """Stops, automations, features, crashes and versions from the `signals` rows (30d). Each part is None
     until its events were seen ("no data yet"), never a table of zeros. Counts only; shares are k and n."""
-    by: dict[str, list] = {}
-    for event, k, count, p30, p7, full in rows:
-        by.setdefault(event, []).append((str(k), int(count), int(p30), int(p7), int(full)))
-    total = lambda e, i=1: sum(r[i] for r in by.get(e, []))  # noqa: E731
-    biggest = lambda e, i: max((r[i] for r in by.get(e, [])), default=0)  # noqa: E731
+    by: dict[str, dict[str, _Row]] = {}
+    for event, k, *nums in rows:
+        by.setdefault(event, {})[str(k)] = _Row(*(int(x) for x in nums))
+    total = lambda e, f="count": sum(getattr(r, f) for r in by.get(e, {}).values())  # noqa: E731
+    biggest = lambda e, f: max((getattr(r, f) for r in by.get(e, {}).values()), default=0)  # noqa: E731
 
     stopped = None
     if "task_stopped" in by:
-        how = {k: n for k, n, *_ in by["task_stopped"]}
+        k = total("task_stopped")
+        how = {h: by["task_stopped"].get(h, _Row(0, 0, 0, 0)).count for h in ("pressed", "said")}
         stopped = {
-            "k": total("task_stopped"),
+            "k": k,
             "n": total("task_started"),
-            "how": [{"key": h, "count": how.get(h, 0)} for h in STOP_HOW],
+            # a missing or unknown how is "other", so the three always add up to k
+            "how": [
+                *({"key": h, "count": c} for h, c in how.items()),
+                {"key": "other", "count": k - sum(how.values())},
+            ],
         }
     automations = None
     if "automation_fired" in by:
         runs = total("automation_fired")
-        started = sum(n for k, n, *_ in by["automation_fired"] if k.startswith("true/"))
-        brain = sum(n for k, n, *_ in by["automation_fired"] if k.endswith("/true"))
+        fired = by["automation_fired"]
         # ponytail: a person in two rows (ok and not ok) is counted once at best, so this is a lower bound
         automations = {
             "runs": runs,
-            "ok": {"k": started, "n": runs},
-            "with_brain": {"k": brain, "n": runs},
-            "people_30d": biggest("automation_fired", 2),
+            "ok": _kn(sum(r.count for k, r in fired.items() if k.startswith("true/")), runs),
+            "with_brain": _kn(sum(r.count for k, r in fired.items() if k.endswith("/true")), runs),
+            "people_30d": biggest("automation_fired", "people_30d"),
         }
     feats = [
-        {"feature": SIGNAL_LABELS.get(k, k), "people_30d": p30, "people_7d": p7}
+        {"feature": LABELS.get(k, k), "people_30d": r.people_30d, "people_7d": r.people_7d}
         for e in ("voice_session_ended", "feature_used")
-        for k, _, p30, p7, _ in by.get(e, [])
+        for k, r in by.get(e, {}).items()
     ]
-    if "voice_session_ended" in by and biggest("voice_session_ended", 4):
-        feats.append({"feature": "full access", "people_30d": biggest("voice_session_ended", 4), "people_7d": None})
+    if full := biggest("voice_session_ended", "full_access"):
+        feats.append({"feature": "full access", "people_30d": full, "people_7d": None})
     if automations:
         feats.append(
             {
                 "feature": "automation ran",
                 "people_30d": automations["people_30d"],
-                "people_7d": biggest("automation_fired", 3),
+                "people_7d": biggest("automation_fired", "people_7d"),
             }
         )
-    opened = sorted(((k, p7) for k, _, _, p7, _ in by.get("app_opened", [])), key=lambda x: -x[1])
+    opened = sorted(
+        ((LABELS.get(k, k), r.people_7d) for k, r in by.get("app_opened", {}).items()), key=lambda x: (-x[1], x[0])
+    )
+    updates = sorted(by.get("update_installed", {}).items(), key=lambda x: _version_key(x[0]), reverse=True)
     return {
         "stopped": stopped,
         "automations": automations,
-        "features": sorted(feats, key=lambda f: -f["people_30d"]) or None,
+        "features": sorted(feats, key=lambda f: (-f["people_30d"], f["feature"])) or None,
         # about: a person who updated during the week is in two versions
-        "crash": {"k": total("problem_raised", 3), "n": sum(p for _, p in opened)} if opened else None,
+        "crash": _kn(total("problem_raised", "people_7d"), sum(p for _, p in opened)) if opened else None,
         "versions": [{"version": k, "people_7d": p} for k, p in opened] or None,
-        "updates": [{"to_version": k, "installs_30d": n} for k, n, *_ in by.get("update_installed", [])] or None,
+        "updates": [{"to_version": LABELS.get(k, k), "installs_30d": r.count} for k, r in updates] or None,
     }
 
 

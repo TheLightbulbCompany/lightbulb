@@ -30,9 +30,9 @@ describe('useApi().post', () => {
     });
 
     const { result } = renderHook(() => useApi());
-    expect(await result.current.post('/support/tickets', { message: 'hi' })).toEqual({ status: 'sent' });
+    expect(await result.current.post('/os/referral', { message: 'hi' })).toEqual({ status: 'sent' });
     expect(mockFetch).toHaveBeenCalledWith(
-      expect.stringContaining('/support/tickets'),
+      expect.stringContaining('/os/referral'),
       expect.objectContaining({
         method: 'POST',
         body: JSON.stringify({ message: 'hi' }),

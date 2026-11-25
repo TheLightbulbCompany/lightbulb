@@ -887,81 +887,6 @@
   margin: 0 auto;
 }
 
-.support-form {
-  display: flex;
-  flex-direction: column;
-  gap: 24px;
-}
-
-.support-field {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.support-field label {
-  font-size: var(--text-sm);
-  font-weight: 600;
-  color: var(--midnight);
-}
-
-.support-field input,
-.support-field select,
-.support-field textarea {
-  font-family: var(--font-sans), ui-sans-serif, system-ui, sans-serif;
-  font-size: var(--text-base);
-  color: var(--midnight);
-  background: var(--cream);
-  border: 1px solid var(--edge);
-  border-radius: var(--radius-md);
-  padding: 12px 16px;
-  min-height: 44px;
-  transition: border-color var(--dur-base) var(--ease-out);
-}
-
-.support-field input::placeholder,
-.support-field textarea::placeholder {
-  color: var(--midnight-muted);
-}
-
-.support-field select {
-  appearance: none;
-  background-image: url("data:image/svg+xml,%3Csvg width='12' height='8' viewBox='0 0 12 8' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1.5L6 6.5L11 1.5' stroke='%235c5c5c' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
-  background-repeat: no-repeat;
-  background-position: right 16px center;
-  padding-right: 40px;
-  cursor: pointer;
-}
-
-.support-field textarea {
-  min-height: 160px;
-  resize: vertical;
-  line-height: 1.6;
-}
-
-.support-submit {
-  font-family: var(--font-sans), ui-sans-serif, system-ui, sans-serif;
-  font-size: var(--text-base);
-  font-weight: 600;
-  color: var(--cream);
-  background: var(--midnight);
-  border: none;
-  border-radius: 999px;
-  padding: 14px 32px;
-  min-height: 48px;
-  cursor: pointer;
-  align-self: flex-start;
-  transition: background var(--dur-base) var(--ease-out), transform var(--dur-fast) var(--ease-out);
-}
-
-.support-submit:hover {
-  background: color-mix(in srgb, var(--midnight) 88%, var(--cream));
-}
-
-.support-submit:active {
-  transform: scale(0.98);
-}
-
 .support-direct {
   margin-top: 40px;
   text-align: center;
@@ -985,7 +910,6 @@
   .legal-content h1,
   .support-header h1 { font-size: var(--text-title); }
   .legal-content h2 { font-size: var(--text-base); }
-  .support-submit { width: 100%; text-align: center; }
 }
 
 /* ── BRAND LOGO (canonical wordmark) ── */

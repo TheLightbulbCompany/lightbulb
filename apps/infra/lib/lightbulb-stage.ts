@@ -63,16 +63,6 @@ export class LightbulbStage extends cdk.Stage {
       legacyRootDomain: LEGACY_ROOT_DOMAIN,
     });
 
-    // The verified SES domain the support-ticket mail is sent under (the identity lives in the
-    // retired lightbulb-prod-ses-inbound stack, see the PR notes). Prod owns the apex; dev a
-    // subdomain under it. Empty keeps the backend's sends off.
-    const agentEmailDomain =
-      env === "prod"
-        ? platformMailDomain
-        : env === "dev"
-          ? `dev.${platformMailDomain}`
-          : "";
-
     // ServiceStack grants by name (sparkStoreNames), so it does not wait on this stack; the dev
     // frontend deploy and prod promotion do.
     new SparkStoreStack(this, `lightbulb-${env}-spark-store`, {
@@ -105,7 +95,6 @@ export class LightbulbStage extends cdk.Stage {
       stackName: `lightbulb-${env}-service`,
       environment: env,
       rootDomain,
-      platformMailDomain,
       vpc: network.vpc,
       targetGroup: network.targetGroupV2,
       albSecurityGroup: network.albSecurityGroup,
@@ -123,7 +112,6 @@ export class LightbulbStage extends cdk.Stage {
       },
       kmsKeyArn: auth.kmsKey.keyArn,
       cluster: container.cluster,
-      agentEmailDomain,
     });
 
     // EXPLICIT, and load-bearing. The service stack used to take a `database`

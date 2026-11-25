@@ -31,7 +31,6 @@ function buildServiceStack(environment: "dev" | "prod"): Template {
     },
     kmsKeyArn: kmsKey.keyArn,
     cluster: container.cluster,
-    agentEmailDomain: environment === "prod" ? "thelightbulb.company" : "dev.thelightbulb.company",
   });
   return Template.fromStack(service);
 }
@@ -76,7 +75,7 @@ describe("ServiceStack — the Spark backend", () => {
     );
   });
 
-  test("the backend env carries the Spark and support-mail settings", () => {
+  test("the backend env carries the Spark settings", () => {
     const envNames = backendContainer(SERVICE_TEMPLATE_DEV).Environment.map((e: any) => e.Name);
     for (const name of [
       "PLATFORM_ADMIN_USER_IDS",
@@ -86,8 +85,6 @@ describe("ServiceStack — the Spark backend", () => {
       "SPARK_STORE_DELETES",
       "SPARK_WORKLOG_SCOPE",
       "WEBHOOK_DEDUP_TABLE",
-      "AGENT_EMAIL_DOMAIN",
-      "EMAIL_FROM_TICKETS",
       "PUBLIC_API_BASE",
     ]) {
       expect(envNames).toContain(name);
@@ -99,20 +96,6 @@ describe("ServiceStack — the Spark backend", () => {
     ["prod", SERVICE_TEMPLATE_PROD, "0"],
   ] as const)("%s backend sets SPARK_STORE_DELETES=%s", (_env, template, value) => {
     expect(backendContainer(template).Environment).toContainEqual({ Name: "SPARK_STORE_DELETES", Value: value });
-  });
-
-  test("SES send is scoped to the mail domain identity", () => {
-    SERVICE_TEMPLATE_PROD.hasResourceProperties("AWS::IAM::ManagedPolicy", {
-      ManagedPolicyName: "lightbulb-prod-backend-ses-send",
-      PolicyDocument: {
-        Statement: [
-          Match.objectLike({
-            Action: ["ses:SendEmail", "ses:SendRawEmail"],
-            Resource: "arn:aws:ses:us-east-1:877352799272:identity/thelightbulb.company",
-          }),
-        ],
-      },
-    });
   });
 
   test("SparkStoreAccess: Firehose put only on the three named streams, Athena only on the app workgroup", () => {

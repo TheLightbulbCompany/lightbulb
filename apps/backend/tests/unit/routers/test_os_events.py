@@ -732,3 +732,58 @@ async def test_posthog_failure_never_fails_server_paths(ph, ddb, monkeypatch):
     )
     await os_billing.sync_subscription({"data": {"object": {"id": "sub_9", "metadata": {"user_id": "user_a"}}}})
     assert (await send("app_opened", who=A)).status_code == 204
+
+
+# --- task_started tags the person's voice sessions for the data store -----------------------------------
+
+
+@pytest.fixture
+def marked(monkeypatch):
+    calls = []
+
+    async def fake(user_id, task_id):
+        calls.append((user_id, task_id))
+
+    monkeypatch.setattr(os_voice, "mark_task", fake)
+    return calls
+
+
+async def test_an_authenticated_task_started_marks_the_task_when_the_store_is_on(ph, ddb, marked, monkeypatch):
+    monkeypatch.setattr(os_router.settings, "SPARK_STORE_ENABLED", True)
+    assert (await send("task_started", VALID["task_started"], A)).status_code == 204
+    await _settle()
+    assert marked == [("user_a", TASK_ID)]
+
+
+@pytest.mark.parametrize(
+    ("who", "props", "flag"),
+    [
+        (A, VALID["task_started"], False),
+        (None, VALID["task_started"], True),
+        (A, {"source": "voice", "talk_kind": "none"}, True),
+        (A, VALID["task_started"] | {"task_id": "dlg_NOT VALID"}, True),
+    ],
+    ids=["flag off", "anonymous", "no task id", "bad task id"],
+)
+async def test_task_started_marks_nothing_otherwise(ph, ddb, marked, monkeypatch, who, props, flag):
+    monkeypatch.setattr(os_router.settings, "SPARK_STORE_ENABLED", flag)
+    assert (await send("task_started", props, who)).status_code == 204
+    await _settle()
+    assert marked == [] and len(ph.named("task_started")) == 1
+
+
+async def test_other_events_mark_nothing(ph, ddb, marked, monkeypatch):
+    monkeypatch.setattr(os_router.settings, "SPARK_STORE_ENABLED", True)
+    await send("task_completed", VALID["task_completed"], A)
+    await _settle()
+    assert marked == []
+
+
+async def test_a_failing_mark_never_fails_the_event(ph, ddb, monkeypatch):
+    async def boom(user_id, task_id):
+        raise RuntimeError("ddb down")
+
+    monkeypatch.setattr(os_voice, "mark_task", boom)
+    monkeypatch.setattr(os_router.settings, "SPARK_STORE_ENABLED", True)
+    assert (await send("task_started", VALID["task_started"], A)).status_code == 204
+    await _settle()

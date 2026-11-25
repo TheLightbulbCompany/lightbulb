@@ -18,7 +18,6 @@ PRODUCT = "spark"
 VERSION = re.compile(r"[0-9]{1,4}(\.[0-9]{1,4}){0,3}([-+][0-9A-Za-z.]{1,16})?")
 # An OS version is dotted numbers, each up to five digits: macOS 26.2, Windows 10.0.26100.
 OS_VERSION = re.compile(r"[0-9]{1,5}(\.[0-9]{1,5}){0,3}")
-DL_ID = re.compile(r"[0-9a-f]{16}")  # the website's download id, claimed by the app on first launch
 NS = uuid.uuid5(uuid.NAMESPACE_URL, "lightbulb:spark")
 
 
@@ -38,7 +37,6 @@ def _seconds(v: object) -> bool:
     return type(v) is int and 0 <= v <= 86400
 
 
-_GRANT = _enum("ok", "denied", "unknown")
 _METHOD = _enum("apple", "google", "email")
 _PROVIDER = _enum("chatgpt", "claude")
 _PROBLEM_KIND = _enum(
@@ -67,7 +65,7 @@ _PROBLEM_KIND = _enum(
 )  # keep equal to ProblemKind in the Spark engine's protocol package
 
 APP_EVENTS: dict[str, dict[str, Callable[[object], bool]]] = {
-    "app_first_launch": {"dl_id": _match(DL_ID)},
+    "app_first_launch": {},
     "app_opened": {},
     "signin_started": {"method": _METHOD},
     "signin_completed": {"method": _METHOD, "is_new_account": _bool},
@@ -82,14 +80,6 @@ APP_EVENTS: dict[str, dict[str, Callable[[object], bool]]] = {
         "source": _enum("voice", "typed", "automation"),
         "seconds_bucket": _enum("lt10", "lt30", "lt120", "lt600", "gte600"),
     },
-    "health": {
-        "brain": _enum("ok", "missing", "starting"),
-        "mic": _enum("ok", "denied", "none"),
-        "accessibility": _GRANT,
-        "screen": _GRANT,
-        "last_success": _enum("none", "lt1d", "lt7d", "gte7d"),
-    },
-    "talk_started": {"trigger": _enum("hold", "hands_free", "wake")},
     "task_failed": {"reason": _enum("auth", "quota", "rate", "unreachable", "signed_out", "other")},
     "problem_raised": {"kind": _PROBLEM_KIND},
     "upgrade_clicked": {},
@@ -132,17 +122,24 @@ def facts(row: dict, now: int) -> dict:
 
 
 def server_event(
-    user_id: str, event: str, key: str, properties: dict | None = None, row: dict | None = None, now: int = 0
+    user_id: str,
+    event: str,
+    key: str,
+    properties: dict | None = None,
+    row: dict | None = None,
+    now: int = 0,
+    set_once: dict | None = None,
 ) -> None:
     """One server-side Spark event on the person, with `facts(row, now)` set on them when a row is given.
     `key` makes the event uuid deterministic, so a retried request or a redelivered webhook is dropped by
-    PostHog. Never raises."""
+    PostHog. `set_once` goes on the person as `$set_once`. Never raises."""
     try:
         product_analytics.capture_product_event(
             distinct_id=user_id,
             event=event,
             properties={**(properties or {}), "product": PRODUCT},
             set_person=facts(row, now) if row is not None else None,
+            set_once=set_once,
             event_uuid=str(uuid.uuid5(NS, f"{event}:{key}")),
         )
     except Exception:  # noqa: BLE001  analytics never fails the caller

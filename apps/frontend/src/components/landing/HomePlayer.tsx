@@ -26,7 +26,7 @@ export function PhoneSignupLink() {
 export function SparkDownloadLink() {
   const onPhone = useOnPhone();
   return (
-    <a className="btn" href={onPhone ? "/os#get" : "/download/spark"} onClick={(e) => !onPhone && trackSparkDownload("home", e.currentTarget)}>
+    <a className="btn" href={onPhone ? "/os#get" : "/download/spark"} onClick={() => !onPhone && trackSparkDownload("home")}>
       Download for Mac
     </a>
   );

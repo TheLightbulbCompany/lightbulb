@@ -383,7 +383,12 @@ async def apply_referral(body: Any = Body(None), auth: AuthContext = Depends(get
         logger.warning("os referral not written for %s: transport", auth.user_id)
         raise HTTPException(status_code=503, detail="referral_unavailable")
     if applied:
-        spark_events.server_event(auth.user_id, "referred_by_applied", auth.user_id)
+        spark_events.server_event(
+            auth.user_id,
+            "referred_by_applied",
+            auth.user_id,
+            set_once={"spark_channel": "referral", "spark_referrer": referrer},
+        )
     return ReferralResponse(applied=applied)
 
 
@@ -552,8 +557,8 @@ def _install_id(value: Any) -> str | None:
 
 
 async def _link_install(user_id: str, install_id: str) -> bool:
-    """Remember the install on the person's existing users row, at most INSTALL_IDS_MAX of them. True only
-    when this call added it."""
+    """Remember the install on the person's existing users row, at most INSTALL_IDS_MAX of them. True when
+    the install is new to the person, stored or not: past the cap it is still joined to them in PostHog."""
     try:
         await run_in_thread(
             _table().update_item,
@@ -562,11 +567,14 @@ async def _link_install(user_id: str, install_id: str) -> bool:
             ConditionExpression="attribute_exists(user_id) AND (attribute_not_exists(os_install_ids) OR "
             "(NOT contains(os_install_ids, :one) AND size(os_install_ids) < :cap))",
             ExpressionAttributeValues={":iid": {install_id}, ":one": install_id, ":cap": INSTALL_IDS_MAX},
+            ReturnValuesOnConditionCheckFailure="ALL_OLD",
         )
     except ClientError as e:
         if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
             logger.warning("os install link not written: %s", e.response["Error"]["Code"])
-        return False
+            return False
+        old = e.response.get("Item")  # low-level shape; absent when the person has no row yet
+        return bool(old) and install_id not in old.get("os_install_ids", {}).get("SS", [])
     except BotoCoreError:
         return False
     return True

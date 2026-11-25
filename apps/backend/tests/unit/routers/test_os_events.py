@@ -22,7 +22,7 @@ A, B = Tenant("user_a", None), Tenant("user_b", None)
 INSTALL = str(uuid.uuid4())
 SENTENCE = "please book my flight to Paris and email the file report.pdf from https://example.com/x"
 VALID = {
-    "app_first_launch": {"dl_id": "0123456789abcdef"},
+    "app_first_launch": {},
     "app_opened": {},
     "signin_started": {"method": "apple"},
     "signin_completed": {"method": "google", "is_new_account": True},
@@ -33,8 +33,6 @@ VALID = {
     "onboarding_completed": {"skipped_sign_in": False, "seconds_total": 120},
     "first_conversation": {},
     "task_completed": {"source": "typed", "seconds_bucket": "lt30"},
-    "health": {"brain": "ok", "mic": "denied", "accessibility": "ok", "screen": "unknown", "last_success": "lt1d"},
-    "talk_started": {"trigger": "hands_free"},
     "first_tidy": {"outcome": "already_tidy"},
     "task_failed": {"reason": "unreachable"},
     "problem_raised": {"kind": "permission.screenRecording"},
@@ -136,14 +134,13 @@ async def test_each_allowed_event_is_captured(event, signed_in, ph, ddb):
 # The Spark engine's EVENTS (packages/engine/src/account/events.ts), event to property names: its test holds the
 # same table, so a change on one side fails the other's test.
 ENGINE_TABLE = {
-    "app_first_launch": ["dl_id"],
+    "app_first_launch": [],
     "app_opened": [],
     "brain_chosen": ["provider"],
     "brain_signin_started": ["needed_download", "provider"],
     "first_conversation": [],
     "first_tidy": ["outcome"],
     "full_access_set": ["on"],
-    "health": ["accessibility", "brain", "last_success", "mic", "screen"],
     "manage_subscription_clicked": [],
     "onboarding_completed": ["seconds_total", "skipped_sign_in"],
     "permission_granted": ["permission"],
@@ -151,7 +148,6 @@ ENGINE_TABLE = {
     "referral_link_copied": [],
     "signin_completed": ["is_new_account", "method"],
     "signin_started": ["method"],
-    "talk_started": ["trigger"],
     "task_completed": ["seconds_bucket", "source"],
     "task_failed": ["reason"],
     "update_installed": ["from_version", "to_version"],
@@ -286,7 +282,9 @@ async def test_alias_once_per_install_and_at_most_ten_installs(ph, ddb):
         await send("task_completed", who=A, install=i)
     row = ddb.get_item(Key={"user_id": "user_a"})["Item"]
     assert len(row["os_install_ids"]) == 10 and installs[-1] not in row["os_install_ids"]
-    assert len(ph.aliases) == 10
+    assert len(ph.aliases) == 11  # the 11th install is not stored, but still joins the person
+    await send("task_completed", who=A, install=INSTALL)
+    assert len(ph.aliases) == 11  # an install already linked is not aliased again
 
 
 async def test_signed_in_before_an_account_writes_no_row_and_no_alias(ph, ddb):
@@ -327,6 +325,10 @@ async def test_referral_captures_both_events(ph, ddb):
     assert r.json() == {"applied": True}
     assert [c["distinct_id"] for c in ph.named("referral_applied")] == ["user_a"]
     assert [c["distinct_id"] for c in ph.named("referred_by_applied")] == ["user_b"]
+    assert ph.named("referred_by_applied")[0]["properties"]["$set_once"] == {
+        "spark_channel": "referral",
+        "spark_referrer": "user_a",
+    }
 
 
 async def test_web_signup_referral_events_fire_at_record_and_at_credit(ph, ddb):

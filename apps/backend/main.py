@@ -91,9 +91,12 @@ async def lifespan(app: FastAPI):
     set_shutting_down(False)
 
     from core.voice.os_voice import os_voice_sweeper
+    from core.observability.spark_store_jobs import run as spark_store_jobs
 
     os_voice_stop = asyncio.Event()
     os_voice_task = asyncio.create_task(os_voice_sweeper(os_voice_stop))
+    spark_store_stop = asyncio.Event()
+    spark_store_task = asyncio.create_task(spark_store_jobs(spark_store_stop))
 
     # Startup complete — flip the liveness gate so /health returns 200.
     global _started
@@ -104,13 +107,15 @@ async def lifespan(app: FastAPI):
     logger.info("Shutting down application...")
     set_shutting_down(True)  # 503 new business requests; /health stays green for ALB drain
     os_voice_stop.set()
+    spark_store_stop.set()
     try:
         async with asyncio.timeout(20):
-            await asyncio.gather(os_voice_task, return_exceptions=True)
+            await asyncio.gather(os_voice_task, spark_store_task, return_exceptions=True)
     except asyncio.TimeoutError:
         logger.error("Graceful shutdown exceeded 20s budget; cancelling process-local workers")
         os_voice_task.cancel()
-        await asyncio.gather(os_voice_task, return_exceptions=True)
+        spark_store_task.cancel()
+        await asyncio.gather(os_voice_task, spark_store_task, return_exceptions=True)
 
 
 openapi_tags = [

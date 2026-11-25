@@ -21,13 +21,6 @@ from core.dynamodb import get_table, run_in_thread
 from core.observability import spark_events
 from core.observability.metrics import put_metric
 from core.repositories import user_repo
-from core.services.billing_service import (
-    BillingServiceError,
-    _checkout_idempotency_key,
-    _checkout_trial_end,
-    _expire_open_checkout_session,
-    _retrieve_checkout_session,
-)
 from core.services.service_token import _signing_key
 
 logger = logging.getLogger(__name__)
@@ -39,6 +32,48 @@ LIVE = ("active", "trialing")
 # `incomplete` is not here: its first payment never went through and Stripe expires it within a day.
 BILLED = (*LIVE, "past_due", "unpaid", "paused")
 CHECKOUT_TTL_S = 1800  # Stripe's minimum Checkout Session lifetime
+
+
+_CHECKOUT_BODY_VERSION = 9  # bump whenever the Checkout Session body changes (Stripe rejects a changed body)
+_STRIPE_MIN_TRIAL_S = 49 * 3600  # Stripe's 48-hour trial minimum, plus slack
+
+
+class BillingServiceError(Exception):
+    pass
+
+
+def _checkout_idempotency_key(flow: str, owner_id: str, extra: str | None = None) -> str:
+    """5-minute buckets collapse duplicate clicks to one Checkout Session."""
+    bucket = int(time.time() // 300)
+    suffix = f":{extra}" if extra is not None else ""
+    return f"{flow}:v{_CHECKOUT_BODY_VERSION}:{owner_id}{suffix}:{bucket}"
+
+
+def _checkout_trial_end(account: dict, now_s: int) -> int | None:
+    """The Stripe trial ends where the free trial does, stretched to Stripe's 48-hour minimum near the end;
+    an ended trial is billed at once. ``now_s`` is the checkout bucket start, so retries send an identical body."""
+    if account.get("subscription_status") != "trial_local":
+        return None
+    end = int(account["trial_end"])
+    if end <= now_s:
+        return None
+    return max(end, now_s + _STRIPE_MIN_TRIAL_S)
+
+
+def _retrieve_checkout_session(session_id: str):
+    """The Checkout session with its subscription expanded, or None when Stripe has no such session."""
+    try:
+        return stripe.checkout.Session.retrieve(session_id, expand=["subscription"], api_key=settings.STRIPE_SECRET_KEY)
+    except stripe.InvalidRequestError:
+        return None
+
+
+def _expire_open_checkout_session(session_id: str) -> None:
+    """Expire an open Checkout session; ``checkout_in_progress`` when it is no longer open."""
+    try:
+        stripe.checkout.Session.expire(session_id, api_key=settings.STRIPE_SECRET_KEY)
+    except stripe.StripeError as e:
+        raise BillingServiceError("checkout_in_progress") from e
 
 
 def _key() -> str:

@@ -18,16 +18,13 @@ idempotency contract is testable in isolation.
 from __future__ import annotations
 
 import enum
-import functools
 import logging
 import os
 import time
 import uuid
-from typing import Callable
 
 import boto3
 from botocore.exceptions import ClientError
-from fastapi import HTTPException
 
 from core.config import settings
 from core.dynamodb import run_in_thread
@@ -61,10 +58,6 @@ class WebhookProcessingInProgress(RuntimeError):
     """Another live worker owns this event's retryable processing lease."""
 
 
-class TopUpIntentConflict(RuntimeError):
-    """A caller reused a top-up idempotency token with different money inputs."""
-
-
 def _table():
     """Returns the boto3 Table resource. Created lazily so tests can monkeypatch
     the env var before the first call.
@@ -94,224 +87,8 @@ async def delete_event(event_id: str) -> None:
     _table().delete_item(Key={"event_id": event_id})
 
 
-async def has_event(event_id: str) -> bool:
-    """Whether `event_id` is currently recorded, WITHOUT claiming it.
-
-    `record_event_or_skip` answers the same question but takes the key as a side
-    effect, which is wrong for callers that only want to read — a marker written
-    by one flow and consulted by another (see apple_iap's revocation tombstone).
-    Strongly consistent, because the caller is deciding entitlement and an
-    eventually-consistent miss would grant it.
-    """
-    response = await run_in_thread(_table().get_item, Key={"event_id": event_id}, ConsistentRead=True)
-    return response.get("Item") is not None
-
-
 async def _read_event(event_id: str) -> dict:
     return (await run_in_thread(_table().get_item, Key={"event_id": event_id}, ConsistentRead=True)).get("Item", {})
-
-
-def top_up_intent_key(owner_id: str, request_id: str) -> str:
-    """Permanent idempotency identity for one workspace credit purchase."""
-    if not isinstance(owner_id, str) or not owner_id or not isinstance(request_id, str) or not request_id:
-        raise ValueError("workspace and request_id are required")
-    return f"metronome-top-up:{owner_id}:{request_id}"
-
-
-def active_top_up_key(owner_id: str) -> str:
-    """Permanent one-per-workspace pointer for a nonterminal top-up."""
-    if not isinstance(owner_id, str) or not owner_id:
-        raise ValueError("workspace is required")
-    return f"metronome-top-up-active:{owner_id}"
-
-
-_TOP_UP_TERMINAL_STATUSES = frozenset({"paid", "failed"})
-
-
-async def get_active_top_up(owner_id: str) -> dict | None:
-    """Return the workspace's durable top-up pointer, including terminal state."""
-    item = await _read_event(active_top_up_key(owner_id))
-    if not item:
-        return None
-    if item.get("kind") != "metronome-top-up-active" or item.get("owner_id") != owner_id:
-        raise TopUpIntentConflict("active top-up identity is unavailable")
-    return item
-
-
-async def get_top_up_intent(owner_id: str, request_id: str) -> dict | None:
-    """Return one permanent intent, scoped by its workspace and request UUID."""
-    item = await _read_event(top_up_intent_key(owner_id, request_id))
-    if not item:
-        return None
-    if (
-        item.get("kind") != "metronome-top-up"
-        or item.get("owner_id") != owner_id
-        or item.get("request_id") != request_id
-        or item.get("state") not in {"pending", "completed", "paid", "failed"}
-    ):
-        raise TopUpIntentConflict("top-up intent identity is unavailable")
-    return item
-
-
-async def set_active_top_up_status(
-    owner_id: str,
-    metronome_customer_id: str,
-    metronome_contract_id: str,
-    status: str,
-    *,
-    intent_event_id: str | None = None,
-) -> bool:
-    """Advance a matching active pointer without terminally settling it."""
-    if status not in {"requested", "action_required"}:
-        raise ValueError("invalid active top-up status")
-    active = await get_active_top_up(owner_id)
-    if (
-        active is None
-        or active.get("metronome_customer_id") != metronome_customer_id
-        or active.get("metronome_contract_id") != metronome_contract_id
-        or (intent_event_id is not None and active.get("intent_event_id") != intent_event_id)
-    ):
-        return False
-    if active.get("status") in _TOP_UP_TERMINAL_STATUSES:
-        return False
-    try:
-        await run_in_thread(
-            _table().update_item,
-            Key={"event_id": active_top_up_key(owner_id)},
-            UpdateExpression="SET #status = :status, updated_at = :now",
-            ConditionExpression="#kind = :kind AND #intent = :intent AND #status = :current",
-            ExpressionAttributeNames={"#status": "status", "#kind": "kind", "#intent": "intent_event_id"},
-            ExpressionAttributeValues={
-                ":status": status,
-                ":current": active["status"],
-                ":now": int(time.time()),
-                ":kind": "metronome-top-up-active",
-                ":intent": active["intent_event_id"],
-            },
-        )
-        return True
-    except ClientError as exc:
-        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
-            raise
-        return False
-
-
-async def settle_active_top_up(
-    owner_id: str,
-    metronome_customer_id: str,
-    metronome_contract_id: str,
-    status: str,
-    *,
-    invoice_id: str,
-) -> bool:
-    """Bind an invoice permanently before settling its exact purchase intent.
-
-    Every retry resumes this binding, including after the active pointer has
-    been replaced. The marker has no TTL: a later webhook for an old invoice
-    must never settle a new purchase.
-    """
-    if status not in _TOP_UP_TERMINAL_STATUSES:
-        raise ValueError("invalid terminal top-up status")
-    if not isinstance(invoice_id, str) or not invoice_id:
-        raise ValueError("invoice_id is required")
-    key = f"metronome-top-up-invoice:{invoice_id}"
-    marker = await _read_event(key)
-    if not marker:
-        active = await get_active_top_up(owner_id)
-        if (
-            active is None
-            or active.get("metronome_customer_id") != metronome_customer_id
-            or active.get("metronome_contract_id") != metronome_contract_id
-            or active.get("status") in _TOP_UP_TERMINAL_STATUSES
-        ):
-            return False
-        marker = {
-            "event_id": key,
-            "kind": "metronome-top-up-invoice",
-            "state": "processing",
-            "owner_id": owner_id,
-            "invoice_id": invoice_id,
-            "intent_event_id": active["intent_event_id"],
-            "request_id": active["request_id"],
-            "metronome_customer_id": metronome_customer_id,
-            "metronome_contract_id": metronome_contract_id,
-            "status": status,
-            "recorded_at": int(time.time()),
-        }
-        try:
-            await run_in_thread(
-                _table().put_item,
-                Item=marker,
-                ConditionExpression="attribute_not_exists(event_id)",
-            )
-        except ClientError as exc:
-            if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
-                raise
-            marker = await _read_event(key)
-
-    if (
-        marker.get("kind") != "metronome-top-up-invoice"
-        or marker.get("owner_id") != owner_id
-        or marker.get("metronome_customer_id") != metronome_customer_id
-        or marker.get("metronome_contract_id") != metronome_contract_id
-    ):
-        raise TopUpIntentConflict("top-up invoice binding changed")
-    if marker.get("state") == "completed":
-        return False
-    # The first terminal event wins, even if a conflicting status arrives
-    # while that event is still being processed.
-    status = marker["status"]
-
-    await run_in_thread(
-        _table().update_item,
-        Key={"event_id": marker["intent_event_id"]},
-        UpdateExpression="SET #state = :status, settled_at = if_not_exists(settled_at, :now)",
-        ConditionExpression=(
-            "#kind = :kind AND owner_id = :owner AND request_id = :request "
-            "AND metronome_customer_id = :customer AND metronome_contract_id = :contract "
-            "AND (#state = :pending OR #state = :completed OR #state = :status)"
-        ),
-        ExpressionAttributeNames={"#state": "state", "#kind": "kind"},
-        ExpressionAttributeValues={
-            ":status": status,
-            ":now": int(time.time()),
-            ":kind": "metronome-top-up",
-            ":owner": owner_id,
-            ":request": marker["request_id"],
-            ":customer": metronome_customer_id,
-            ":contract": metronome_contract_id,
-            ":pending": "pending",
-            ":completed": "completed",
-        },
-    )
-    try:
-        await run_in_thread(
-            _table().update_item,
-            Key={"event_id": active_top_up_key(owner_id)},
-            UpdateExpression="SET #status = :status, settled_at = if_not_exists(settled_at, :now)",
-            ConditionExpression="#kind = :kind AND intent_event_id = :intent",
-            ExpressionAttributeNames={"#status": "status", "#kind": "kind"},
-            ExpressionAttributeValues={
-                ":status": status,
-                ":now": int(time.time()),
-                ":kind": "metronome-top-up-active",
-                ":intent": marker["intent_event_id"],
-            },
-        )
-    except ClientError as exc:
-        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
-            raise
-        # A newer pointer may already exist; the immutable intent above is
-        # still the sole target of this invoice's replay.
-    await run_in_thread(
-        _table().update_item,
-        Key={"event_id": key},
-        UpdateExpression="SET #state = :completed",
-        ConditionExpression="intent_event_id = :intent",
-        ExpressionAttributeNames={"#state": "state"},
-        ExpressionAttributeValues={":completed": "completed", ":intent": marker["intent_event_id"]},
-    )
-    return True
 
 
 async def begin_event_processing(
@@ -430,48 +207,3 @@ async def record_event_or_skip(event_id: str, *, source: str, ttl_seconds: int |
             e,
         )
         raise
-
-
-def idempotency(*, header: str = "Idempotency-Key", ttl_s: int = 60) -> Callable:
-    """Refuse a repeated ``Idempotency-Key`` on an admin write handler with 409.
-
-    Replaces the in-memory TTL cache that used to live in its own predecessor
-    module: a module-level dict is per-instance, so at desiredCount >= 2 two
-    clicks landing on two tasks BOTH executed. The repo's own
-    ``container_repo.try_claim_owner_deploy`` docstring made this argument
-    long before anyone acted on it.
-
-    **Contract change.** A repeat key used to re-serve the first response; it is
-    now refused. Preserving replay means persisting response bodies, and the
-    twelve handlers behind this are container / billing / fleet mutations whose
-    services are individually claim- or condition-guarded -- the value was always
-    "don't run it twice", never "give me the same body twice".
-
-    Fails CLOSED: a dedup-table fault raises and the request fails. An admin
-    mutation that cannot be deduped should not run. Requests with no header
-    bypass entirely, as before.
-
-    A handler that raises keeps its claim: the record was already written
-    before the handler ran, so a same-key retry 409s until that claim's TTL
-    expires -- deliberate, since releasing the claim on failure reintroduces
-    the double-click race this decorator exists to close. The 409 means "this
-    key was already claimed", not "the mutation succeeded".
-    """
-
-    def decorator(handler: Callable) -> Callable:
-        handler_id = f"{handler.__module__}.{handler.__qualname__}"
-
-        @functools.wraps(handler)
-        async def wrapped(*args, **kwargs):
-            request = kwargs.get("request")
-            key = request.headers.get(header) if request is not None and hasattr(request, "headers") else None
-            if not key:
-                return await handler(*args, **kwargs)
-            seen = await record_event_or_skip(f"admin:{handler_id}:{key}", source="admin", ttl_seconds=ttl_s)
-            if seen is WebhookDedupResult.ALREADY_SEEN:
-                raise HTTPException(status_code=409, detail="duplicate Idempotency-Key")
-            return await handler(*args, **kwargs)
-
-        return wrapped
-
-    return decorator

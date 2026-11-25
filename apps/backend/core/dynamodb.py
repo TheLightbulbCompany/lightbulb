@@ -111,37 +111,6 @@ def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-# --- the messaging table (``MESSAGING_TABLE``): the engine's conversation rows (`core.repositories.messaging_repo`)
-# and the products' rows (`core.voice.store`) share it, and these helpers --------------------------------------------
-
-
-def messaging_table():
-    return _get_resource().Table(settings.MESSAGING_TABLE)
-
-
-def owner_pk(owner_id: str) -> str:
-    return f"OWNER#{owner_id}"
-
-
-async def get_item(table, pk: str, sk: str) -> dict | None:
-    response = await run_in_thread(table.get_item, Key={"pk": pk, "sk": sk}, ConsistentRead=True)
-    item = response.get("Item")
-    return plain(item) if item else None
-
-
-async def query_all(table, **kwargs: Any) -> list[dict]:
-    """Drain one table query, following ``LastEvaluatedKey`` and honouring ``Limit``."""
-    limit = kwargs.get("Limit")
-    items: list[dict] = []
-    while True:
-        response = await run_in_thread(table.query, **kwargs)
-        items.extend(plain(response.get("Items", [])))
-        last = response.get("LastEvaluatedKey")
-        if not last or (limit is not None and len(items) >= limit):
-            return items[:limit] if limit is not None else items
-        kwargs["ExclusiveStartKey"] = last
-
-
 async def transact(table, items: list[dict]) -> None:
     """Run one TransactWriteItems. Raises ``ClientError`` on cancellation so the caller can triage the reasons."""
     # Every caller's values, not just ours: a shared session's tool call input is free JSON, and

@@ -1,5 +1,5 @@
 """
-Shared test fixtures for Isol8 backend tests.
+Shared test fixtures for the backend tests.
 
 Tests use mocked DynamoDB (via moto or plain mocks) — no real database needed.
 """
@@ -10,20 +10,15 @@ import os
 # core.auth -> core.config constructs Settings() at module load and raises if
 # CLERK_ISSUER is missing, so collection fails without these defaults.
 os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
-os.environ.setdefault("ENCRYPTION_KEY", "wHc3hAOcLlFzWyu3Ph7xIyClIdVQTrIzFOZDtu_pIEY=")
-os.environ.setdefault("GATE_BEARER_HMAC_KEY", "test-gate-bearer-hmac-key")
 os.environ.setdefault("AWS_REGION", "us-east-1")
 os.environ.setdefault("AWS_DEFAULT_REGION", "us-east-1")
-# The current product requires one canonical pool. Tests of missing configuration
-# explicitly clear this setting; retained-behavior tests use a configured tier.
-os.environ.setdefault("HERMES_SHARED_RUNTIME_ARN", "arn:aws:bedrock-agentcore:us-east-1:877352799272:runtime/test-pool")
 # The admin ids the router tests sign in as (require_platform_admin).
 os.environ.setdefault("PLATFORM_ADMIN_USER_IDS", "user_platform_admin,admin_1,user_admin_123,user_admin")
 
 import json
 import zlib
 from typing import AsyncGenerator, Generator
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -74,60 +69,6 @@ def _serialize_moto_dynamodb() -> None:
 _serialize_moto_dynamodb()
 
 
-async def _no_background_work(*_args, **_kwargs) -> None:
-    """Stands in for a lifespan background worker."""
-
-
-@pytest.fixture(autouse=True, scope="session")
-def _engine_hooks():
-    """The products' engine hooks, as every process that runs engine code registers them (core.engine.hooks)."""
-    from core.voice import engine_hooks
-
-    engine_hooks.register()
-
-
-@pytest.fixture(autouse=True)
-def _engine_over_http(monkeypatch):
-    """Products reach the engine through `engine_main.app` in this process, over the wire's bearer and encoding
-    (`core.engine.client`), so a product suite exercises the HTTP contract."""
-    from core.config import settings
-
-    import engine_main
-    from core.engine import transport
-    from core.voice import engine_hooks
-
-    engine_hooks.register()  # importing engine_main registered the HTTP hooks; this process keeps the products'
-    base = "http://engine.test"
-    monkeypatch.setattr(settings, "ENGINE_URL", base)
-    monkeypatch.setattr(settings, "ENGINE_SERVICE_TOKEN", "engine-test-token")
-    client = AsyncClient(transport=ASGITransport(app=engine_main.app), base_url=base)
-    monkeypatch.setitem(transport._clients, base, client)
-
-
-@pytest.fixture(autouse=True)
-def _no_lifespan_background_workers(request, monkeypatch):
-    """Every TestClient enters the app lifespan, which starts the background sweepers. Outside
-    a moto context those reached real AWS with the dummy credentials (UnrecognizedClientException
-    in the running_gauges loop and the pass-admission sweepers) and kept running after the test.
-    Tests that drive a worker itself opt out with ``@pytest.mark.real_background_workers``."""
-    if request.node.get_closest_marker("real_background_workers"):
-        return
-    import main
-    from core.services import browser_control, durable_activity, memory_api, run_ledger
-    from core.voice import voice_calls
-
-    monkeypatch.setattr(main, "run_scheduled_worker", _no_background_work)
-    monkeypatch.setattr(main, "_running_count_gauge_loop", _no_background_work)
-    for module, name in (
-        (durable_activity, "run_trial_idle_sweeper"),
-        (run_ledger, "run_ledger_sweeper"),
-        (browser_control, "run_autosave_sweeper"),
-        (voice_calls, "voice_call_sweeper"),
-        (memory_api, "run_memory_sweeper"),
-    ):
-        monkeypatch.setattr(module, name, _no_background_work)
-
-
 @pytest.fixture(autouse=True)
 def _reset_shutdown_flag():
     """Reset the process-global shutdown flag around every test.
@@ -149,67 +90,6 @@ def _no_aws_profile(monkeypatch):
     # that sets it leaks to later tests in the xdist worker.
     monkeypatch.delenv("AWS_PROFILE", raising=False)
     monkeypatch.delenv("AWS_DEFAULT_PROFILE", raising=False)
-
-
-@pytest.fixture(autouse=True)
-def _no_real_jev_key(monkeypatch):
-    """The addressing stage (messaging.address) calls Jev on any human message that names someone,
-    so a send in any test would read the real gateway key where AWS credentials exist. Default to
-    "no key" (Jev off: the stage's deterministic fallback); test_jev patches its own reads."""
-    from core.services import jev
-
-    monkeypatch.setattr(jev, "_read_secret", lambda name: None)
-
-
-@pytest.fixture(autouse=True)
-def _runtime_session_gate_off():
-    """Unit tests have no DynamoDB, so ``runtime_transport``'s single-flight wake gate would
-    reach for a real table on every invoke (and every stop would clear a real row). Off by default (invoke directly, the gate's own
-    fail-open shape); ``tests/unit/services/test_runtime_single_flight.py`` overrides this
-    fixture to drive the real gate against moto."""
-    from core.repositories import container_repo
-    from core.services import runtime_transport
-
-    async def _no_clear(owner_id, **kwargs):
-        return None
-
-    with (
-        patch.object(runtime_transport, "_ensure_session", lambda owner_id, arn, deadline, wake: None),
-        patch.object(container_repo, "clear_session", _no_clear),
-    ):
-        yield
-
-
-@pytest.fixture(autouse=True)
-def _no_real_network_seed(monkeypatch):
-    """Every invoke's boot header reads the owner's network seed from SecretsManager; unit tests
-    have none (and real AWS where credentials exist). Tests of the seed itself patch over this."""
-    from core.services import runtime_transport
-
-    monkeypatch.setattr(runtime_transport, "_network_seed", lambda owner_id, row_id: None)
-    monkeypatch.setattr(runtime_transport, "_NETWORK_SEEDS", {})
-
-
-@pytest.fixture(autouse=True)
-def _room_receipt_events_off():
-    """Unit tests have no DynamoDB/AppSync, and read-cursor moves, run starts and delivery
-    advances now publish receipts on the room channel. Stubbed by default; tests asserting
-    on it re-patch ``core.services.messaging._publish_room_event``."""
-    from core.services import messaging
-
-    with patch.object(messaging, "_publish_room_event", AsyncMock()):
-        yield
-
-
-@pytest.fixture(autouse=True)
-def _mail_changed_off():
-    """Storing a mail or changing a meeting nudges the Mail panel over AppSync, which would reach
-    for DynamoDB. Stubbed by default; tests asserting on it re-patch
-    ``core.services.agent_email.mail_changed`` (the helper's own test binds the real one at import)."""
-    from core.services import agent_email
-
-    with patch.object(agent_email, "mail_changed", AsyncMock()):
-        yield
 
 
 def parse_sse_events(response_text: str) -> list[dict]:
@@ -296,13 +176,7 @@ def mock_jwks() -> dict:
 
 
 @pytest.fixture
-def app(request):
-    """The backend's app; a module that tests the runtime's callback routes sets `ENGINE_APP = True` for the engine
-    service's app, which alone mounts them."""
-    if getattr(request.module, "ENGINE_APP", False):
-        from engine_main import app as engine_app
-
-        return engine_app
+def app():
     from main import app as fastapi_app
 
     return fastapi_app
@@ -368,33 +242,10 @@ async def unauthenticated_async_client(app) -> AsyncGenerator:
 
 
 @pytest.fixture
-def mock_llm_stream():
-    """Mock LLM streaming response generator."""
-
-    async def _mock_stream():
-        for chunk in ["Hello", " ", "world", "!"]:
-            yield chunk
-
-    return _mock_stream
-
-
-@pytest.fixture
-def mock_hf_sse_response() -> list[bytes]:
-    """Mock HuggingFace SSE response data."""
-    return [
-        b'data: {"choices":[{"delta":{"content":"Hello"}}]}\n\n',
-        b'data: {"choices":[{"delta":{"content":" world"}}]}\n\n',
-        b'data: {"choices":[{"delta":{"content":"!"}}]}\n\n',
-        b"data: [DONE]\n\n",
-    ]
-
-
-@pytest.fixture
 def mock_settings():
     """Mock settings with test values."""
     with patch("core.config.settings") as mock:
         mock.CLERK_ISSUER = "https://test.clerk.accounts.dev"
         mock.clerk_authorized_parties_list = []
         mock.API_V1_STR = "/api/v1"
-        mock.ENCRYPTION_KEY = "dGVzdC1lbmNyeXB0aW9uLWtleS0xMjM0NTY3OA=="
         yield mock

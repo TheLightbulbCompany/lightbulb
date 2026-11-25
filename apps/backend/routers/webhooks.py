@@ -15,9 +15,9 @@ fail-closed path is the only one that runs off a laptop.
 **Dispatch**:
 
   * ``user.created``  -> the users row only (a person is provisioned when they open the product)
-  * ``user.updated``  -> the Stripe customer's email follows
-  * ``user.deleted``  -> ``account_wipe.wipe_account`` of the person's own tenant
-  * ``organization*`` -> acknowledged and ignored: the tenant is a person, never a Clerk org
+  * ``user.deleted``  -> the person's Spark subscription is cancelled, their voice data forgotten
+    and their users row deleted (``os_billing.cancel_for_deleted_user``)
+  * anything else     -> acknowledged and ignored
 """
 
 import base64
@@ -28,12 +28,10 @@ import logging
 import time
 from typing import Any, Optional
 
-import stripe
 from fastapi import APIRouter, HTTPException, Request
 
 from core.config import settings
 from core.observability.metrics import put_metric
-from core.repositories import billing_repo
 
 logger = logging.getLogger(__name__)
 
@@ -173,10 +171,7 @@ def _extract_primary_email(data: dict) -> Optional[str]:
 @router.post(
     "/clerk",
     summary="Handle Clerk webhooks",
-    description=(
-        "Processes Clerk lifecycle events: user.created, user.updated, user.deleted. "
-        "organization* events are acknowledged and ignored."
-    ),
+    description=("Processes Clerk lifecycle events: user.created, user.deleted. Others are acknowledged and ignored."),
     operation_id="handle_clerk_webhook",
     include_in_schema=False,
 )
@@ -259,68 +254,22 @@ async def handle_clerk_webhook(request: Request):
             # (core/services/welcome_email.py). Sign-up joins nothing either -- competition
             # sign-up-sheet membership is explicit (POST /launch/join, inside the product).
 
-    elif event_type == "user.updated":
-        user_id = data.get("id", "")
-        logger.info("Clerk user.updated webhook received for %s", user_id)
-
-        # Sync the primary email to the user's Stripe Customer if one exists.
-        # Catches receipt / invoice / trial-end emails going to a stale address.
-        new_email = _extract_primary_email(data)
-        if new_email and user_id:
-            account = await billing_repo.get_by_owner_id(user_id)
-            if account and account.get("stripe_customer_id"):
-                # Use the Clerk webhook's unique svix-id as the Stripe idempotency
-                # key. Each genuine Clerk event gets a unique id; a retry of the
-                # SAME event reuses it. Embedding user_id+email instead would let
-                # an A→B→A→B email flip within Stripe's 24h idempotency window
-                # collide with the first A→B and silently skip the modify.
-                svix_id = request.headers.get("svix-id")
-                if svix_id:
-                    idempotency_key = f"customer_email_sync:{svix_id}"
-                else:
-                    # Defensive fallback (shouldn't happen with real Clerk
-                    # traffic — _verify_svix_signature already requires it
-                    # when CLERK_WEBHOOK_SECRET is set). 1-min bucket bounds
-                    # the worst-case skipped writes.
-                    idempotency_key = f"customer_email_sync:{user_id}:{new_email}:{int(time.time() // 60)}"
-                try:
-                    stripe.Customer.modify(
-                        account["stripe_customer_id"],
-                        email=new_email,
-                        idempotency_key=idempotency_key,
-                    )
-                    put_metric("stripe.customer.email_sync", dimensions={"result": "ok"})
-                except stripe.StripeError as e:
-                    put_metric("stripe.customer.email_sync", dimensions={"result": "error"})
-                    logger.warning(
-                        "Stripe email sync failed for %s: %s",
-                        user_id,
-                        e,
-                    )
-                    # Non-fatal — Clerk update succeeded.
-
     elif event_type == "user.deleted":
         user_id = data.get("id", "")
         if not user_id:
             raise HTTPException(status_code=400, detail="Clerk user deletion target unavailable")
 
-        # The person's own tenant goes for good: runtime, profiles, memory, credentials, rooms, billing,
-        # their memory data and their Spark subscription (account_wipe). Every step is idempotent and a no-op for a
-        # person who never had a tenant; a failed step fails the event, so the redelivery retries the wipe.
-        from core.services.account_wipe import MalformedUserIdError, wipe_account
+        # Stripe first (raises before any Spark data is removed): a failure fails the event, so the
+        # redelivery retries. Every step is idempotent and a no-op for a person who never used Spark.
+        from core.repositories import user_repo
+        from core.services.os_billing import cancel_for_deleted_user
 
         try:
-            report = await wipe_account(user_id, actor_admin_id="clerk:user.deleted", clerk_user_deleted=True)
-        except MalformedUserIdError as exc:  # not a Clerk user id: a redelivery cannot fix it
-            put_metric("clerk.webhook.user_deleted_wipe_failed")
-            raise HTTPException(status_code=400, detail="Clerk user deletion target is not a user id") from exc
-        except Exception:  # before any step ran (a read failed): the redelivery retries it
+            await cancel_for_deleted_user(user_id)
+            await user_repo.delete(user_id)
+        except Exception:
             put_metric("clerk.webhook.user_deleted_wipe_failed")
             raise
-        failed = [s.system for s in report.steps if s.status == "failed"]
-        if failed:
-            put_metric("clerk.webhook.user_deleted_wipe_failed")
-            raise HTTPException(status_code=503, detail=f"user teardown incomplete: {', '.join(failed)}")
 
     else:
         logger.debug("Clerk webhook: unhandled event type %s", event_type)

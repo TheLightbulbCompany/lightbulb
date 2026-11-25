@@ -308,7 +308,9 @@ def deleted(monkeypatch):
 async def test_a_session_open_syncs_the_opt_out(ddb, clock, no_sideband, openai, deleted, analytics, expected):
     client = {"appVersion": "1.0.0"} | ({} if analytics is None else {"analytics": analytics})
     assert (await create(client=client)).status_code == 201
-    await asyncio.gather(*os_voice._BACKGROUND)
+    await asyncio.gather(
+        *(t for t in os_voice._BACKGROUND if t.get_loop() is asyncio.get_running_loop())
+    )  # another test's loop may have left one behind
     assert deleted == expected
 
 
@@ -318,7 +320,9 @@ async def test_a_failing_scheduled_deletion_never_fails_the_open(ddb, clock, no_
 
     monkeypatch.setattr(os_voice, "stop_transcripts", boom)
     assert (await create(client={"analytics": False})).status_code == 201
-    await asyncio.gather(*os_voice._BACKGROUND)
+    await asyncio.gather(
+        *(t for t in os_voice._BACKGROUND if t.get_loop() is asyncio.get_running_loop())
+    )  # another test's loop may have left one behind
 
 
 async def test_the_largest_allowed_config_passes(ddb, clock, no_sideband, openai):

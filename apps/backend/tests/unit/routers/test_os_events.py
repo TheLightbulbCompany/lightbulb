@@ -258,7 +258,9 @@ def stopped(monkeypatch):
 
 
 async def _settle():
-    await asyncio.gather(*os_voice._BACKGROUND)
+    await asyncio.gather(
+        *(t for t in os_voice._BACKGROUND if t.get_loop() is asyncio.get_running_loop())
+    )  # another test's loop may have left one behind
 
 
 async def test_signed_in_optout_stops_transcripts(ph, ddb, stopped):

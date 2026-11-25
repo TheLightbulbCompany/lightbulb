@@ -497,10 +497,10 @@ async def test_an_opt_out_stops_the_stores_cache_at_once(table, on, monkeypatch)
 async def test_stop_transcripts_and_forget_start_the_stores_delete(table, on, monkeypatch):
     seen = []
 
-    async def forget(user_id):
-        seen.append(user_id)
+    async def forget(user_id, bounded=True):
+        seen.append((user_id, bounded))
 
     monkeypatch.setattr(spark_store, "forget", forget)
     await os_voice.stop_transcripts("user_a")
     await os_voice.forget("user_b", ())
-    assert seen == ["user_a", "user_b"]
+    assert seen == [("user_a", True), ("user_b", False)]  # account deletion is unbounded

@@ -80,6 +80,7 @@ class FakeS3:
             "next_pass": 1,
             "not_before": T0.isoformat(),
             "attempts": 0,
+            "until": (T0 + 5 * MIN).isoformat(),
             "claimed_at": None,
         }
         key = f"jobs/forget/{hashlib.sha256(user.encode()).hexdigest()}.json"
@@ -178,6 +179,7 @@ async def test_forget_writes_the_marker_then_runs_pass_one(env):
         "next_pass": 2,
         "not_before": (T0 + 45 * MIN).isoformat(),
         "attempts": 0,
+        "until": (T0 + 5 * MIN).isoformat(),
         "claimed_at": None,
     }
     deletes = env.athena.sqls("DELETE")
@@ -187,6 +189,9 @@ async def test_forget_writes_the_marker_then_runs_pass_one(env):
     assert by_table["events"] == [str(BUCKET), f"'{USER}'", f"'{USER}'", CUT]
     counts = env.athena.sqls("SELECT sum(c)")
     assert len(counts) == 1 and counts[0].count("ts <= ?") == 3
+    assert counts[0].count("distinct_id = ?") == 1  # the count matches the events DELETE
+    count_params = [p for q, p in env.athena.queries if q.startswith("SELECT sum(c)")][0]
+    assert count_params == [str(BUCKET), f"'{USER}'", CUT] * 2 + [str(BUCKET), f"'{USER}'", f"'{USER}'", CUT]
     assert env.athena.workgroups == {"lightbulb-dev-spark-jobs"}
     assert not env.athena.sqls("OPTIMIZE")
 
@@ -204,6 +209,75 @@ async def test_nothing_happens_unless_deletes_are_on_or_outside_dev_prod(env, mo
     await jobs.tick()
     await drain()
     assert not env.athena.queries and env.s3.log == []
+
+
+async def test_writes_on_with_deletes_off_is_loud(env, monkeypatch, caplog):
+    monkeypatch.setattr(settings, "SPARK_STORE_DELETES", False)
+    monkeypatch.setattr(settings, "SPARK_STORE_ENABLED", True)
+    await spark_store.forget(USER)
+    assert env.metrics == ["spark_store.forget_disabled"]
+    assert USER not in caplog.text and "forget_disabled" not in caplog.text and "ERROR" in caplog.text
+    env.metrics.clear()
+    monkeypatch.setattr(settings, "SPARK_STORE_ENABLED", False)
+    await spark_store.forget(USER)
+    assert env.metrics == []
+
+
+async def test_account_deletion_is_unbounded_and_a_repeat_only_widens(env):
+    await spark_store.forget(USER, bounded=False)
+    await drain()
+    assert env.s3.marker()["until"] is None
+    for q, p in env.athena.queries:
+        assert "ts <=" not in q and not any("TIMESTAMP" in x for x in p)
+    await spark_store.forget(USER)  # a bounded repeat never narrows it
+    await drain()
+    assert env.s3.marker()["until"] is None
+    env.s3.objects.clear()
+    await spark_store.forget(USER)
+    await drain()
+    assert env.s3.marker()["until"] == (T0 + 5 * MIN).isoformat()
+    await spark_store.forget(USER, bounded=False)
+    await drain()
+    assert env.s3.marker()["until"] is None
+
+
+async def test_a_request_during_backoff_resets_attempts_and_not_before(env):
+    env.s3.seed(attempts=4, not_before=(T0 + timedelta(hours=5)).isoformat(), next_pass=3)
+    await jobs.request_forget(USER, T0 + 1 * MIN)
+    m = env.s3.marker()
+    assert (m["attempts"], m["next_pass"]) == (0, 1)
+    assert m["not_before"] == m["requested_at"] == (T0 + 1 * MIN).isoformat()
+
+
+async def test_retry_marker_never_overwrites_a_newer_request(env):
+    env.s3.seed(requested_at=(T0 + 10 * MIN).isoformat(), next_pass=2)
+    before = env.s3.objects[MARKER]
+    await jobs.retry_marker(USER, T0)
+    assert env.s3.objects[MARKER] == before
+    await jobs.retry_marker(USER, T0, bounded=False)  # but account deletion widens it
+    assert env.s3.marker()["until"] is None and env.s3.marker()["next_pass"] == 2
+
+
+async def test_a_pass_that_runs_out_of_time_is_a_failed_pass(env, monkeypatch):
+    monkeypatch.setattr(jobs, "PASS_S", 0.05)
+    env.s3.seed()
+    env.athena.hang = True
+    await jobs.tick()
+    m = env.s3.marker()
+    assert m["next_pass"] == 1 and m["attempts"] == 1 and m["claimed_at"] is None
+    assert m["not_before"] == (T0 + 20 * MIN).isoformat() and "spark_store.jobs_failed" in env.metrics
+    assert env.athena.stopped  # the running queries were stopped
+
+
+async def test_a_real_cancellation_still_propagates(env):
+    env.s3.seed()
+    env.athena.hang = True
+    task = asyncio.create_task(jobs.tick())
+    while not env.athena.queries:
+        await asyncio.sleep(0.001)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
 
 
 async def test_a_repeat_request_starts_all_three_passes_again(env):
@@ -293,8 +367,9 @@ async def test_a_stale_claim_is_reclaimed_after_30_minutes(env):
     assert len(env.athena.sqls("DELETE")) == 3
 
 
-async def test_a_request_during_a_pass_keeps_the_new_request_and_frees_the_claim(env):
-    env.s3.seed()
+@pytest.mark.parametrize("n", [1, 2, 3])
+async def test_a_request_during_a_pass_only_releases_the_claim_then_pass_one_runs(env, n):
+    env.s3.seed(next_pass=n)
     reached, release = threading.Event(), threading.Event()
 
     def hold(sql):  # the pass is in the middle of its DELETEs when the person asks again
@@ -308,10 +383,13 @@ async def test_a_request_during_a_pass_keeps_the_new_request_and_frees_the_claim
         await asyncio.sleep(0.001)
     env.clock[0] += 3 * MIN
     await jobs.request_forget(USER)
+    env.athena.on_start = None
     release.set()
     await task
     m = env.s3.marker()
     assert m["requested_at"] == (T0 + 3 * MIN).isoformat() and m["next_pass"] == 1 and m["claimed_at"] is None
+    await jobs.tick()  # the next tick runs the new request's pass 1
+    assert env.s3.marker()["next_pass"] == 2
 
 
 async def test_the_oldest_markers_run_first_five_per_tick(env):

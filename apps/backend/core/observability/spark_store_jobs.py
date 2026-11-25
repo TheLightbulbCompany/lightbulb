@@ -1,13 +1,14 @@
 """Spark data store, delete and retention jobs, run by one in-process loop (`run`) started in main.py's lifespan.
 
 State lives in the store bucket under `jobs/`, so a restart loses nothing and several backend tasks share it:
-  jobs/forget/<sha256(user_id)>.json   {user_id, requested_at, next_pass, not_before, attempts, claimed_at}
+  jobs/forget/<sha256(user_id)>.json   {user_id, requested_at, until, next_pass, not_before, attempts, claimed_at}
   jobs/retention/<YYYY-MM-DD>.json     {not_before, attempts, done, claimed_at}
 `_job` claims a marker with an S3 conditional write (create: IfNoneMatch "*", update: IfMatch <etag>; the loser of
 a race is silent; a claim older than 30 minutes may be re-claimed), runs the work, and finishes with another
 conditional write. Forget passes: 1 at once, 2 at requested_at + 45 min, 3 (compacting) at + 24 h, then the marker
 is deleted. A failed pass keeps its number and backs off (10 min * 2^attempts, at most 24 h).
-Every delete is bounded to rows with ts <= requested_at + 5 min: a person who opts back in keeps their new data.
+An opt-out deletes only rows with ts <= `until` (requested_at + 5 min): a person who opts back in keeps their new
+data. Account deletion has `until: null`: no time condition.
 NOT deleted: events sent before sign-in under an install id (no free text; gone with the 90-day retention) and other
 people's rows that quote this person. Nothing here logs user text; failures are counted, never raised.
 """
@@ -37,7 +38,7 @@ logger = logging.getLogger(__name__)
 
 FIRST_TICK_S = 60
 TICK_S = 600
-TICK_BOUND_S = 20 * 60  # under the claim lifetime, so a live claim is never stolen by the next tick
+PASS_S = 15 * 60  # one job's time, under the claim lifetime so a live claim is never stolen
 PASSES_PER_TICK = 5
 CLAIM_STALE = timedelta(minutes=30)
 PASS_AT = {2: timedelta(minutes=45), 3: timedelta(hours=24)}  # next_pass -> offset from requested_at
@@ -82,7 +83,7 @@ def forget_key(user_id: str) -> str:
 
 
 async def bounded(coro: Awaitable) -> None:
-    async with asyncio.timeout(TICK_BOUND_S):
+    async with asyncio.timeout(PASS_S):
         await coro
 
 
@@ -178,8 +179,9 @@ async def _job(
         if etag is None:
             return
         try:
-            ok = await work(mine)
-        except Exception as e:  # noqa: BLE001
+            async with asyncio.timeout(PASS_S):  # running out of time is a failed pass: backoff, not a repeat
+                ok = await work(mine)
+        except Exception as e:  # noqa: BLE001 -- a TimeoutError too; a real cancellation still propagates
             _fail(e, "job")
             ok = False
         await _finish(key, mine, lambda cur: advance(cur, ok))
@@ -206,11 +208,13 @@ async def _finish(key: str, mine: dict, advance: Callable[[dict], dict | None]) 
 # --- forget --------------------------------------------------------------------------------------------
 
 
-async def request_forget(user_id: str, at: datetime | None = None) -> None:
+async def request_forget(user_id: str, at: datetime | None = None, bounded: bool = True) -> None:
     """Write (or bump) the marker: a new request starts all three passes again. A live claim is kept, so two
-    tasks never run a pass at once. An older request than the marker's own changes nothing."""
+    tasks never run a pass at once. An older request than the marker's own changes nothing, except that an
+    unbounded one (account deletion) widens a bounded marker; never the reverse."""
     at = at or _now()
     key = forget_key(user_id)
+    until = (at + CUTOFF_SLACK).isoformat() if bounded else None
     body = {
         "user_id": user_id,
         "requested_at": at.isoformat(),
@@ -221,27 +225,33 @@ async def request_forget(user_id: str, at: datetime | None = None) -> None:
     for _ in range(5):
         got = await _get(key)
         if got is None:
-            if await _put(key, body | {"claimed_at": None}):
+            if await _put(key, body | {"until": until, "claimed_at": None}):
                 return
-        elif datetime.fromisoformat(got[0]["requested_at"]) >= at:
-            return
-        elif await _put(key, body | {"claimed_at": got[0].get("claimed_at")}, got[1]):
+            continue
+        old, etag = got
+        wide = until is None or old.get("until") is None  # a marker without `until` is unbounded
+        if datetime.fromisoformat(old["requested_at"]) >= at:
+            if until is None and old.get("until") is not None and await _put(key, old | {"until": None}, etag):
+                return
+            if until is not None or old.get("until") is None:
+                return
+        elif await _put(key, body | {"until": None if wide else until, "claimed_at": old.get("claimed_at")}, etag):
             return
     raise RuntimeError("forget marker contended")
 
 
-async def retry_marker(user_id: str, at: datetime) -> None:
+async def retry_marker(user_id: str, at: datetime, bounded: bool = True) -> None:
     for _ in range(RETRY_TRIES):
         await asyncio.sleep(RETRY_S)
         with contextlib.suppress(Exception):
-            await asyncio.wait_for(request_forget(user_id, at), 5)
+            await asyncio.wait_for(request_forget(user_id, at, bounded), 5)
             return
 
 
 async def _forget_work(m: dict) -> bool:
     n = m["next_pass"]
-    cutoff = datetime.fromisoformat(m["requested_at"]) + CUTOFF_SLACK
-    left = await forget_pass(m["user_id"], compact=n == 3, until=cutoff)
+    until = datetime.fromisoformat(m["until"]) if m.get("until") else None
+    left = await forget_pass(m["user_id"], compact=n == 3, until=until)
     if n == 3 and left:
         put_metric("spark_store.forget_remaining")
         logger.warning("spark store forget: %d rows remain after the last pass", left)
@@ -298,26 +308,26 @@ async def _maintain(optimize: list[str], vacuum: list[str]) -> None:
         raise RuntimeError(f"{failed} maintenance statements failed")
 
 
-def forget_sql(user_id: str, until: datetime) -> tuple[list[tuple[str, list]], tuple[str, list]]:
-    """The three DELETEs and the one verification count, always by user_bucket and bounded to ts <= until."""
+def forget_sql(user_id: str, until: datetime | None) -> tuple[list[tuple[str, list]], tuple[str, list]]:
+    """The three DELETEs and the one verification count, always by user_bucket; `until` bounds them to
+    ts <= until (None: no time condition, for account deletion). The count matches the DELETEs row for row."""
     b, db = store.bucket(user_id), store.db()
-    deletes = [
-        (f"DELETE FROM {db}.{t} WHERE user_bucket = ? AND "
-         + ("(user_id = ? OR distinct_id = ?)" if t == "events" else "user_id = ?")
-         + " AND ts <= ?",
-         [b] + [user_id] * (2 if t == "events" else 1) + [until])
-        for t in store.TABLES
-    ]  # fmt: skip
-    one = "SELECT count(*) AS c FROM {db}.{t} WHERE user_bucket = ? AND user_id = ? AND ts <= ?"
+    time_cond, time_arg = (" AND ts <= ?", [until]) if until else ("", [])
+    who = {t: ("(user_id = ? OR distinct_id = ?)", 2) if t == "events" else ("user_id = ?", 1) for t in store.TABLES}
+    where = {t: f"user_bucket = ? AND {who[t][0]}{time_cond}" for t in store.TABLES}
+    args = {t: [b] + [user_id] * who[t][1] + time_arg for t in store.TABLES}
+    deletes = [(f"DELETE FROM {db}.{t} WHERE {where[t]}", args[t]) for t in store.TABLES]
     count = (
-        "SELECT sum(c) FROM (" + " UNION ALL ".join(one.format(db=db, t=t) for t in store.TABLES) + ")",
-        [b, user_id, until] * len(store.TABLES),
+        "SELECT sum(c) FROM ("
+        + " UNION ALL ".join(f"SELECT count(*) AS c FROM {db}.{t} WHERE {where[t]}" for t in store.TABLES)
+        + ")",
+        [a for t in store.TABLES for a in args[t]],
     )
     return deletes, count
 
 
-async def forget_pass(user_id: str, compact: bool, until: datetime) -> int:
-    """Delete this person's rows up to `until`, sweep errors/, with `compact` rewrite and vacuum the bucket's
+async def forget_pass(user_id: str, compact: bool, until: datetime | None) -> int:
+    """Delete this person's rows (up to `until`, if given), sweep errors/, with `compact` rewrite and vacuum the bucket's
     files, then count what is left (returned). Raises if any statement failed."""
     deletes, count = forget_sql(user_id, until)
     await _all(deletes)
@@ -405,7 +415,8 @@ async def _retention(now: datetime) -> None:
 
 
 async def tick() -> None:
-    """Retention first, then the due forget markers, oldest `not_before` first, at most five passes."""
+    """Retention first, then the due forget markers, oldest `not_before` first, at most five passes. Each job is
+    time-bounded by `_job`, so a slow one cannot use up another's time."""
     if not _on():
         return
     await _retention(_now())
@@ -422,7 +433,7 @@ async def tick() -> None:
 
 
 async def run(stop: asyncio.Event) -> None:
-    """Tick every 10 minutes (the first after a minute), each tick time-bounded; never raises."""
+    """Tick every 10 minutes (the first after a minute); never raises."""
     delay = FIRST_TICK_S
     while not stop.is_set():
         with contextlib.suppress(TimeoutError):
@@ -431,6 +442,6 @@ async def run(stop: asyncio.Event) -> None:
             return
         delay = TICK_S
         try:
-            await bounded(tick())
+            await tick()
         except Exception as e:  # noqa: BLE001
             _fail(e, "tick")

@@ -564,22 +564,28 @@ async def query(
             return rows
 
 
-async def forget(user_id: str) -> None:
-    """The person opted out or deleted their account: write the job marker (so a restart cannot lose the request),
-    then run pass 1 in the background. Never raises. Gated by SPARK_STORE_DELETES, not SPARK_STORE_ENABLED: data
-    written before a rollback must still be deletable. If the marker cannot be written, pass 1 still runs now and
-    the marker write is retried in the background (a minute apart, for an hour). Passes 2 and 3 are the runner's."""
-    if not (settings.SPARK_STORE_DELETES and settings.ENVIRONMENT in ("dev", "prod")):
+async def forget(user_id: str, bounded: bool = True) -> None:
+    """The person opted out (`bounded`: only rows up to 5 minutes after the request go) or deleted their account
+    (`bounded=False`: all their rows go). Writes the job marker (so a restart cannot lose the request), then runs
+    pass 1 in the background. Never raises. Gated by SPARK_STORE_DELETES, not SPARK_STORE_ENABLED: data written
+    before a rollback must still be deletable. If the marker cannot be written, pass 1 still runs now and the
+    marker write is retried in the background (a minute apart, for an hour). Passes 2 and 3 are the runner's."""
+    if settings.ENVIRONMENT not in ("dev", "prod"):
+        return
+    if not settings.SPARK_STORE_DELETES:
+        if settings.SPARK_STORE_ENABLED:  # rows are being stored that this request cannot delete
+            put_metric("spark_store.forget_disabled")
+            logger.error("spark store forget requested while SPARK_STORE_DELETES is off: nothing was deleted")
         return
     from core.observability import spark_store_jobs as jobs  # here: the jobs module imports this one
     from core.voice.os_voice import spawn
 
     at = jobs._now()
     try:
-        await asyncio.wait_for(jobs.request_forget(user_id, at), 5)
-        spawn(jobs.bounded(jobs.step(jobs.forget_key(user_id))))
+        await asyncio.wait_for(jobs.request_forget(user_id, at, bounded), 5)
+        spawn(jobs.step(jobs.forget_key(user_id)))
     except Exception as e:  # noqa: BLE001 -- the type only
         put_metric("spark_store.forget_start_failed")
         logger.warning("spark store forget marker failed: %s", type(e).__name__)
-        spawn(jobs.bounded(jobs.forget_pass(user_id, False, at + jobs.CUTOFF_SLACK)))
-        spawn(jobs.retry_marker(user_id, at))
+        spawn(jobs.bounded(jobs.forget_pass(user_id, False, at + jobs.CUTOFF_SLACK if bounded else None)))
+        spawn(jobs.retry_marker(user_id, at, bounded))

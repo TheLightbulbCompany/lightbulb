@@ -627,7 +627,7 @@ async def forget(user_id: str, sessions) -> None:
     for sid in await _active_sessions(user_id, sessions):
         await close_and_wait(sid, "signed_out")  # OpenAI gets session.close before the cleanup
     await delete_transcripts(user_id)
-    await spark_store.forget(user_id)
+    await spark_store.forget(user_id, bounded=False)  # a deleted account sends nothing legitimate later
 
 
 async def _set_opt_out(user_id: str, off: bool) -> None:

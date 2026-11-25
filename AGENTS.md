@@ -70,7 +70,7 @@ cd apps/frontend && pnpm test
 Spark's routes are `routers/os.py` and `routers/os_billing.py`, mounted at `/api/v1/os`:
 
 - `GET /config` (public: price and trial), `GET` and `DELETE /account`, `POST /referral`, `POST /event`,
-  `POST /channel`.
+  `POST /log` (typed lines and the work log, into the Spark store), `POST /channel`.
 - `POST /voice-session`, `GET` and `DELETE /voice-session/{id}`: GPT-Live WebRTC sessions
   (`core/voice/os_voice.py`). The Mac's audio goes straight to OpenAI. The backend holds a sideband that meters and
   ends the session and, when `SPARK_TRANSCRIPTS_ENABLED` is set, saves the text transcript (never audio), kept 90
@@ -105,7 +105,7 @@ The stacks (`apps/infra/lib/stacks/`): network (VPC, ALB, NAT), dns (hosted zone
 Manager and the KMS key), container (the ECS cluster; its AgentCore memory, browser and owner-role resources are
 unused leftovers), service (the backend on ECS Fargate), api (the `api[-dev]` HTTP API on API Gateway, VPC Link V2
 to the ALB), observability (the backend's alarms), database, and **spark-store** (`spark-store-stack.ts`: an S3
-bucket of Iceberg tables, two Athena workgroups, and one Firehose delivery stream per table).
+bucket of Iceberg tables, three Athena workgroups, and one Firehose delivery stream per table).
 
 The database stack holds five DynamoDB tables, named `lightbulb-{env}-{suffix}`: `users` (the Spark account),
 `containers` (voice-session rows, found through `status-index`), `spark-transcripts`, `webhook-event-dedup` (Stripe

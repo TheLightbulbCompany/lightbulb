@@ -30,26 +30,14 @@ export default function SupportPage() {
           >{SUPPORT_EMAIL}</a></p>
         </div>
 
-        {/* Declared as the data deletion instructions URL for the Meta app
-            (App settings -> Basic). Reviewers open this section directly. */}
         <div className="support-direct" id="data-deletion">
           <h2>Deleting your data</h2>
           <p>
-            To delete your Lightbulb account and everything we hold for it &mdash; your assistant,
-            its calls, transcripts and bookings, and the credentials for any service you connected
-            &mdash; email <a
+            To delete your Spark account and what we hold for it (your account record and your
+            saved conversation text), choose Delete account in Spark, or email <a
               href={`${SUPPORT_MAILTO}?subject=Delete%20my%20account`}
               onClick={() => capture("support_contact_clicked", { source: "support_page_data_deletion" })}
-            >{SUPPORT_EMAIL}</a> from your account email address and we&rsquo;ll action it.
-          </p>
-          <p>
-            On a personal account you can also delete it yourself in the Lightbulb iOS app, under
-            Settings. Team accounts are deleted on request.
-          </p>
-          <p>
-            To remove just one connected service, disconnect it in the Integrations tab of the
-            Control Panel &mdash; that revokes our access and deletes the credentials we stored
-            for it, leaving the rest of your account intact. Account deletion is irreversible.
+            >{SUPPORT_EMAIL}</a> from your account email address. Deleting an account cannot be undone.
           </p>
         </div>
       </main>

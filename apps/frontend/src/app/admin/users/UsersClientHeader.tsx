@@ -26,8 +26,8 @@ export function UsersClientHeader({ defaultValue }: UsersClientHeaderProps) {
       if (trimmed === lastQueryRef.current) return;
       lastQueryRef.current = trimmed;
       const target = trimmed
-        ? `/admin/users?q=${encodeURIComponent(trimmed)}`
-        : "/admin/users";
+        ? `/users?q=${encodeURIComponent(trimmed)}`
+        : "/users";
       startTransition(() => {
         router.push(target);
       });

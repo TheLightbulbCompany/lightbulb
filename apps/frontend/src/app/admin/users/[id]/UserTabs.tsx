@@ -8,7 +8,7 @@ import { cn } from "@/lib/utils";
 
 export interface UserTab {
   label: string;
-  /** Path segment after `/admin/users/{id}`. Empty string = Overview. */
+  /** Path segment after `/users/{id}`. Empty string = Overview. */
   segment: string;
 }
 
@@ -24,7 +24,7 @@ export interface UserTabsProps {
  */
 export function UserTabs({ userId, tabs }: UserTabsProps) {
   const pathname = usePathname() ?? "";
-  const base = `/admin/users/${encodeURIComponent(userId)}`;
+  const base = `/users/${encodeURIComponent(userId)}`;
   // Overview matches the bare base path; sub-tabs match `${base}/${segment}`.
   const matchSegment = pathname === base || pathname === `${base}/`
     ? ""

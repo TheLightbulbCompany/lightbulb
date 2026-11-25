@@ -16,11 +16,11 @@ describe("EmptyState", () => {
       <EmptyState
         title="No users yet"
         body="Try inviting one."
-        action={{ label: "Invite user", href: "/admin/users/invite" }}
+        action={{ label: "Invite user", href: "/users/invite" }}
       />,
     );
     const link = screen.getByRole("link", { name: "Invite user" });
-    expect(link).toHaveAttribute("href", "/admin/users/invite");
+    expect(link).toHaveAttribute("href", "/users/invite");
   });
 
   it("renders button action when only onClick is provided", async () => {

@@ -19,6 +19,9 @@ import { getAdminMe } from "./_lib/api";
  * don't need their own gate. Pair with the host-based 404 in
  * `src/middleware.ts` for defense in depth (CEO A1).
  */
+// Land back on the admin root afterwards: the sign-in page defaults to /voice.
+const SIGN_IN = "/sign-in?redirect_url=%2F";
+
 export default async function AdminLayout({
   children,
 }: {
@@ -26,18 +29,18 @@ export default async function AdminLayout({
 }) {
   const { userId, getToken } = await auth();
   if (!userId) {
-    redirect("/sign-in");
+    redirect(SIGN_IN);
   }
 
   const token = await getToken();
   if (!token) {
-    redirect("/sign-in");
+    redirect(SIGN_IN);
   }
 
   const me = await getAdminMe(token);
   if (!me?.is_admin) {
     // Render the not-authorized screen IN PLACE — do NOT redirect. The
-    // /admin/not-authorized route is itself behind this layout, so
+    // not-authorized route is itself behind this layout, so
     // redirecting there re-runs this gate and redirects again forever
     // (ERR_TOO_MANY_REDIRECTS). Rendering inline breaks the loop and gives
     // the non-admin a sign-out / switch-account button.
@@ -53,48 +56,48 @@ export default async function AdminLayout({
       <header className="border-b border-border bg-card">
         <div className="mx-auto flex max-w-7xl items-center justify-between px-6 py-4">
           <div className="flex items-center gap-8">
-            <Link href="/admin" className="text-lg font-semibold text-foreground">
+            <Link href="/" className="text-lg font-semibold text-foreground">
               Lightbulb admin
             </Link>
             <nav className="flex items-center gap-1 text-sm">
               <Link
-                href="/admin"
+                href="/"
                 className="rounded-md px-3 py-1.5 text-muted-foreground hover:bg-accent hover:text-foreground"
               >
                 Overview
               </Link>
               <Link
-                href="/admin/users"
+                href="/users"
                 className="rounded-md px-3 py-1.5 text-muted-foreground hover:bg-accent hover:text-foreground"
               >
                 Users
               </Link>
               <Link
-                href="/admin/growth"
+                href="/growth"
                 className="rounded-md px-3 py-1.5 text-muted-foreground hover:bg-accent hover:text-foreground"
               >
                 Growth
               </Link>
               <Link
-                href="/admin/spark"
+                href="/spark"
                 className="rounded-md px-3 py-1.5 text-muted-foreground hover:bg-accent hover:text-foreground"
               >
                 Spark
               </Link>
               <Link
-                href="/admin/deploys"
+                href="/deploys"
                 className="rounded-md px-3 py-1.5 text-muted-foreground hover:bg-accent hover:text-foreground"
               >
                 Deploys
               </Link>
               <Link
-                href="/admin/audit"
+                href="/audit"
                 className="rounded-md px-3 py-1.5 text-muted-foreground hover:bg-accent hover:text-foreground"
               >
                 Audit
               </Link>
               <Link
-                href="/admin/health"
+                href="/health"
                 className="rounded-md px-3 py-1.5 text-muted-foreground hover:bg-accent hover:text-foreground"
               >
                 Health

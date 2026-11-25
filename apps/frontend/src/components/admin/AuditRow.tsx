@@ -70,7 +70,7 @@ export function AuditRow({ entry, onClick }: AuditRowProps) {
       <span className="truncate font-mono text-foreground">{entry.action}</span>
       {linkTarget ? (
         <Link
-          href={`/admin/users/${encodeURIComponent(linkTarget)}`}
+          href={`/users/${encodeURIComponent(linkTarget)}`}
           className="truncate text-info hover:underline"
           title={linkTarget}
         >

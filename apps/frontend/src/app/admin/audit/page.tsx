@@ -29,7 +29,7 @@ export default async function PlatformAuditPage({ searchParams }: AuditPageProps
   const nextQuery = new URLSearchParams();
   if (params.admin_user_id) nextQuery.set("admin_user_id", params.admin_user_id);
   if (result.cursor) nextQuery.set("cursor", result.cursor);
-  const nextCursorHref = result.cursor ? `/admin/audit?${nextQuery.toString()}` : null;
+  const nextCursorHref = result.cursor ? `/audit?${nextQuery.toString()}` : null;
 
   return (
     <div className="space-y-6">

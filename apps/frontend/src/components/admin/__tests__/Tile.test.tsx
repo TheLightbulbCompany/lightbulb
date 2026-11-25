@@ -20,10 +20,10 @@ describe("Tile", () => {
 
   it("renders an internal href as a same-tab link", () => {
     const { container } = render(
-      <Tile title="Acme Corp" label="error" tone="error" href="/admin/users/org_123" />,
+      <Tile title="Acme Corp" label="error" tone="error" href="/users/org_123" />,
     );
     const a = container.querySelector("a");
-    expect(a?.getAttribute("href")).toBe("/admin/users/org_123");
+    expect(a?.getAttribute("href")).toBe("/users/org_123");
     expect(a?.getAttribute("target")).toBeNull();
   });
 

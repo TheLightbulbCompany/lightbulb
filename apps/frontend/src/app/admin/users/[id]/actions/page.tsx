@@ -58,7 +58,7 @@ export default async function ActionsPage({
   const email = overview ? pickIdentityEmail(overview.identity) : null;
 
   const nextCursorHref = result.cursor
-    ? `/admin/users/${encodeURIComponent(id)}/actions?cursor=${encodeURIComponent(result.cursor)}`
+    ? `/users/${encodeURIComponent(id)}/actions?cursor=${encodeURIComponent(result.cursor)}`
     : null;
 
   return (

@@ -203,6 +203,10 @@ describe("/os with a channel code", () => {
     await page();
     expect(screen.getByTestId("clerk-sign-up")).toBeInTheDocument();
     expect(signUpProps).toHaveBeenCalledWith(expect.objectContaining({ forceRedirectUrl: "/os?c=yt-abc" }));
+    expect(screen.getByText("Get Spark")).toBeInTheDocument();
+    expect(screen.getByText("Create your account, then download.")).toBeInTheDocument();
+    expect(screen.queryByText(/invited/)).toBeNull();
+    expect(capture).not.toHaveBeenCalled();
     expect(screen.getByRole("link", { name: "Skip, just download" })).toBeInTheDocument();
     expect(post).not.toHaveBeenCalled();
   });
@@ -216,6 +220,7 @@ describe("/os with a channel code", () => {
       ["/os/channel", { channel: "yt-abc" }],
       ["/os/referral", { code: "abc123XYZ" }],
     ]);
+    await waitFor(() => expect(capture.mock.calls).toEqual([["spark_invite_signup_completed"]]));
   });
 
   it("signed in with a channel only: no referral call", async () => {
@@ -224,6 +229,7 @@ describe("/os with a channel code", () => {
     await page();
     expect(await screen.findByRole("link", { name: DOWNLOAD })).toBeInTheDocument();
     expect(post.mock.calls).toEqual([["/os/channel", { channel: "yt-abc" }]]);
+    expect(capture).not.toHaveBeenCalled();
   });
 
   it("a failed channel call still records the referral", async () => {

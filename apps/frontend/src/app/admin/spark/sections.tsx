@@ -170,7 +170,7 @@ export function Money({ data }: { data: SparkData }) {
               <MetricStat label="MRR at list price" value={`$${subs.mrr_usd}`} hint={`paying x $${price_usd}`} />
               <MetricStat label="Status unknown" value={subs.unknown} hint="subscribed before status tracking" />
             </div>
-            <Table head={["Account created", "Reached paying"]} rows={subs.trial_to_paid.map((t) => [t.month, kn(t)])} />
+            <Table head={["Account created", "Reached paying"]} rows={subs.trial_to_paid.map((t) => [weekLabel(t.month, t.partial), kn(t)])} />
             <Table
               head={["Cancelled in", "Count", "Reasons", "Feedback"]}
               rows={subs.cancellations.map((c) => [c.month, c.count, counts(c.reasons), counts(c.feedback)])}

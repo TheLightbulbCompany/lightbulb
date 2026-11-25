@@ -47,7 +47,7 @@ function Invite({ code, channel, ready, download }: { code: string; channel: str
   useEffect(() => {
     if (!isLoaded) return;
     if (!isSignedIn) {
-      if (!started.current) capture("spark_invite_signup_started");
+      if (!started.current && code) capture("spark_invite_signup_started");
       started.current = true;
       return;
     }
@@ -58,7 +58,7 @@ function Invite({ code, channel, ready, download }: { code: string; channel: str
     // The channel goes first: the first set-once wins, so a creator code beats "referral".
     (channel ? api.post("/os/channel", { channel }).catch(() => undefined) : Promise.resolve())
       .then(() => (code ? api.post("/os/referral", { code }) : undefined))
-      .then(() => capture("spark_invite_signup_completed"))
+      .then(() => (code ? capture("spark_invite_signup_completed") : undefined))
       .catch(() => undefined)
       .finally(() => setRecorded(true));
   }, [isLoaded, isSignedIn, api, code, channel]);
@@ -67,8 +67,9 @@ function Invite({ code, channel, ready, download }: { code: string; channel: str
   if (!isSignedIn) {
     return (
       <div className="mt-12">
+        {code ? null : <h2 className="mb-2 text-xl text-[var(--lb-ink)]">Get Spark</h2>}
         <p className="mb-6 text-lg leading-8 text-[var(--lb-ink)]">
-          You&apos;ve been invited to Spark. Create your account, then download.
+          {code ? "You've been invited to Spark. Create your account, then download." : "Create your account, then download."}
         </p>
         <SignUp routing="hash" forceRedirectUrl={here} signInForceRedirectUrl={here} signInUrl={`${here}#/sign-in`} />
         {onPhone ? null : ready ? (

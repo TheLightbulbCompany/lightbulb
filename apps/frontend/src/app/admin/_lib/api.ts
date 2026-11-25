@@ -644,7 +644,7 @@ export interface SparkData {
       paying: number;
       mrr_usd: number;
       unknown: number;
-      trial_to_paid: { month: string; k: number; n: number }[];
+      trial_to_paid: { month: string; k: number; n: number; partial: boolean }[];
       cancellations: { month: string; count: number; reasons: SparkCount[]; feedback: SparkCount[] }[];
     } | null;
     /** null = no voice_session_ended seen yet. */

@@ -155,7 +155,7 @@ def build_queries() -> dict[str, str]:
             select toString(toStartOfMonth(toTimeZone(v.timestamp, 'UTC'))) as m, v.person_id,
               sum(toInt(v.properties.seconds)), count(), coalesce(p.email, '')
             from (select person_id, timestamp, properties from events where event = 'voice_session_ended'
-                  and {w} and timestamp >= now() - interval 6 month) as v
+                  and toString(properties.product) = 'spark' and {w} and timestamp >= now() - interval 6 month) as v
             left join (select id, toString(properties.email) as email from persons) as p on p.id = v.person_id
             group by m, v.person_id, p.email limit 20000""",
         # Money facts per person, oldest first (12 months): the latest subscription_updated.status_to is the
@@ -167,7 +167,7 @@ def build_queries() -> dict[str, str]:
               coalesce(toString(properties.feedback), '')
             from events
             where event in ('account_created', 'subscription_started', 'subscription_updated', 'subscription_cancelled')
-              and coalesce(nullIf(toString(properties.product), ''), 'spark') = 'spark'
+              and toString(properties.product) = 'spark'
               and {w} and timestamp >= now() - interval 12 month
             order by timestamp limit 50000""",
         # Setup, last 30d: distinct persons by event, key (step / reason / permission) and action.
@@ -200,6 +200,7 @@ def _money(rows: dict[str, list], now: datetime) -> dict:
     price = settings.SPARK_PRICE_USD
     rate = getattr(settings, "SPARK_VOICE_USD_PER_MIN", 0.05)
     status, started, created, ever_active, cancels, first_upd = {}, set(), {}, set(), {}, ""
+    this = now.strftime("%Y-%m")
     for person, event, month, to, reason, feedback in rows["subs"]:
         month = month[:7]
         if event == "account_created":
@@ -230,7 +231,11 @@ def _money(rows: dict[str, list], now: datetime) -> dict:
             "paying": paying,
             "mrr_usd": paying * price,
             "unknown": len(started - set(status)),
-            "trial_to_paid": [{"month": m, "k": k, "n": n} for m, (k, n) in sorted(by_month.items())],
+            # partial: the month of the first status update (earlier conversions are invisible) and this month
+            "trial_to_paid": [
+                {"month": m, "k": k, "n": n, "partial": m in (first_upd, this)}
+                for m, (k, n) in sorted(by_month.items())
+            ],
             "cancellations": [
                 {
                     "month": m,
@@ -248,7 +253,6 @@ def _money(rows: dict[str, list], now: datetime) -> dict:
         for m, person, secs, _, email in rows["voice_monthly"]:
             months.setdefault(m[:7], {})[person] = float(secs) / 60
             emails[person] = email
-        this = now.strftime("%Y-%m")
         label = lambda p: status.get(p) or ("unknown" if p in started else "none")  # noqa: E731
         voice = {
             "rate_usd_per_min": rate,

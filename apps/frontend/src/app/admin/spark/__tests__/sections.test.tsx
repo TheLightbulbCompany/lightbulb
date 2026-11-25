@@ -40,7 +40,7 @@ const DATA: SparkData = {
       paying: 2,
       mrr_usd: 40,
       unknown: 1,
-      trial_to_paid: [{ month: "2026-10", k: 1, n: 4 }],
+      trial_to_paid: [{ month: "2026-10", k: 1, n: 4, partial: true }],
       cancellations: [{ month: "2026-11", count: 2, reasons: [{ key: "payment_failed", count: 2 }], feedback: [{ key: "too_expensive", count: 1 }] }],
     },
     voice: {
@@ -80,6 +80,7 @@ describe("spark sections", () => {
       </>,
     );
     expect(screen.getByText("MRR at list price")).toBeTruthy();
+    expect(screen.getByText("2026-10 (partial)")).toBeTruthy();
     expect(screen.getByText("$40")).toBeTruthy();
     expect(screen.getAllByText("1 / 4 (25%)")).toHaveLength(2); // trial to paid, under 5 min
     expect(screen.getByText("top@x.co")).toBeTruthy();

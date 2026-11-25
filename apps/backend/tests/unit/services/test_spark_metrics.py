@@ -282,13 +282,35 @@ def test_trial_to_paid_and_cancellations_by_month():
         sub("e", "subscription_cancelled", "2026-11-01", reason="payment_failed"),
     ]
     m = sm.derive(_rows(subs=subs), NOW)["money"]["subs"]
-    assert m["trial_to_paid"] == [{"month": "2026-10", "k": 1, "n": 2}]  # Sept predates the first update
+    assert m["trial_to_paid"] == [
+        {"month": "2026-10", "k": 1, "n": 2, "partial": True}
+    ]  # first update month  # Sept predates the first update
     c = m["cancellations"][0]
     assert c["month"] == "2026-11" and c["count"] == 2
     assert {"key": "payment_failed", "count": 1} in c["reasons"] and {"key": "too_expensive", "count": 1} in c[
         "feedback"
     ]
     assert {"key": "none", "count": 1} in c["feedback"]
+
+
+def test_trial_to_paid_partial_flags_first_update_and_current_month():
+    subs = [
+        sub("a", "account_created", "2026-09-01"),
+        sub("a", "subscription_updated", "2026-09-01", "active"),
+        sub("b", "account_created", "2026-10-01"),
+        sub("c", "account_created", "2026-11-01"),
+    ]
+    rows = sm.derive(_rows(subs=subs), NOW)["money"]["subs"]["trial_to_paid"]
+    assert [(r["month"], r["partial"]) for r in rows] == [("2026-09", True), ("2026-10", False), ("2026-11", True)]
+
+
+def test_server_event_queries_read_spark_product_only():
+    qs = sm.build_queries()
+    for name in ("subs", "voice_monthly"):
+        assert (
+            "toString(properties.product) = 'spark'" in qs[name]
+            and "coalesce(nullIf(toString(properties.product)" not in qs[name]
+        )
 
 
 def test_voice_months_percentiles_cost_and_top_margin():

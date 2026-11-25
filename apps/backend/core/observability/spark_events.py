@@ -121,7 +121,7 @@ APP_EVENTS: dict[str, dict[str, Callable[[object], bool]]] = {
     "referral_link_copied": {},
     "update_installed": {"from_version": _match(VERSION), "to_version": _match(VERSION)},
     "automation_fired": {"ok": _bool, "brain": _bool},
-    "task_stopped": {"task_id": _match(TASK_ID), "how": _enum("pressed", "said")},
+    "task_stopped": {"task_id": _match(TASK_ID), "how": _enum("pressed", "said", "other")},
     "feature_used": {"feature": _enum("automation_created", "dictation", "marks")},
 }
 

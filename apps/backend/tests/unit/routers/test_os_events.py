@@ -187,7 +187,7 @@ ENUMS = {  # the canonical values of each new enum; the engine sends exactly the
     ("brain_signin_failed", "reason"): ["signin", "timeout", "download", "offline", "space", "no_plan"],
     ("permission_prompted", "permission"): ["microphone", "accessibility", "screen_recording"],
     ("permission_denied", "permission"): ["microphone", "accessibility", "screen_recording"],
-    ("task_stopped", "how"): ["pressed", "said"],
+    ("task_stopped", "how"): ["pressed", "said", "other"],
     ("feature_used", "feature"): ["automation_created", "dictation", "marks"],
     ("heard_from_answered", "choice"): [
         "friend_or_invite", "x_twitter", "youtube", "tiktok_reels", "reddit", "hacker_news", "product_hunt",

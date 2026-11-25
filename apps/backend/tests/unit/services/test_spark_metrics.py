@@ -39,6 +39,9 @@ def install(
     w4=0,
     sub=0,
     last="",
+    first=None,
+    perm_step=0,
+    heard="",
 ):
     """One `installs` row (column order documented in build_queries)."""
     return [
@@ -58,11 +61,17 @@ def install(
         w4,
         sub,
         last,
+        first.isoformat() if first else "1970-01-01T00:00:00+00:00",
+        perm_step,
+        heard,
     ]
 
 
 def _rows(**over):
-    names = "doers_weekly doers_7d installs success_weekly success_version success_provider problems downloads"
+    names = (
+        "doers_weekly doers_7d installs success_weekly success_version success_provider problems downloads"
+        " voice_monthly subs setup_steps tasks_unfinished"
+    )
     return {**{k: [] for k in names.split()}, **over}
 
 
@@ -76,9 +85,9 @@ def test_internal_filter_excludes_by_person_and_drops_unsafe_ids():
     assert "'user_a'" in f and "'user_admin'" in f and "1=1" not in f
 
 
-def test_queries_define_human_task_bound_scans_and_count_at_most_eight():
+def test_queries_define_human_task_bound_scans_and_count_at_most_twelve():
     qs = sm.build_queries()
-    assert len(qs) <= 8
+    assert len(qs) <= 12
     for name in ("doers_weekly", "doers_7d", "success_weekly", "success_version"):
         assert "!= 'automation'" in qs[name], name
     assert ">= 2" in qs["doers_weekly"] and "uniq(toDate(toTimeZone(timestamp, 'UTC')))" in qs["doers_weekly"]
@@ -216,3 +225,176 @@ def test_truncated_flag_at_row_cap_and_installs_query_shape():
     assert sm.derive(_rows(installs=rows), NOW)["truncated"] is True
     q = sm.build_queries()["installs"]
     assert "having launch >= now() - interval 84 day" in q and "from persons" in q and "person.properties" not in q
+
+
+# ---- money, setup, sources, funnel fix -------------------------------------------------------------
+
+
+def test_new_query_definitions():
+    qs = sm.build_queries()
+    assert (
+        "event = 'voice_session_ended'" in qs["voice_monthly"] and "toInt(v.properties.seconds)" in qs["voice_monthly"]
+    )
+    assert "interval 6 month" in qs["voice_monthly"] and "toStartOfMonth(toTimeZone(" in qs["voice_monthly"]
+    for e in ("account_created", "subscription_started", "subscription_updated", "subscription_cancelled"):
+        assert f"'{e}'" in qs["subs"]
+    assert "order by timestamp" in qs["subs"] and "interval 12 month" in qs["subs"]
+    assert "interval 30 day" in qs["setup_steps"] and "uniq(person_id)" in qs["setup_steps"]
+    assert "minIf(e.timestamp," in qs["installs"] and "!= 'automation'" in qs["installs"]
+    assert "'onboarding_step'" in qs["installs"] and "spark_heard_from" in qs["installs"]
+    q = qs["tasks_unfinished"]
+    assert "task_id" in q and "interval 30 minute" in q and "interval 30 day" in q and "fin = 0" in q
+    for q in qs.values():  # every query is team-filtered
+        assert "person_id not in" in q or "1 = 1" in q
+
+
+def sub(person, event, month="2026-11-01", to="", reason="", feedback=""):
+    return [person, event, month, to, reason, feedback]
+
+
+def test_money_mrr_paying_and_unknown_rule():
+    subs = [
+        sub("a", "subscription_started"),
+        sub("a", "subscription_updated", to="trialing"),
+        sub("a", "subscription_updated", to="active"),
+        sub("b", "subscription_updated", to="active"),
+        sub("c", "subscription_updated", to="trialing"),
+        sub("c", "subscription_updated", to="canceled"),
+        sub("d", "subscription_started"),  # old data: no update -> unknown, not paying
+    ]
+    with patch.object(sm.settings, "SPARK_PRICE_USD", 20):
+        m = sm.derive(_rows(subs=subs), NOW)["money"]["subs"]
+    assert m["paying"] == 2 and m["mrr_usd"] == 40 and m["unknown"] == 1
+
+
+def test_money_no_data_when_events_never_seen():
+    m = sm.derive(_rows(subs=[sub("d", "subscription_started")]), NOW)["money"]
+    assert m["subs"] is None and m["voice"] is None  # paying cannot be told without any update
+
+
+def test_trial_to_paid_and_cancellations_by_month():
+    subs = [
+        sub("a", "account_created", "2026-10-01"),
+        sub("a", "subscription_updated", "2026-10-01", "active"),
+        sub("b", "account_created", "2026-10-01"),
+        sub("c", "account_created", "2026-09-01"),
+        sub("a", "subscription_cancelled", "2026-11-01", reason="cancellation_requested", feedback="too_expensive"),
+        sub("e", "subscription_cancelled", "2026-11-01", reason="payment_failed"),
+    ]
+    m = sm.derive(_rows(subs=subs), NOW)["money"]["subs"]
+    assert m["trial_to_paid"] == [{"month": "2026-10", "k": 1, "n": 2}]  # Sept predates the first update
+    c = m["cancellations"][0]
+    assert c["month"] == "2026-11" and c["count"] == 2
+    assert {"key": "payment_failed", "count": 1} in c["reasons"] and {"key": "too_expensive", "count": 1} in c[
+        "feedback"
+    ]
+    assert {"key": "none", "count": 1} in c["feedback"]
+
+
+def test_voice_months_percentiles_cost_and_top_margin():
+    voice = [
+        ["2026-11-01", "a", 6000, 5, "a@x.co"],  # 100 min, paying
+        ["2026-11-01", "b", 600, 1, ""],  # 10 min, no status
+        ["2026-10-01", "a", 60, 1, "a@x.co"],
+    ]
+    subs = [sub("a", "subscription_updated", to="active")]
+    with patch.object(sm.settings, "SPARK_PRICE_USD", 20):
+        money = sm.derive(_rows(voice_monthly=voice, subs=subs), NOW)["money"]
+    nov = money["voice"]["months"][1]
+    assert nov == {"month": "2026-11", "minutes": 110.0, "users": 2, "p50": 55.0, "p90": 100.0, "cost_usd": 5.5}
+    assert money["voice"]["top"][0] == {
+        "email": "a@x.co",
+        "status": "active",
+        "minutes": 100.0,
+        "cost_usd": 5.0,
+        "margin_usd": 15.0,
+    }
+    assert money["voice"]["top"][1]["status"] == "none" and money["voice"]["top"][1]["margin_usd"] == -0.5
+
+
+def test_time_to_first_task_buckets_only_settled_installs_in_30d():
+    def at(minutes_after, **kw):
+        launch = NOW - timedelta(days=5)
+        return install(launch, tasks=1, first=launch + timedelta(minutes=minutes_after), **kw)
+
+    rows = [
+        at(4),
+        at(29),
+        at(119),
+        at(1439),
+        at(1441),
+        install(NOW - timedelta(days=5)),
+        install(NOW - timedelta(hours=2)),
+        install(NOW - timedelta(days=40)),
+    ]
+    t = sm.derive(_rows(installs=rows), NOW)["time_to_first_task"]
+    assert {b["bucket"]: b["k"] for b in t} == {"lt5m": 1, "lt30m": 1, "lt2h": 1, "lt24h": 1, "later": 1, "never": 1}
+    assert all(b["n"] == 6 for b in t)
+
+
+def test_heard_from_table_and_no_data_when_nobody_answered():
+    old = NOW - timedelta(days=3)
+    rows = [
+        install(old, act24=1, heard="youtube"),
+        install(old, heard="youtube"),
+        install(old),
+        install(NOW - timedelta(hours=1), heard="reddit"),
+    ]
+    h = sm.derive(_rows(installs=rows), NOW)["heard_from"]
+    assert h[0] == {"choice": "youtube", "installs": 2, "activated_24h": {"k": 1, "n": 2}}
+    assert {"choice": "reddit", "installs": 1, "activated_24h": {"k": 0, "n": 0}} in h
+    assert sm.derive(_rows(installs=[install(old)]), NOW)["heard_from"] is None
+
+
+def test_windows_install_reaches_permission_step_via_brain_or_step_event():
+    old = NOW - timedelta(days=3)
+    rows = [
+        install(old, platform="windows", signin=1, brain=1),
+        install(old, platform="windows", signin=1),
+        install(old, platform="mac", brain=1),
+        install(old, platform="mac", perm_step=1),
+    ]
+    f = sm.derive(_rows(installs=rows), NOW)["funnel"]
+    assert [x["k"] for x in f][:4] == [
+        4,
+        2,
+        2,
+        2,
+    ]  # launch, signin, brain (win+mac), permission (win via brain, mac via step)
+    assert f[3]["step"] == "permission"
+
+
+def test_setup_section():
+    steps = [
+        ["onboarding_step", "brain", "shown", 10],
+        ["onboarding_step", "brain", "completed", 6],
+        ["onboarding_step", "brain", "skipped", 1],
+        ["brain_signin_failed", "timeout", "", 3],
+        ["permission_prompted", "microphone", "", 8],
+        ["permission_denied", "microphone", "", 2],
+    ]
+    s = sm.derive(_rows(setup_steps=steps, tasks_unfinished=[[3, 12]]), NOW)["setup"]
+    assert s["steps"][1] == {"step": "brain", "shown": 10, "completed": {"k": 6, "n": 10}, "skipped": {"k": 1, "n": 10}}
+    assert s["steps"][0]["shown"] == 0
+    assert s["signin_failures"] == [{"key": "timeout", "count": 3}]
+    assert s["permissions"] == [{"permission": "microphone", "prompted": 8, "denied": {"k": 2, "n": 8}}]
+    assert s["unfinished"] == {"k": 3, "n": 12}
+
+
+def test_setup_no_data_when_onboarding_never_seen():
+    assert sm.derive(_rows(), NOW)["setup"] is None
+    assert sm.derive(_rows(setup_steps=[["onboarding_step", "brain", "shown", 1]]), NOW)["setup"]["unfinished"] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failing", ["voice_monthly", "subs", "setup_steps", "tasks_unfinished"])
+async def test_a_failed_new_query_means_no_figures(failing):
+    names = list(sm.build_queries())
+
+    async def fake(q, **_):
+        bad = sm.build_queries()[failing]
+        return {"columns": [], "results": [], "stubbed": False, "error": "boom" if q == bad else None}
+
+    with patch("core.services.posthog_admin.hogql", AsyncMock(side_effect=fake)):
+        data, state, errors = await sm.compute()
+    assert data is None and state == "partial" and errors[0]["domain"] == f"posthog:{failing}" and failing in names

@@ -45,7 +45,7 @@ function parseCursor(input: string | string[] | undefined): string | undefined {
 // ---------------------------------------------------------------------------
 // Filter form (server-rendered)
 //
-// `<form method="GET" action="/admin/users/{id}/logs">` keeps the page a
+// `<form method="GET" action="/users/{id}/logs">` keeps the page a
 // pure Server Component — no "use client" needed for the filter UI. URL is
 // the source of truth, so deep-linked filters / browser back work for free.
 // ---------------------------------------------------------------------------
@@ -60,7 +60,7 @@ function LogsFilters({ userId, level, hours }: LogsFiltersProps) {
   return (
     <form
       method="GET"
-      action={`/admin/users/${encodeURIComponent(userId)}/logs`}
+      action={`/users/${encodeURIComponent(userId)}/logs`}
       className="flex flex-wrap items-end gap-3 rounded-md border border-border bg-card p-3"
     >
       <label className="flex flex-col gap-1 text-xs text-muted-foreground">
@@ -138,7 +138,7 @@ export default async function LogsPage({ params, searchParams }: LogsPageProps) 
 
   // Build the next-page link, preserving level + hours.
   const nextCursorHref = logs.cursor
-    ? `/admin/users/${encodeURIComponent(id)}/logs?level=${encodeURIComponent(level)}&hours=${hours}&cursor=${encodeURIComponent(logs.cursor)}`
+    ? `/users/${encodeURIComponent(id)}/logs?level=${encodeURIComponent(level)}&hours=${hours}&cursor=${encodeURIComponent(logs.cursor)}`
     : null;
 
   return (

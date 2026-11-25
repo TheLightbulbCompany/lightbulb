@@ -143,7 +143,7 @@ export default async function AdminAgentDetailPage({ params }: PageProps) {
             label="Owner ID"
             value={
               <Link
-                href={`/admin/users/${encodeURIComponent(meta.owner_id ?? id)}`}
+                href={`/users/${encodeURIComponent(meta.owner_id ?? id)}`}
                 className="text-info hover:underline"
                 title={meta.owner_id ?? id}
               >
@@ -271,7 +271,7 @@ function Header({
       <div className="space-y-1">
         <p className="text-xs uppercase tracking-caps text-muted-foreground">
           <Link
-            href={`/admin/users/${encodeURIComponent(userId)}/agents`}
+            href={`/users/${encodeURIComponent(userId)}/agents`}
             className="text-info hover:underline"
           >
             Agents

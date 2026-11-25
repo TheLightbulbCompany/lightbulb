@@ -66,10 +66,35 @@ describe('decideCanonicalHostRedirect (SEO host consolidation)', () => {
 });
 
 describe('decideAdminHostRouting (admin host gate)', () => {
-  it('passes through when an admin host hits an /admin path', () => {
+  it('redirects an old /admin/<path> link on an admin host to /<path>', () => {
     expect(
-      decideAdminHostRouting('admin.thelightbulb.company', '/admin/users', ADMIN_HOSTS),
-    ).toEqual({ kind: 'passthrough' });
+      decideAdminHostRouting('admin.thelightbulb.company', '/admin/spark', ADMIN_HOSTS),
+    ).toEqual({ kind: 'redirect', to: '/spark' });
+  });
+  it('redirects /admin on an admin host to /', () => {
+    expect(
+      decideAdminHostRouting('admin.thelightbulb.company', '/admin', ADMIN_HOSTS),
+    ).toEqual({ kind: 'redirect', to: '/' });
+  });
+  it('rewrites the root of an admin host to /admin', () => {
+    expect(
+      decideAdminHostRouting('admin.thelightbulb.company', '/', ADMIN_HOSTS),
+    ).toEqual({ kind: 'rewrite', to: '/admin' });
+  });
+  it('rewrites /spark and nested paths on an admin host under /admin', () => {
+    expect(
+      decideAdminHostRouting('admin.thelightbulb.company', '/spark', ADMIN_HOSTS),
+    ).toEqual({ kind: 'rewrite', to: '/admin/spark' });
+    expect(
+      decideAdminHostRouting('admin.thelightbulb.company', '/users/u_1/agents', ADMIN_HOSTS),
+    ).toEqual({ kind: 'rewrite', to: '/admin/users/u_1/agents' });
+  });
+  it('does not rewrite Next internals or API routes on an admin host', () => {
+    for (const p of ['/_next/static/x.js', '/api/v1/admin/me', '/trpc/x', '/api']) {
+      expect(decideAdminHostRouting('admin.thelightbulb.company', p, ADMIN_HOSTS)).toEqual({
+        kind: 'passthrough',
+      });
+    }
   });
 
   it('returns 404 for an /admin path on a non-admin host', () => {
@@ -78,10 +103,10 @@ describe('decideAdminHostRouting (admin host gate)', () => {
     ).toEqual({ kind: 'not_found' });
   });
 
-  it('redirects to /admin when an admin host requests a non-admin path', () => {
+  it('rewrites a non-admin path on an admin host under /admin', () => {
     expect(
       decideAdminHostRouting('admin.thelightbulb.company', '/chat', ADMIN_HOSTS),
-    ).toEqual({ kind: 'redirect', to: '/admin' });
+    ).toEqual({ kind: 'rewrite', to: '/admin/chat' });
   });
 
   it('returns 404 for /admin on an unknown random host (defense in depth)', () => {
@@ -93,7 +118,7 @@ describe('decideAdminHostRouting (admin host gate)', () => {
   it('allows admin.localhost:3000 (default admin host) for local dev', () => {
     expect(
       decideAdminHostRouting('admin.localhost:3000', '/admin/users', ADMIN_HOSTS),
-    ).toEqual({ kind: 'passthrough' });
+    ).toEqual({ kind: 'redirect', to: '/users' });
   });
 
   it('treats null/missing host as non-admin (404 on /admin)', () => {
@@ -118,7 +143,7 @@ describe('decideAdminHostRouting (admin host gate)', () => {
   it('is case-insensitive on host comparison', () => {
     expect(
       decideAdminHostRouting('ADMIN.THELIGHTBULB.COMPANY', '/admin/users', ADMIN_HOSTS),
-    ).toEqual({ kind: 'passthrough' });
+    ).toEqual({ kind: 'redirect', to: '/users' });
   });
 
   // ---------------------------------------------------------------------------
@@ -152,12 +177,12 @@ describe('decideAdminHostRouting (admin host gate)', () => {
     ).toEqual({ kind: 'passthrough' });
   });
 
-  it('still redirects truly off-admin paths (e.g. /chat) on admin hosts', () => {
+  it('still rewrites truly off-admin paths (e.g. /chat) on admin hosts', () => {
     // Regression guard — the original gate behavior for non-auth, non-admin
     // paths is preserved.
     expect(
       decideAdminHostRouting('admin.thelightbulb.company', '/chat', ADMIN_HOSTS),
-    ).toEqual({ kind: 'redirect', to: '/admin' });
+    ).toEqual({ kind: 'rewrite', to: '/admin/chat' });
   });
 });
 

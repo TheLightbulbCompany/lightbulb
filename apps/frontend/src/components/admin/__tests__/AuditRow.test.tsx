@@ -16,7 +16,7 @@ const entry = (target_user_id: string): AuditEntry => ({
 describe("AuditRow", () => {
   it("links a real target to its user page", () => {
     render(<AuditRow entry={entry("org_123")} />);
-    expect(screen.getByRole("link", { name: "org_123" })).toHaveAttribute("href", "/admin/users/org_123");
+    expect(screen.getByRole("link", { name: "org_123" })).toHaveAttribute("href", "/users/org_123");
   });
 
   it("renders a sentinel target as text, never a broken user link", () => {

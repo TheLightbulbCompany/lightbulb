@@ -40,7 +40,7 @@ export function AgentActionsFooter({
       return;
     }
     // Successful delete invalidates the detail route — bounce back to the list.
-    router.push(`/admin/users/${encodeURIComponent(userId)}/agents`);
+    router.push(`/users/${encodeURIComponent(userId)}/agents`);
     router.refresh();
   }
 

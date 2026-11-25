@@ -48,7 +48,7 @@ export default async function AdminOverviewPage() {
         label: g.status,
         tone: (g.status === "error" ? "error" : "unknown") as "error" | "unknown",
         sub: g.owner_id,
-        href: `/admin/users/${encodeURIComponent(g.owner_id)}`,
+        href: `/users/${encodeURIComponent(g.owner_id)}`,
       })),
     ...(deploys?.data ?? [])
       .filter((d) => d.status.endsWith("_FAILED") || d.status.includes("ROLLBACK"))
@@ -58,7 +58,7 @@ export default async function AdminOverviewPage() {
         label: d.status,
         tone: "error" as const,
         sub: d.root_cause ?? undefined,
-        href: "/admin/deploys",
+        href: "/deploys",
       })),
     ...(alarms?.data ?? []).map((a) => ({
       key: `alarm:${a.name}`,
@@ -132,7 +132,7 @@ export default async function AdminOverviewPage() {
             {grid.map((g) => (
               <Link
                 key={g.owner_id}
-                href={`/admin/users/${encodeURIComponent(g.owner_id)}`}
+                href={`/users/${encodeURIComponent(g.owner_id)}`}
                 title={g.owner_id}
                 className="flex items-center justify-between rounded-sm border border-border p-2 hover:bg-accent"
               >

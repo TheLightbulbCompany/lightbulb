@@ -38,7 +38,7 @@ export function NotAuthorized() {
           Sign out / switch account
         </Button>
         {/* Absolute product URL, not "/": on the admin host the middleware
-            funnels every non-/admin path back to /admin, so "/" landed on this
+            rewrites "/" to the admin pages, so "/" landed on this
             403 again — a loop with no way out but sign-out. */}
         <Button asChild variant="outline">
           <a href={SITE_URL}>Back to home</a>

@@ -201,7 +201,7 @@ export default async function HealthPage() {
                     <td className="px-3 py-2 font-mono text-muted-foreground">
                       {err.user_id ? (
                         <Link
-                          href={`/admin/users/${encodeURIComponent(err.user_id)}`}
+                          href={`/users/${encodeURIComponent(err.user_id)}`}
                           className="text-info hover:underline"
                         >
                           {truncate(err.user_id, 16)}

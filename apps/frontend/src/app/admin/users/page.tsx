@@ -68,7 +68,7 @@ export default async function UsersPage({ searchParams }: UsersPageProps) {
         <div className="flex justify-center">
           <Link
             href={{
-              pathname: "/admin/users",
+              pathname: "/users",
               query: params.q
                 ? { cursor: result.cursor, q: params.q }
                 : { cursor: result.cursor },
@@ -106,7 +106,7 @@ function UsersTable({ users }: { users: UserDirectoryRow[] }) {
             >
               <td className="px-3 py-2">
                 <Link
-                  href={`/admin/users/${encodeURIComponent(u.clerk_id)}`}
+                  href={`/users/${encodeURIComponent(u.clerk_id)}`}
                   className="text-info hover:underline"
                 >
                   {u.email ?? <span className="text-muted-foreground">(no email)</span>}

@@ -38,21 +38,16 @@ const ADMIN_HOSTS = parseAdminHosts(process.env.NEXT_PUBLIC_ADMIN_HOSTS);
 export type AdminHostDecision =
   | { kind: "passthrough" }
   | { kind: "not_found" }
-  | { kind: "redirect"; to: string };
+  | { kind: "redirect"; to: string }
+  | { kind: "rewrite"; to: string };
 
-// Paths that must passthrough on admin hosts even though they sit outside
-// /admin*. AdminLayout (server component) redirects unauth users to
-// /sign-in; without this allowlist the gate immediately bounces /sign-in
-// back to /admin, AdminLayout redirects to /sign-in again — infinite 307
-// loop (ERR_TOO_MANY_REDIRECTS). Clerk's catchall routes (e.g.
-// /sign-in/factor-one, /sign-in/sso-callback) are also included.
-function isAdminHostAllowedNonAdminPath(pathname: string): boolean {
-  return (
-    pathname === "/sign-in" ||
-    pathname.startsWith("/sign-in/") ||
-    pathname === "/sign-up" ||
-    pathname.startsWith("/sign-up/")
-  );
+// Paths that must passthrough on admin hosts instead of being rewritten under
+// /admin: Clerk's sign-in/sign-up pages (AdminLayout redirects unauth users to
+// /sign-in; rewriting it to /admin/sign-in would loop through the layout gate
+// forever) and their catchall routes (/sign-in/factor-one, /sign-in/sso-callback),
+// plus Next internals and API routes, which are not admin pages.
+function isAdminHostPassthroughPath(pathname: string): boolean {
+  return /^\/(sign-in|sign-up|_next|api|trpc)(\/|$)/.test(pathname);
 }
 
 /**
@@ -61,11 +56,10 @@ function isAdminHostAllowedNonAdminPath(pathname: string): boolean {
  *
  * Defense in depth (CEO A1): unknown hosts hitting `/admin*` get a 404, not a
  * 403 — we don't want host-header probes to confirm the path even exists.
- * Conversely, an admin host that strays off `/admin` is funneled back to
- * `/admin` so admins can't accidentally land on the public app. Clerk's
- * auth paths (`/sign-in`, `/sign-up`, and their catchall sub-paths) are
- * exempted from that funnel so AdminLayout's sign-in redirect can resolve
- * instead of looping back through the gate.
+ * On an admin host the admin lives at the root: `/<path>` is rewritten to
+ * `/admin/<path>` (the address bar keeps the short path) and the old
+ * `/admin/<path>` links redirect to `/<path>`. Clerk auth paths, Next
+ * internals and API routes are left alone (see isAdminHostPassthroughPath).
  */
 export function decideAdminHostRouting(
   host: string | null | undefined,
@@ -79,11 +73,11 @@ export function decideAdminHostRouting(
   if (isAdminPath && !isAdminHost) {
     return { kind: "not_found" };
   }
-  if (isAdminHost && !isAdminPath) {
-    if (isAdminHostAllowedNonAdminPath(pathname)) {
-      return { kind: "passthrough" };
-    }
-    return { kind: "redirect", to: "/admin" };
+  if (isAdminHost && isAdminPath) {
+    return { kind: "redirect", to: pathname.slice("/admin".length) || "/" };
+  }
+  if (isAdminHost && !isAdminHostPassthroughPath(pathname)) {
+    return { kind: "rewrite", to: pathname === "/" ? "/admin" : `/admin${pathname}` };
   }
   return { kind: "passthrough" };
 }
@@ -131,7 +125,12 @@ const _clerkMiddleware = clerkMiddleware(async (auth, req) => {
   if (decision.kind === "redirect") {
     const url = req.nextUrl.clone();
     url.pathname = decision.to;
-    return NextResponse.redirect(url);
+    return NextResponse.redirect(url, 308);
+  }
+  if (decision.kind === "rewrite") {
+    const url = req.nextUrl.clone();
+    url.pathname = decision.to;
+    return NextResponse.rewrite(url);
   }
 
   const paperclipRedirect = decidePaperclipLinkRedirect(req.nextUrl.pathname);

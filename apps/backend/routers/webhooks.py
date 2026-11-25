@@ -235,9 +235,8 @@ async def handle_clerk_webhook(request: Request):
         user_id = data.get("id", "")
         logger.info("Clerk user.created webhook received for %s", user_id)
 
-        # Persist user_id + primary email into the users table. The /users/sync
-        # path also calls user_repo.put but only knows the user_id; the webhook
-        # is the authoritative source of email.
+        # Persist user_id + primary email into the users table. Spark's account read
+        # (routers/os.py `_account`) also fills both, if absent, from the session token.
         if user_id:
             email = _extract_primary_email(data)
             try:
@@ -245,14 +244,9 @@ async def handle_clerk_webhook(request: Request):
 
                 await user_repo.put(user_id, email=email)
             except Exception:
-                # Persistence is non-fatal here — the /users/sync REST
-                # path will write the row again the first time the user
-                # opens the app. Logging is enough.
+                # Persistence is non-fatal here: the account read writes the row
+                # the first time the person opens Spark. Logging is enough.
                 logger.exception("user_repo.put failed for user.created %s", user_id)
-
-            # No welcome here: it comes from the workspace's CEO once a workspace exists
-            # (core/services/welcome_email.py). Sign-up joins nothing either -- competition
-            # sign-up-sheet membership is explicit (POST /launch/join, inside the product).
 
     elif event_type == "user.deleted":
         user_id = data.get("id", "")

@@ -128,8 +128,8 @@ class Settings(BaseSettings):
     STRIPE_WEBHOOK_SECRET: str = ""
     #: Spark's $20/month subscription (one licensed price); empty: no checkout link.
     STRIPE_SPARK_PRICE_ID: str = ""
-    #: Save Spark voice transcripts (text only, 90 days) to the spark-transcripts table. Dev only until the
-    #: owner approves prod and the privacy text changes; off: nothing is saved.
+    #: Save Spark voice transcripts (text only, 90 days) to the spark-transcripts table. On in dev and prod
+    #: (set by CDK); off: nothing is saved.
     SPARK_TRANSCRIPTS_ENABLED: bool = False
     #: Spark data store (S3/Iceberg via Firehose). Off: nothing is written there.
     SPARK_STORE_ENABLED: bool = False

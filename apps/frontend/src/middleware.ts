@@ -45,9 +45,9 @@ export type AdminHostDecision =
 // /admin: Clerk's sign-in/sign-up pages (AdminLayout redirects unauth users to
 // /sign-in; rewriting it to /admin/sign-in would loop through the layout gate
 // forever) and their catchall routes (/sign-in/factor-one, /sign-in/sso-callback),
-// plus Next internals and API routes, which are not admin pages.
+// plus Next internals, API routes and the PostHog proxy (/ingest), which are not admin pages.
 function isAdminHostPassthroughPath(pathname: string): boolean {
-  return /^\/(sign-in|sign-up|_next|api|trpc)(\/|$)/.test(pathname);
+  return /^\/(sign-in|sign-up|_next|api|trpc|ingest)(\/|$)/.test(pathname);
 }
 
 /**
@@ -75,6 +75,10 @@ export function decideAdminHostRouting(
   }
   if (isAdminHost && isAdminPath) {
     return { kind: "redirect", to: pathname.slice("/admin".length) || "/" };
+  }
+  // The sign-in/sign-up pages fall back to /voice, which is not an admin page.
+  if (isAdminHost && pathname === "/voice") {
+    return { kind: "redirect", to: "/" };
   }
   if (isAdminHost && !isAdminHostPassthroughPath(pathname)) {
     return { kind: "rewrite", to: pathname === "/" ? "/admin" : `/admin${pathname}` };

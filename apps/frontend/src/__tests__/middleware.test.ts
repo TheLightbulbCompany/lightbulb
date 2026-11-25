@@ -76,6 +76,11 @@ describe('decideAdminHostRouting (admin host gate)', () => {
       decideAdminHostRouting('admin.thelightbulb.company', '/admin', ADMIN_HOSTS),
     ).toEqual({ kind: 'redirect', to: '/' });
   });
+  it('redirects /voice (the sign-in fallback) on an admin host to /', () => {
+    expect(
+      decideAdminHostRouting('admin.thelightbulb.company', '/voice', ADMIN_HOSTS),
+    ).toEqual({ kind: 'redirect', to: '/' });
+  });
   it('rewrites the root of an admin host to /admin', () => {
     expect(
       decideAdminHostRouting('admin.thelightbulb.company', '/', ADMIN_HOSTS),
@@ -90,7 +95,7 @@ describe('decideAdminHostRouting (admin host gate)', () => {
     ).toEqual({ kind: 'rewrite', to: '/admin/users/u_1/agents' });
   });
   it('does not rewrite Next internals or API routes on an admin host', () => {
-    for (const p of ['/_next/static/x.js', '/api/v1/admin/me', '/trpc/x', '/api']) {
+    for (const p of ['/_next/static/x.js', '/api/v1/admin/me', '/trpc/x', '/api', '/ingest/e']) {
       expect(decideAdminHostRouting('admin.thelightbulb.company', p, ADMIN_HOSTS)).toEqual({
         kind: 'passthrough',
       });
@@ -178,8 +183,8 @@ describe('decideAdminHostRouting (admin host gate)', () => {
   });
 
   it('still rewrites truly off-admin paths (e.g. /chat) on admin hosts', () => {
-    // Regression guard — the original gate behavior for non-auth, non-admin
-    // paths is preserved.
+    // Any non-auth path is served from under /admin (the old gate redirected
+    // it to /admin instead).
     expect(
       decideAdminHostRouting('admin.thelightbulb.company', '/chat', ADMIN_HOSTS),
     ).toEqual({ kind: 'rewrite', to: '/admin/chat' });

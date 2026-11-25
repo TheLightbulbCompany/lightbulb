@@ -5,8 +5,12 @@ State lives in the store bucket under `jobs/`, so a restart loses nothing and se
   jobs/retention/<YYYY-MM-DD>.json     {not_before, attempts, done, claimed_at}
 `_job` claims a marker with an S3 conditional write (create: IfNoneMatch "*", update: IfMatch <etag>; the loser of
 a race is silent; a claim older than 30 minutes may be re-claimed), runs the work, and finishes with another
-conditional write. Forget passes: 1 at once, 2 at requested_at + 45 min, 3 (compacting) at + 24 h, then the marker
-is deleted. A failed pass keeps its number and backs off (10 min * 2^attempts, at most 24 h).
+conditional write. Forget passes: 1 at once, 2 at requested_at + 45 min, 3 (DELETE, OPTIMIZE, VACUUM) at + 24 h,
+4 (VACUUM and the count) 25 h after pass 3 finished; zero rows left after pass 4 deletes the marker. A failed pass
+keeps its number and backs off (10 min * 2^attempts, at most 24 h).
+"Deleted": after pass 1 the rows are invisible to queries; the text is physically gone from S3 only after pass 4,
+about two days after the request (VACUUM drops only snapshots older than 24 h, so pass 3's VACUUM cannot yet remove
+the files the earlier snapshots reference).
 An opt-out deletes only rows with ts <= `until` (requested_at + 5 min): a person who opts back in keeps their new
 data. Account deletion has `until: null`: no time condition.
 NOT deleted: events sent before sign-in under an install id (no free text; gone with the 90-day retention) and other
@@ -42,6 +46,7 @@ PASS_S = 15 * 60  # one job's time, under the claim lifetime so a live claim is 
 PASSES_PER_TICK = 5
 CLAIM_STALE = timedelta(minutes=30)
 PASS_AT = {2: timedelta(minutes=45), 3: timedelta(hours=24)}  # next_pass -> offset from requested_at
+PASS_FOUR_AFTER = timedelta(hours=25)  # from the end of pass 3: its own snapshots must pass VACUUM's 24 h window
 CUTOFF_SLACK = timedelta(minutes=5)  # the opt-out cache is up to 60 s stale in other tasks
 BACKOFF_BASE, BACKOFF_MAX, STUCK_ATTEMPTS = timedelta(minutes=10), timedelta(hours=24), 6
 RETENTION_AT = time(3, 30)  # UTC
@@ -251,8 +256,12 @@ async def retry_marker(user_id: str, at: datetime, bounded: bool = True) -> None
 async def _forget_work(m: dict) -> bool:
     n = m["next_pass"]
     until = datetime.fromisoformat(m["until"]) if m.get("until") else None
-    left = await forget_pass(m["user_id"], compact=n == 3, until=until)
-    if n == 3 and left:
+    if n == 4:  # physical deletion only: VACUUM, then the same verification
+        await _maintain([], [f"VACUUM {store.db()}.{t}" for t in store.TABLES])
+        left = await _count(m["user_id"], until)
+    else:
+        left = await forget_pass(m["user_id"], compact=n == 3, until=until)
+    if n >= 3 and left:
         put_metric("spark_store.forget_remaining")
         logger.warning("spark store forget: %d rows remain after the last pass", left)
         return False
@@ -266,9 +275,9 @@ def _advance_forget(m: dict, ok: bool) -> dict | None:
             put_metric("spark_store.forget_stuck")
         return failed
     n = m["next_pass"]
-    if n == 3:
+    if n == 4:
         return None
-    at = datetime.fromisoformat(m["requested_at"]) + PASS_AT[n + 1]
+    at = _now() + PASS_FOUR_AFTER if n == 3 else datetime.fromisoformat(m["requested_at"]) + PASS_AT[n + 1]
     return m | {"next_pass": n + 1, "not_before": at.isoformat(), "attempts": 0}
 
 
@@ -329,8 +338,7 @@ def forget_sql(user_id: str, until: datetime | None) -> tuple[list[tuple[str, li
 async def forget_pass(user_id: str, compact: bool, until: datetime | None) -> int:
     """Delete this person's rows (up to `until`, if given), sweep errors/, with `compact` rewrite and vacuum the bucket's
     files, then count what is left (returned). Raises if any statement failed."""
-    deletes, count = forget_sql(user_id, until)
-    await _all(deletes)
+    await _all(forget_sql(user_id, until)[0])
     await _sweep_errors(user_id)
     if compact:
         db, b = store.db(), store.bucket(user_id)
@@ -338,7 +346,11 @@ async def forget_pass(user_id: str, compact: bool, until: datetime | None) -> in
             [f"OPTIMIZE {db}.{t} REWRITE DATA USING BIN_PACK WHERE user_bucket = {int(b)}" for t in store.TABLES],
             [f"VACUUM {db}.{t}" for t in store.TABLES],
         )
-    rows = await _q(*count)
+    return await _count(user_id, until)
+
+
+async def _count(user_id: str, until: datetime | None) -> int:
+    rows = await _q(*forget_sql(user_id, until)[1])
     return int(float(next(iter(rows[0].values())) or 0)) if rows else 0
 
 

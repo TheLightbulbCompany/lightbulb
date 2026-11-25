@@ -313,7 +313,46 @@ async def test_pass_two_after_45_minutes_and_pass_three_after_24_hours_then_the_
     assert maint == [f"OPTIMIZE lightbulb_dev_spark.{t} REWRITE DATA USING BIN_PACK WHERE user_bucket = {BUCKET}" for t in jobs.store.TABLES] + [
         f"VACUUM lightbulb_dev_spark.{t}" for t in jobs.store.TABLES
     ]  # fmt: skip
+    m = env.s3.marker()  # pass 3 does not finish the job: its own snapshots are still inside VACUUM's window
+    assert m["next_pass"] == 4 and m["not_before"] == (env.clock[0] + timedelta(hours=25)).isoformat()
+    env.athena.queries.clear()
+    await advance(timedelta(hours=24, minutes=59))
+    assert not env.athena.queries
+    await advance(1 * MIN)
+    assert [q for q, _ in env.athena.queries if not q.startswith(("VACUUM", "SELECT sum(c)"))] == []
+    assert len(env.athena.sqls("VACUUM")) == 3 and len(env.athena.sqls("SELECT sum(c)")) == 1
     assert MARKER not in env.s3.objects
+
+
+async def test_pass_four_not_before_follows_when_pass_three_finished_not_the_request(env):
+    env.s3.seed(next_pass=3, attempts=2)  # pass 3 was delayed by backoff
+    env.clock[0] = T0 + timedelta(hours=30)
+    await jobs.tick()
+    assert env.s3.marker()["next_pass"] == 4
+    assert env.s3.marker()["not_before"] == (T0 + timedelta(hours=55)).isoformat()
+
+
+async def test_pass_four_with_rows_left_keeps_the_marker_and_backs_off(env):
+    env.s3.seed(next_pass=4)
+    env.athena.remaining = 1
+    await jobs.tick()
+    m = env.s3.marker()
+    assert m["next_pass"] == 4 and m["attempts"] == 1 and "spark_store.forget_remaining" in env.metrics
+
+
+async def test_pass_four_failure_backs_off_and_counts_stuck(env):
+    env.s3.seed(next_pass=4, attempts=7)
+    env.athena.fail = lambda sql: sql.startswith("VACUUM")
+    await jobs.tick()
+    m = env.s3.marker()
+    assert m["attempts"] == 8 and "spark_store.forget_stuck" in env.metrics
+    assert m["not_before"] == (T0 + timedelta(hours=24)).isoformat()  # capped
+
+
+async def test_a_repeat_request_during_pass_four_starts_over(env):
+    env.s3.seed(next_pass=4, attempts=3)
+    await jobs.request_forget(USER, T0 + 1 * MIN)
+    assert env.s3.marker()["next_pass"] == 1 and env.s3.marker()["attempts"] == 0
 
 
 async def test_a_failed_pass_backs_off_and_counts(env):
@@ -409,7 +448,7 @@ async def test_non_zero_rows_after_the_last_pass_keep_the_marker_and_back_off(en
     assert "spark_store.forget_remaining" in env.metrics
     env.athena.remaining = 0
     await advance(20 * MIN)
-    assert MARKER not in env.s3.objects
+    assert env.s3.marker()["next_pass"] == 4
 
 
 async def test_vacuum_runs_for_every_table_even_when_optimize_fails(env):

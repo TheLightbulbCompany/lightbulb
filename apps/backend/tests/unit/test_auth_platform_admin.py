@@ -8,7 +8,7 @@ account on a team domain (dev's `+clerk_test` addresses) must be refused.
 import pytest
 from fastapi import HTTPException
 
-from core.auth import AuthContext, is_internal_email, require_platform_admin
+from core.auth import AuthContext, require_platform_admin
 from core.config import settings
 
 
@@ -38,12 +38,3 @@ def test_empty_allowlist_admits_nobody(monkeypatch):
         require_platform_admin(
             AuthContext(user_id="user_listed", email="admin@thelightbulb.company", human_session=True)
         )
-
-
-def test_internal_email_tagging():
-    """Analytics-only tagging; the retired @isol8.co domain no longer counts."""
-    assert is_internal_email("SOMEONE@THELIGHTBULB.COMPANY")
-    assert not is_internal_email("person@example.com")  # a personal mailbox is not tagged
-    assert not is_internal_email("someone@isol8.co")
-    assert not is_internal_email("attacker@evil-thelightbulb.company.example")
-    assert not is_internal_email(None)

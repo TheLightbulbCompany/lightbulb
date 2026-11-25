@@ -11,13 +11,12 @@ from core.observability.logging import configure_logging
 
 configure_logging(level="INFO")
 
-from fastapi import Depends, FastAPI
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse
 
-from core.auth import get_current_user
 from core.config import settings
 from routers import (
     admin,
@@ -288,17 +287,3 @@ async def health_check():
     if not _started:
         return JSONResponse(status_code=503, content={"status": "starting"})
     return {"status": "healthy"}
-
-
-@app.get(
-    "/protected",
-    summary="Test authentication",
-    description="Returns the authenticated user's ID. Useful for verifying that Clerk JWT authentication is working.",
-    operation_id="protected_route",
-    tags=["health"],
-    responses={
-        401: {"description": "Missing or invalid Clerk JWT token"},
-    },
-)
-async def protected_route(auth=Depends(get_current_user)):
-    return {"message": "You are authenticated", "user_id": auth.user_id}

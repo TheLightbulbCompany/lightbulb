@@ -8,7 +8,6 @@ import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
 
 from core import auth
-from core.auth import AuthContext, resolve_owner_id
 from core.config import settings
 
 _KEY = rsa.generate_private_key(public_exponent=65537, key_size=2048)
@@ -21,10 +20,6 @@ class Tenant:
     claim: str | None  # an `o.id` the token carries (ignored by the backend)
     role: str | None = "admin"  # the `o.rol` beside it, or none
     token: str = "session"  # or "oauth" (an `at+jwt` access token), "template" (a JWT-template token: no `sid`)
-
-    @property
-    def tenant(self) -> str:
-        return resolve_owner_id(AuthContext(user_id=self.user_id, human_session=True))
 
     @property
     def headers(self) -> dict:

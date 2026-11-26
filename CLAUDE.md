@@ -154,13 +154,16 @@ The local `codex` CLI is the fallback when the connector does not pick a PR up; 
 
 ### Deploy model
 
-- **Two deploy workflows, both hand-written.** `deploy.yml` runs `cdk deploy 'dev/*'` when a merge touches
-  `apps/backend/**` or `apps/infra/**`; `web-deploy.yml` deploys the website to Vercel dev when a merge touches
-  `apps/frontend/**`. **Prod deploys only when a person runs them**: `gh workflow run deploy.yml --ref main`
-  (deploys dev first, then `cdk deploy 'prod/*'`) and `gh workflow run web-deploy.yml --ref main` (website prod).
-  The prod gate is guarded by `apps/infra/test/deploy-workflow.test.ts`.
-- **`main` is ahead of prod by default.** Never call something live because it merged. Read the running version
-  from AWS (`aws ecs describe-task-definition`) and Vercel.
+- **Backend and AWS: `deploy.yml`** (hand-written). It runs `cdk deploy 'dev/*'` when a merge touches
+  `apps/backend/**` or `apps/infra/**`. **Prod deploys only when a person runs it**:
+  `gh workflow run deploy.yml --ref main` (deploys dev first, then `cdk deploy 'prod/*'`). The prod gate is
+  guarded by `apps/infra/test/deploy-workflow.test.ts`.
+- **Website: Vercel's Git integration** (project `frontend`, root `apps/frontend`, production branch `main`). Every
+  PR gets a preview deployment (Preview env vars: the dev API and the dev Clerk key). **A merge to `main` that
+  touches the website deploys production automatically**; merges that don't touch it are skipped
+  (affected-projects deployments). There is no website workflow in `.github/workflows`.
+- **For the backend, `main` is ahead of prod by default.** Never call it live because it merged. Read the
+  running version from AWS (`aws ecs describe-task-definition`).
 - `deploy.yml` has one concurrency group, `lightbulb-deploy`, with `queue: max`: runs queue in order. Before you dispatch, this
   should read 0:
 

@@ -1,6 +1,6 @@
 # AWS deploy: every CDK stack in apps/infra. Dev on a merge that touches the backend or infra;
 # prod only when a person runs this workflow (it deploys dev first, in the same run).
-# The website deploys separately: web-deploy.yml.
+# The website deploys separately, through the Vercel project's Git integration.
 name: deploy
 
 on:

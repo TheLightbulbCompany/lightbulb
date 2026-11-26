@@ -79,6 +79,7 @@ describe("ServiceStack — the Spark backend", () => {
     const envNames = backendContainer(SERVICE_TEMPLATE_DEV).Environment.map((e: any) => e.Name);
     for (const name of [
       "PLATFORM_ADMIN_USER_IDS",
+      "SPARK_INTERNAL_USER_IDS",
       "STRIPE_SPARK_PRICE_ID",
       "SPARK_TRANSCRIPTS_ENABLED",
       "SPARK_STORE_ENABLED",

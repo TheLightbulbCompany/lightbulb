@@ -85,6 +85,16 @@ def test_internal_filter_excludes_by_person_and_drops_unsafe_ids():
     assert "'user_a'" in f and "'user_admin'" in f and "1=1" not in f
 
 
+def test_account_required_everywhere_but_anonymous_downloads():
+    f = sm._account_filter()
+    assert "startsWith(distinct_id, 'user_')" in f and f.startswith(
+        "person_id in (select person_id from person_distinct_ids"
+    )
+    for name, q in sm.build_queries().items():
+        assert (f in q) == (name != "downloads"), name  # download clicks are anonymous web traffic
+    assert "app_version" not in f and not hasattr(sm, "_release_filter")
+
+
 def test_queries_define_human_task_bound_scans_and_count_at_most_thirteen():
     qs = sm.build_queries()
     assert len(qs) <= 13  # 12 + `signals`
@@ -202,7 +212,7 @@ async def test_compute_ok_is_cached():
 
 
 @pytest.mark.asyncio
-async def test_any_failed_query_means_no_figures_and_is_cached_briefly():
+async def test_failed_query_degrades_only_its_sections_and_is_cached_briefly():
     async def fake(q, **_):
         return (
             {"columns": [], "results": [], "stubbed": False, "error": "timeout"}
@@ -215,9 +225,14 @@ async def test_any_failed_query_means_no_figures_and_is_cached_briefly():
         data, state, errors = await sm.compute()
         calls = mock.await_count
         await sm.compute()
-    assert data is None and state == "partial" and errors == [{"domain": "posthog:downloads", "reason": "timeout"}]
+    assert state == "partial" and errors == [{"domain": "posthog:downloads", "reason": "timeout"}]
+    assert data["unavailable"] == ["downloads"] and data["wad"]["last7"] == 0  # other sections still there
     assert mock.await_count == calls  # failure served from the 60s cache
     assert sm._cache[0] - __import__("time").monotonic() <= sm.FAIL_TTL_S
+
+
+def test_every_query_has_section_keys():
+    assert set(sm.QUERY_KEYS) == set(sm.build_queries())
 
 
 def test_truncated_flag_at_row_cap_and_installs_query_shape():
@@ -412,7 +427,7 @@ def test_setup_no_data_when_onboarding_never_seen():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("failing", ["voice_monthly", "subs", "setup_steps", "tasks_unfinished", "signals"])
-async def test_a_failed_new_query_means_no_figures(failing):
+async def test_a_failed_new_query_marks_its_section_unavailable(failing):
     names = list(sm.build_queries())
 
     async def fake(q, **_):
@@ -421,7 +436,8 @@ async def test_a_failed_new_query_means_no_figures(failing):
 
     with patch("core.services.posthog_admin.hogql", AsyncMock(side_effect=fake)):
         data, state, errors = await sm.compute()
-    assert data is None and state == "partial" and errors[0]["domain"] == f"posthog:{failing}" and failing in names
+    assert state == "partial" and errors[0]["domain"] == f"posthog:{failing}" and failing in names
+    assert data["unavailable"] == list(sm.QUERY_KEYS[failing])
 
 
 # ---- signals: stops, automations, features, crashes, versions ---------------------------------------

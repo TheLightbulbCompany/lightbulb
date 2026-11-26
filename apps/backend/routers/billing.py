@@ -3,7 +3,7 @@
 import logging
 
 import stripe
-from fastapi import APIRouter, HTTPException, Request, Response
+from fastapi import APIRouter, HTTPException, Request
 
 from core.config import settings
 from core.observability.metrics import put_metric
@@ -35,22 +35,6 @@ async def handle_stripe_webhook(
         logger.error("Stripe webhook signature verification failed: %s", e)
         raise HTTPException(status_code=400, detail="Invalid signature")
 
-    # Dedup check — Stripe replays webhooks on any non-2xx and on its own
-    # at-least-once delivery insurance. The local import keeps the helper's
-    # boto3 client out of cold-start until first use.
-    from core.services.webhook_dedup import (
-        WebhookDedupResult,
-        record_event_or_skip,
-    )
-
-    dedup = await record_event_or_skip(event["id"], source="stripe")
-    if dedup is WebhookDedupResult.ALREADY_SEEN:
-        put_metric(
-            "stripe.webhook.dedup_skipped",
-            dimensions={"event_type": event["type"]},
-        )
-        return Response(status_code=200)
-
     event_type = event["type"]
     put_metric("stripe.webhook.received", dimensions={"event_type": event_type})
 
@@ -58,15 +42,7 @@ async def handle_stripe_webhook(
     if handler is None:
         return {"status": "ok"}
 
-    try:
-        early_response = await handler(event)
-    except Exception:
-        # The dedup row was recorded BEFORE dispatch, so a handler failure would otherwise eat the event:
-        # the 500 makes Stripe redeliver, and rolling the row back lets the redelivery re-attempt.
-        from core.services.webhook_dedup import delete_event
-
-        await delete_event(event["id"])
-        raise
+    early_response = await handler(event)  # idempotent: re-reads Stripe, writes conditionally
     if early_response is not None:
         return early_response
     return {"status": "ok"}

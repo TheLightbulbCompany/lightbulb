@@ -6,7 +6,6 @@ omit =
     venv/*
     __pycache__/*
     *.pyc
-    init_db.py
 
 [report]
 exclude_lines =

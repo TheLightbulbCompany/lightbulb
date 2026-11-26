@@ -3,6 +3,7 @@ import { Suspense } from "react";
 
 import { Footer } from "@/components/landing/Footer";
 import { Navbar } from "@/components/landing/Navbar";
+import { apiOrigin } from "@/lib/apiOrigin";
 import { pageMetadata } from "@/lib/seo";
 
 import { DownloadBlock, OsInvite } from "./OsInvite";
@@ -79,13 +80,11 @@ async function installerPublished(): Promise<boolean> {
   }
 }
 
-const BACKEND_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api/v1";
-
 // Spark's price and trial from the backend (GET /os/config), the same facts the app shows. Any failure or
 // unexpected shape is null, and the page shows no price.
 async function sparkPrice(): Promise<SparkPrice> {
   try {
-    const r = await fetch(`${BACKEND_URL}/os/config`, { next: { revalidate: 300 } });
+    const r = await fetch(`${apiOrigin()}/api/v1/os/config`, { next: { revalidate: 300 } });
     if (!r.ok) return null;
     const c = await r.json();
     return typeof c?.priceText === "string" && Number.isInteger(c?.trialDays) && c.trialDays > 0

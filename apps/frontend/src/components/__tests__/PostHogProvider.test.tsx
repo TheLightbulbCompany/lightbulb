@@ -72,18 +72,12 @@ vi.mock("next/navigation", () => ({
 describe("PostHogProvider", () => {
   beforeEach(() => window.sessionStorage.clear());
   const originalKey = process.env.NEXT_PUBLIC_POSTHOG_KEY;
-  const originalApiUrl = process.env.NEXT_PUBLIC_API_URL;
 
   afterEach(() => {
     if (originalKey === undefined) {
       delete process.env.NEXT_PUBLIC_POSTHOG_KEY;
     } else {
       process.env.NEXT_PUBLIC_POSTHOG_KEY = originalKey;
-    }
-    if (originalApiUrl === undefined) {
-      delete process.env.NEXT_PUBLIC_API_URL;
-    } else {
-      process.env.NEXT_PUBLIC_API_URL = originalApiUrl;
     }
   });
 
@@ -106,7 +100,6 @@ describe("PostHogProvider", () => {
     mockClerkState.user = null;
     window.localStorage.clear();
     delete process.env.NEXT_PUBLIC_POSTHOG_KEY;
-    delete process.env.NEXT_PUBLIC_API_URL;
   });
 
   it("does NOT initialize PostHog when NEXT_PUBLIC_POSTHOG_KEY is not set", async () => {
@@ -389,9 +382,8 @@ describe("PostHogProvider", () => {
     });
   });
 
-  it("registers environment=dev on a non-product host (jsdom localhost), even with the prod API URL, and re-registers it after reset() on sign-out", async () => {
+  it("registers environment=dev on a non-product host (jsdom localhost) and re-registers it after reset() on sign-out", async () => {
     process.env.NEXT_PUBLIC_POSTHOG_KEY = "phc_test_key_123";
-    process.env.NEXT_PUBLIC_API_URL = "https://api.thelightbulb.company/api/v1";
     mockClerkState.isSignedIn = true;
     mockClerkState.userId = "user_123";
 

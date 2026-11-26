@@ -2,6 +2,7 @@ import type { NextConfig } from "next";
 import withBundleAnalyzer from "@next/bundle-analyzer";
 import path from "path";
 
+import { apiOrigin } from "./src/lib/apiOrigin";
 import { LAUNCH_HOSTS, ROOT_DOMAIN, SITE_URL } from "./src/lib/domain";
 
 const ENGINE_INSTALLER = "https://github.com/TheLightbulbCompany/cli/releases/latest/download/install.sh";
@@ -9,18 +10,8 @@ const SPARK_RELEASE = "https://github.com/TheLightbulbCompany/lightbulb/releases
 const SPARK_WINDOWS_RELEASE = "https://github.com/TheLightbulbCompany/lightbulb/releases/download/spark-windows";
 
 const TURBOPACK_ROOT = path.resolve(__dirname, "../../");
-// Our API origin, derived per-environment rather than enumerated. The static
-// string this replaced named prod AND dev hosts at once, which cannot be right
-// for both once the two environments sit on different domains.
-const apiOrigin = (() => {
-  const raw = process.env.NEXT_PUBLIC_API_URL;
-  if (!raw) return `https://api.${ROOT_DOMAIN}`;
-  try {
-    return new URL(raw).origin;
-  } catch {
-    return `https://api.${ROOT_DOMAIN}`;
-  }
-})();
+// Fixed at build time; throws on Vercel when API_ORIGIN is unset (src/lib/apiOrigin.ts).
+const API_ORIGIN = apiOrigin();
 
 // A Clerk publishable key is `pk_(live|test)_<base64 of "<frontend-api-host>$">`,
 // so the instance's own host comes out of the key this build was compiled with —
@@ -42,7 +33,8 @@ const clerkOrigins = (() => {
 // real traffic before switching to an enforcing `Content-Security-Policy`
 // header. PostHog is same-origin (reverse-proxied via /ingest below), so only
 // the cross-origin vendors need listing: Clerk (auth), Cloudflare Turnstile
-// (Clerk bot-check), Vercel (analytics scripts), plus our own REST API for connect-src.
+// (Clerk bot-check) and Vercel (analytics scripts). Our REST API is same-origin
+// too (/api/v1 is rewritten below), so it needs no connect-src entry.
 //
 // Termly (app.termly.io) needs BOTH script-src and connect-src: the SDK is a
 // cross-origin <script> (components/legal/TermlyEmbed.tsx) which then fetches
@@ -52,7 +44,7 @@ const clerkOrigins = (() => {
 // is the only reason that has not bitten; promoting this header to enforcing
 // without these two entries is exactly the trap this note exists to prevent.
 //
-// Only OUR API/Clerk origins are derived above. Every third-party origin below
+// Only OUR Clerk origins are derived above. Every third-party origin below
 // third-party origin below stays a literal on purpose — Termly, OpenAI,
 // Cloudflare Turnstile, Vercel and PostHog are not ours to rename, and there is
 // nothing to derive them from.
@@ -65,7 +57,7 @@ const reportOnlyCsp = [
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data: blob: https:",
   "font-src 'self' data:",
-  `connect-src 'self' https://*.clerk.accounts.dev ${clerkOrigins.join(" ")} ${apiOrigin} https://us.i.posthog.com https://us-assets.i.posthog.com https://app.termly.io https://api.openai.com`,
+  `connect-src 'self' https://*.clerk.accounts.dev ${clerkOrigins.join(" ")} https://us.i.posthog.com https://us-assets.i.posthog.com https://app.termly.io https://api.openai.com`,
   `frame-src 'self' https://challenges.cloudflare.com https://*.clerk.accounts.dev ${clerkOrigins.join(" ")}`,
   "worker-src 'self' blob:",
   "manifest-src 'self'",
@@ -183,19 +175,12 @@ const nextConfig: NextConfig = {
   // endpoint is reached without a 307.
   skipTrailingSlashRedirect: true,
   async rewrites() {
-    const localDevApiProxy =
-      process.env.NODE_ENV === "development" && process.env.LOCAL_DEV_API_PROXY === "1"
-        ? [
-            {
-              source: "/api/v1/:path*",
-              destination: "https://api-dev.thelightbulb.company/api/v1/:path*",
-            },
-          ]
-        : [];
-
     return {
       afterFiles: [
-        ...localDevApiProxy,
+        // The browser calls the API same-origin on every host (prod, dev, PR
+        // previews); Vercel proxies it to this environment's backend. Only
+        // /api/v1 — the site's own /api/* routes (e.g. /api/version) stay local.
+        { source: "/api/v1/:path*", destination: `${API_ORIGIN}/api/v1/:path*` },
         {
           source: "/ingest/static/:path*",
           destination: "https://us-assets.i.posthog.com/static/:path*",

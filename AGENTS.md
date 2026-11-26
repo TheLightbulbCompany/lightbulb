@@ -64,8 +64,9 @@ cd apps/frontend && pnpm test
   `src/content/__tests__/bannedCopy.ts`.
 - Colour: read `src/app/globals.css` before you describe a colour; no colour literals outside the exemptions in
   `src/__tests__/brandTokens.test.ts`. `DESIGN.md` holds the design tokens.
-- `NEXT_PUBLIC_API_URL` includes `/api/v1`: `http://localhost:8000/api/v1`,
-  `https://api-dev.thelightbulb.company/api/v1`, `https://api.thelightbulb.company/api/v1`.
+- The browser calls the API same-origin at `/api/v1/*`; `next.config.ts` rewrites it to `API_ORIGIN` (server-side,
+  no path): production `https://api.thelightbulb.company`, preview and the `dev` environment
+  `https://api-dev.thelightbulb.company`. Server code uses `apiOrigin()` from `src/lib/apiOrigin.ts`.
 
 ## The backend (`apps/backend`)
 

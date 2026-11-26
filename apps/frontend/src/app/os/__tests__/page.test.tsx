@@ -127,7 +127,7 @@ describe("/os price line and legal links", () => {
     s.query = "";
     await page();
     expect(screen.getByText(LINE)).toBeInTheDocument();
-    expect(vi.mocked(fetch).mock.calls.map(([u]) => String(u))).toContain("http://localhost:8000/api/v1/os/config");
+    expect(vi.mocked(fetch).mock.calls.map(([u]) => String(u))).toContain("https://api-dev.thelightbulb.company/api/v1/os/config");
   });
 });
 

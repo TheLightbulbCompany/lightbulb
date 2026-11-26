@@ -1,7 +1,8 @@
 import { useMemo } from "react";
 import { useAuth } from "@clerk/nextjs";
 
-const BACKEND_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api/v1";
+// Same origin: next.config.ts rewrites /api/v1/* to this environment's backend.
+const BACKEND_URL = "/api/v1";
 
 /** Authenticated JSON POST to the backend, with the Clerk bearer token. */
 export function useApi(): { post: (endpoint: string, body: unknown) => Promise<unknown> } {

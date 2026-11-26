@@ -474,3 +474,28 @@ async def test_a_transport_failure_is_503(users, clock, monkeypatch):
 async def test_deleted_routes_are_gone(users, clock):
     for method, path in [("POST", "/os/ticket"), ("POST", "/os/session"), ("DELETE", "/os/session")]:
         assert (await req(method, path, A, {})).status_code in (404, 405), path
+
+
+async def test_account_delete_is_502_and_keeps_the_account_when_the_store_delete_fails(users, clock, monkeypatch):
+    from core.observability import spark_store
+    from core.services import clerk_admin
+    from core.voice import os_voice
+
+    def boom(_):
+        raise RuntimeError("s3 down")
+
+    async def none(*_):
+        return []
+
+    async def clerk(uid):
+        raise AssertionError("the Clerk user must stay until the data is gone")
+
+    monkeypatch.setattr(settings, "ENVIRONMENT", "dev")
+    monkeypatch.setattr(spark_store, "_sweep", boom)
+    monkeypatch.setattr(os_voice, "_active_sessions", none)
+    monkeypatch.setattr(os_voice, "delete_transcripts", lambda uid: none())
+    monkeypatch.setattr(clerk_admin, "delete_user", clerk)
+    await account()
+    r = await req("DELETE", "/os/account", A)
+    assert r.status_code == 502 and r.json()["detail"] == "delete_failed"
+    assert "Item" in users.meta.client.get_item(TableName=users.name, Key={"user_id": "user_a"})

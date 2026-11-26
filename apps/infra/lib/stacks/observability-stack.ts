@@ -1088,27 +1088,16 @@ def handler(event, context):
       severity: "warn",
     });
 
-    // W91-W97: the Spark store's delete and retention jobs (core/services spark_store; put_metric, no dims).
-    // Any one occurrence in 15 minutes warns.
-    [
-      ["forget-start-failed", "A Spark store delete could not be started"],
-      ["forget-stuck", "A Spark store delete is stuck"],
-      ["forget-remaining", "A Spark store delete finished with rows still remaining"],
-      ["jobs-failed", "A Spark store maintenance job failed"],
-      ["retention-late", "The Spark store 90-day retention run is late"],
-      ["forget-disabled", "Spark store writes are on but deletes are off (misconfiguration)"],
-      ["forget-error-skipped", "A Spark store error object was too large to sweep for a delete"],
-    ].forEach(([name, description], i) => {
-      this.createAlarm({
-        id: `W${91 + i}`,
-        name: `spark-store-${name}`,
-        description,
-        metricName: `spark_store.${name.replace(/-/g, "_")}`,
-        periodMinutes: 15,
-        threshold: 1,
-        comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
-        severity: "warn",
-      });
+    // W91: a Spark store delete failed (spark_store.forget_failed; put_metric, no dims). One in 15 minutes warns.
+    this.createAlarm({
+      id: "W91",
+      name: "spark-store-forget-failed",
+      description: "A Spark store delete of a person's data failed",
+      metricName: "spark_store.forget_failed",
+      periodMinutes: 15,
+      threshold: 1,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      severity: "warn",
     });
 
     // NOTE: AWS Cost Anomaly Detection is intentionally NOT managed here.

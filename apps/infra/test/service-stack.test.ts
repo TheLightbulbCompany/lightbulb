@@ -82,7 +82,6 @@ describe("ServiceStack — the Spark backend", () => {
       "STRIPE_SPARK_PRICE_ID",
       "SPARK_TRANSCRIPTS_ENABLED",
       "SPARK_STORE_ENABLED",
-      "SPARK_STORE_DELETES",
       "SPARK_WORKLOG_SCOPE",
       "WEBHOOK_DEDUP_TABLE",
       "PUBLIC_API_BASE",
@@ -94,32 +93,10 @@ describe("ServiceStack — the Spark backend", () => {
   test.each([
     ["dev", SERVICE_TEMPLATE_DEV, "1"],
     ["prod", SERVICE_TEMPLATE_PROD, "0"],
-  ] as const)("%s backend sets SPARK_STORE_DELETES=%s", (_env, template, value) => {
-    expect(backendContainer(template).Environment).toContainEqual({ Name: "SPARK_STORE_DELETES", Value: value });
-  });
-
-  const statement = (template: Template, sid: string): any =>
-    Object.values(template.findResources("AWS::IAM::Policy"))
-      .flatMap((p: any) => p.Properties.PolicyDocument.Statement)
-      .find((st: any) => st.Sid === sid);
-
-  test("DynamoDB is granted on the four Spark tables and their indexes only, with no Scan", () => {
-    const st = statement(SERVICE_TEMPLATE_PROD, "DynamoDbOwnedTables");
-    expect(st.Action).not.toContain("dynamodb:Scan");
-    expect(st.Action).toContain("dynamodb:TransactWriteItems");
-    expect(st.Action).toContain("dynamodb:BatchWriteItem");
-    const table = (t: string) => `arn:aws:dynamodb:us-east-1:877352799272:table/lightbulb-prod-${t}`;
-    expect(st.Resource).toEqual(
-      ["users", "containers", "spark-transcripts", "webhook-event-dedup"].flatMap((t) => [table(t), `${table(t)}/index/*`]),
-    );
-  });
-
-  test("the execution role reads exactly the injected secrets", () => {
-    const st = statement(SERVICE_TEMPLATE_DEV, "SecretsManagerForEcs");
-    expect(st.Resource).toHaveLength(8);
-    for (const r of st.Resource) {
-      expect(r).toMatch(/^arn:aws:secretsmanager:us-east-1:877352799272:secret:lightbulb\/dev\/[a-z_]+-\*$/);
-    }
+  ] as const)("%s backend sets SPARK_STORE_ENABLED=%s and no SPARK_STORE_DELETES", (_env, template, value) => {
+    const env = backendContainer(template).Environment;
+    expect(env).toContainEqual({ Name: "SPARK_STORE_ENABLED", Value: value });
+    expect(env.map((e: any) => e.Name)).not.toContain("SPARK_STORE_DELETES");
   });
 
   test.each([
@@ -129,38 +106,29 @@ describe("ServiceStack — the Spark backend", () => {
     template.hasResourceProperties("AWS::ECS::TaskDefinition", { Cpu: cpu, Memory: memory });
   });
 
-  test("SparkStoreAccess: Firehose put only on the three named streams, Athena only on the app workgroup", () => {
-    const arn = (p: string) => `arn:aws:${p}`;
+  test("SparkStoreAccess: S3 put and delete on data/*, list limited to data/, nothing for Firehose, Athena or Glue", () => {
     const doc = Object.values(SERVICE_TEMPLATE_DEV.findResources("AWS::IAM::ManagedPolicy")).find(
       (r: any) => r.Properties.ManagedPolicyName === "lightbulb-dev-backend-spark-store",
     ) as any;
     expect(doc).toBeDefined();
-    const byAction = (action: string) =>
-      doc.Properties.PolicyDocument.Statement.filter((st: any) => (Array.isArray(st.Action) ? st.Action : [st.Action]).includes(action));
-    const flat = (st: any[]) => st.flatMap((x) => (Array.isArray(x.Resource) ? x.Resource : [x.Resource]));
-    expect(flat(byAction("firehose:PutRecordBatch"))).toEqual(
-      ["turns", "steps", "events"].map((s) =>
-        arn(`firehose:us-east-1:877352799272:deliverystream/lightbulb-dev-spark-${s}`),
-      ),
-    );
-    expect(flat(byAction("athena:StartQueryExecution"))).toEqual([
-      arn("athena:us-east-1:877352799272:workgroup/lightbulb-dev-spark"),
-      arn("athena:us-east-1:877352799272:workgroup/lightbulb-dev-spark-jobs"),
-    ]);
     expect(JSON.stringify(doc.Properties.Roles)).toContain("TaskRole");
     const stmts = doc.Properties.PolicyDocument.Statement as any[];
-    const actions = (st: any) => (Array.isArray(st.Action) ? st.Action : [st.Action]) as string[];
-    for (const a of stmts.filter((x) => actions(x).some((y) => y.startsWith("glue:"))).flatMap(actions)) {
-      expect(a).not.toMatch(/^glue:(Create|Delete)/);
-    }
-    const s3Resources = stmts.filter((x) => actions(x).some((y) => y.startsWith("s3:"))).flatMap((x) =>
-      Array.isArray(x.Resource) ? x.Resource : [x.Resource],
-    );
-    expect(s3Resources.sort()).toEqual(
-      [
-        "arn:aws:s3:::lightbulb-dev-spark-store",
-        ...["warehouse/*", "athena-results/app/*", "athena-results/jobs/*", "errors/*", "jobs/*"].map((p) => `arn:aws:s3:::lightbulb-dev-spark-store/${p}`),
-      ].sort(),
-    );
+    expect(stmts).toEqual([
+      expect.objectContaining({
+        Action: ["s3:PutObject", "s3:DeleteObject"],
+        Resource: "arn:aws:s3:::lightbulb-dev-spark-store/data/*",
+      }),
+      expect.objectContaining({
+        Action: "s3:ListBucket",
+        Resource: "arn:aws:s3:::lightbulb-dev-spark-store",
+        Condition: { StringLike: { "s3:prefix": ["data/*"] } },
+      }),
+    ]);
+  });
+
+  test("the task role has no Firehose, Athena or Glue action anywhere", () => {
+    const rendered = JSON.stringify(SERVICE_TEMPLATE_DEV.findResources("AWS::IAM::Policy")) +
+      JSON.stringify(SERVICE_TEMPLATE_DEV.findResources("AWS::IAM::ManagedPolicy"));
+    expect(rendered).not.toMatch(/"(firehose|athena|glue):/);
   });
 });

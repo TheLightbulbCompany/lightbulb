@@ -91,7 +91,7 @@ sweeper (`os_voice_sweeper`, started in `main.py`'s lifespan).
 
 Re-runnable ops tools in `apps/backend/scripts/`:
 
-- `spark_store_ddl.py` and `spark_store_sql/`: create the Spark store's Iceberg tables.
+- `spark_store_check.py`: write, read back and delete a throwaway person's objects on dev (run by a person with dev credentials, not CI).
 - `spark_transcripts.py`: print recent saved transcripts, with each person shown as a hash. Read-only.
 
 ## The infrastructure (`apps/infra`)
@@ -103,8 +103,20 @@ domain is `thelightbulb.company` in both environments.
 The stacks (`apps/infra/lib/stacks/`): network (VPC, ALB; no NAT), dns (hosted zone, wildcard cert), auth (Secrets
 Manager and the KMS key), container (the ECS cluster and its task-event
 trail), service (the backend on ECS Fargate), api (the `api[-dev]` HTTP API on API Gateway, VPC Link V2
-to the ALB), observability (the backend's alarms), database, and **spark-store** (`spark-store-stack.ts`: an S3
-bucket of Iceberg tables, three Athena workgroups, and one Firehose delivery stream per table).
+to the ALB), observability (the backend's alarms), database, and **spark-store** (`spark-store-stack.ts`: one S3
+bucket, with a lifecycle rule that expires `data/` after 90 days).
+
+The Spark store is storage only (`core/observability/spark_store.py`): gzip JSON-lines objects at
+`data/<table>/<user_id>/<YYYY-MM-DD>/<name>.json.gz` (tables `turns` and `task_steps`), organized by person so that
+deleting one person's data is a single listing per table. Voice turns are written after the `_save_turn`
+transaction succeeds (which checks the session and `os_analytics_off`); `POST /os/log` first does a consistent read
+of the person's `users` row (no row or `os_analytics_off`: nothing is written). A write whose check is over 60
+seconds old is dropped. Deleting a person's data lists and deletes their objects: for an account deletion (Clerk
+`user.deleted` or `DELETE /os/account`) the first sweep is awaited and a failure fails the request, with a second
+sweep two minutes later in the background; for usage data turned off both run in the background, skipped while one is
+running (its second sweep covers a later opt-out; the app's next `analytics:false` retries a failure). The store uses its
+own two-thread pool, so S3 never shares threads with DynamoDB. One alarm, W91, fires on `spark_store.forget_failed`.
+No job, queue, Firehose, Athena or Glue; analysis is not built yet. Events stay in PostHog only.
 
 The database stack holds four DynamoDB tables, named `lightbulb-{env}-{suffix}`: `users` (the Spark account),
 `containers` (voice-session rows, found through `status-index`), `spark-transcripts` and `webhook-event-dedup` (Stripe

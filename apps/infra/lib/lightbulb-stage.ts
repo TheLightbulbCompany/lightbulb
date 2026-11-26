@@ -67,8 +67,6 @@ export class LightbulbStage extends cdk.Stage {
       stackName: `lightbulb-${env}-spark-store`,
       environment: env,
       kmsKey: auth.kmsKey,
-      // prod: run `scripts/spark_store_ddl.py --env prod` first, then add "prod" here.
-      tablesExist: env === "dev",
     });
 
     const network = new NetworkStack(this, `lightbulb-${env}-network`, {

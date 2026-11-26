@@ -289,14 +289,14 @@ def test_the_script_hides_the_user_id():
 
 @pytest.fixture
 def stored(table, on, monkeypatch):
-    """Store on; `put_turns` is a recorder. Returns the list of row batches it was given."""
+    """Store on; `put` is a recorder. Returns the list of row batches it was given."""
     monkeypatch.setattr(settings, "SPARK_STORE_ENABLED", True)
     calls = []
 
-    async def put_turns(batch):
+    async def put(table_name, user_id, name, batch, checked_at):
         calls.append(batch)
 
-    monkeypatch.setattr(spark_store, "put_turns", put_turns)
+    monkeypatch.setattr(spark_store, "put", put)
     return calls
 
 
@@ -305,11 +305,7 @@ async def settle():
 
 
 def store_state(**kw):
-    return (
-        state()
-        | {"storeOk": True, "taskId": "dlg_abcdefghij12", "client": {"platform": "mac", "appVersion": "2.1.1"}}
-        | kw
-    )
+    return state() | {"taskId": "dlg_abcdefghij12", "client": {"platform": "mac", "appVersion": "2.1.1"}} | kw
 
 
 async def test_a_saved_turn_is_also_handed_to_the_store_once(stored, table):
@@ -346,7 +342,7 @@ async def test_spark_turns_are_role_spark_and_text_is_cut_to_8000(stored):
 
 
 async def test_no_task_or_client_gives_nulls(stored):
-    s = state() | {"storeOk": True}
+    s = state()
     await hear(s, ("user", "hi"))
     await os_voice._flush(s)
     await settle()
@@ -357,8 +353,6 @@ async def test_no_task_or_client_gives_nulls(stored):
 @pytest.mark.parametrize(
     "setup",
     [
-        pytest.param(lambda s: s.pop("storeOk"), id="no storeOk"),
-        pytest.param(lambda s: s.update(storeOk=False), id="storeOk false"),
         pytest.param(lambda s: s.update(client={"analytics": False}), id="analytics off"),
     ],
 )
@@ -401,10 +395,10 @@ async def test_a_turn_the_dynamodb_transaction_refused_is_not_stored(stored, tab
 
 
 async def test_a_failing_store_never_breaks_the_save(stored, table, monkeypatch):
-    async def boom(batch):
-        raise RuntimeError("firehose down")
+    async def boom(*args):
+        raise RuntimeError("s3 down")
 
-    monkeypatch.setattr(spark_store, "put_turns", boom)
+    monkeypatch.setattr(spark_store, "put", boom)
     s = store_state()
     await hear(s, ("user", "hi"))
     await os_voice._flush(s)
@@ -417,19 +411,28 @@ class WS:
         pass
 
 
-async def test_tick_copies_the_current_task_and_asks_the_store_every_tick(stored, table, monkeypatch):
+async def test_tick_copies_the_current_task(stored, table):
     table.meta.client.update_item(
         TableName=dynamodb.table_name("containers"), Key=os_voice._key(SID),
         UpdateExpression="SET currentTaskId = :t", ExpressionAttributeValues={":t": "dlg_zzzzzzzzzz"},
     )  # fmt: skip
-    answers = iter([True, False])
+    s = state() | {"trialEndsAt": None}
+    assert await os_voice._tick(WS(), s)
+    assert s["taskId"] == "dlg_zzzzzzzzzz"
 
-    monkeypatch.setattr(spark_store, "allowed_now", lambda uid: next(answers))
-    s = state() | {"trialEndsAt": None, "storeOk": False}
-    assert await os_voice._tick(WS(), s)
-    assert s["taskId"] == "dlg_zzzzzzzzzz" and s["storeOk"] is True
-    assert await os_voice._tick(WS(), s)
-    assert s["storeOk"] is False  # the person opted out meanwhile
+
+async def test_a_turn_is_written_under_the_persons_id_and_a_name_of_its_own(stored, table, monkeypatch):
+    seen = []
+
+    async def put(table_name, user_id, name, batch, checked_at):
+        seen.append((table_name, user_id, name))
+
+    monkeypatch.setattr(spark_store, "put", put)
+    s = store_state()
+    await hear(s, ("user", "hi", 1000))
+    await os_voice._flush(s)
+    await settle()
+    assert seen == [("turns", "user_a", f"{SID}_1000_user")]
 
 
 async def test_a_store_bug_is_not_a_failed_transcript_write(stored, table, monkeypatch):
@@ -445,17 +448,6 @@ async def test_a_store_bug_is_not_a_failed_transcript_write(stored, table, monke
     await os_voice._flush(s)
     assert [r["text"] for r in rows(table)] == ["secret words"]  # the DynamoDB save stands
     assert seen == ["spark_store.put_failed"]
-
-
-async def test_tick_does_not_ask_when_the_store_is_off(table, on, monkeypatch):
-    def asked(uid):
-        raise AssertionError("asked")
-
-    monkeypatch.setattr(spark_store, "allowed_now", asked)
-    s = state() | {"trialEndsAt": None}
-    for _ in range(3):
-        assert await os_voice._tick(WS(), s)
-    assert "storeOk" not in s
 
 
 async def test_mark_task_sets_it_on_the_persons_active_sessions_only(table):
@@ -486,21 +478,23 @@ async def test_mark_task_for_a_person_with_no_row_does_nothing(table):
     await os_voice.mark_task("user_nobody", "dlg_abcdefghij12")
 
 
-async def test_an_opt_out_stops_the_stores_cache_at_once(table, on, monkeypatch):
-    seen = []
-    monkeypatch.setattr(spark_store, "forget_locally", seen.append)
-    table.meta.client.put_item(TableName=dynamodb.table_name("users"), Item={"user_id": "user_a"})
-    await os_voice.stop_transcripts("user_a")
-    assert seen == ["user_a"]
-
-
-async def test_stop_transcripts_and_forget_start_the_stores_delete(table, on, monkeypatch):
+async def test_stop_transcripts_and_account_forget_start_the_stores_delete(table, on, monkeypatch):
     seen = []
 
-    async def forget(user_id, bounded=True):
-        seen.append((user_id, bounded))
+    async def forget_account(user_id):
+        seen.append(("account", user_id))
 
-    monkeypatch.setattr(spark_store, "forget", forget)
+    monkeypatch.setattr(spark_store, "forget", lambda u: seen.append(("optout", u)))
+    monkeypatch.setattr(spark_store, "forget_account", forget_account)
     await os_voice.stop_transcripts("user_a")
     await os_voice.forget("user_b", ())
-    assert seen == [("user_a", True), ("user_b", False)]  # account deletion is unbounded
+    assert seen == [("optout", "user_a"), ("account", "user_b")]
+
+
+async def test_an_account_forget_that_fails_raises_to_its_caller(table, on, monkeypatch):
+    async def boom(user_id):
+        raise RuntimeError("s3 down")
+
+    monkeypatch.setattr(spark_store, "forget_account", boom)
+    with pytest.raises(RuntimeError):
+        await os_voice.forget("user_b", ())

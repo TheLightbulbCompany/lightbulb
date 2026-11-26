@@ -124,60 +124,23 @@ export class ServiceStack extends cdk.Stack {
       }),
     );
 
-    // Spark data store. Everything is named from sparkStoreNames, not imported from
-    // SparkStoreStack, so this stack never waits on it (the streams do not exist yet; IAM
-    // accepts ARNs of absent resources). A ManagedPolicy for the same packing reason as
-    // the other task-role policies. KMS is in KmsAccess above.
-    const spark = sparkStoreNames(env);
-    const glueArn = (path: string) => `arn:aws:glue:${this.region}:${this.account}:${path}`;
+    // Spark data store: objects under data/ only. The bucket is named from sparkStoreNames, not imported from
+    // SparkStoreStack, so this stack never waits on it. A ManagedPolicy for the same packing reason as the other
+    // task-role policies. KMS is in KmsAccess above.
+    const sparkBucket = `arn:aws:s3:::${sparkStoreNames(env).bucket}`;
     new iam.ManagedPolicy(this, "SparkStoreAccess", {
       managedPolicyName: `${resourcePrefix(env)}backend-spark-store`,
       statements: [
         new iam.PolicyStatement({
-          sid: "SparkStorePut",
-          actions: ["firehose:PutRecordBatch"],
-          resources: spark.streams.map((s) => `arn:aws:firehose:${this.region}:${this.account}:deliverystream/${s}`),
-        }),
-        // The app and jobs workgroups only, never adhoc.
-        new iam.PolicyStatement({
-          sid: "SparkStoreAthena",
-          actions: [
-            "athena:StartQueryExecution",
-            "athena:GetQueryExecution",
-            "athena:GetQueryResults",
-            "athena:StopQueryExecution",
-          ],
-          resources: [spark.workgroup, spark.jobsWorkgroup].map(
-            (w) => `arn:aws:athena:${this.region}:${this.account}:workgroup/${w}`,
-          ),
-        }),
-        new iam.PolicyStatement({
-          sid: "SparkStoreGlue",
-          actions: ["glue:GetDatabase", "glue:GetTable", "glue:GetTables", "glue:GetPartitions", "glue:UpdateTable"],
-          resources: [
-            glueArn("catalog"),
-            glueArn(`database/${spark.database}`),
-            glueArn(`table/${spark.database}/*`),
-          ],
-        }),
-        // Objects only under the prefixes the backend uses: never athena-results/adhoc/ (the team's results).
-        new iam.PolicyStatement({
           sid: "SparkStoreS3Objects",
-          actions: [
-            "s3:GetObject",
-            "s3:PutObject",
-            "s3:DeleteObject",
-            "s3:AbortMultipartUpload",
-            "s3:ListMultipartUploadParts",
-          ],
-          resources: ["warehouse/*", "athena-results/app/*", "athena-results/jobs/*", "errors/*", "jobs/*"].map(
-            (p) => `arn:aws:s3:::${spark.bucket}/${p}`,
-          ),
+          actions: ["s3:PutObject", "s3:DeleteObject"],
+          resources: [`${sparkBucket}/data/*`],
         }),
         new iam.PolicyStatement({
-          sid: "SparkStoreS3Bucket",
-          actions: ["s3:ListBucket", "s3:GetBucketLocation", "s3:ListBucketMultipartUploads"],
-          resources: [`arn:aws:s3:::${spark.bucket}`],
+          sid: "SparkStoreS3List",
+          actions: ["s3:ListBucket"],
+          resources: [sparkBucket],
+          conditions: { StringLike: { "s3:prefix": ["data/*"] } },
         }),
       ],
       roles: [this.taskRole],
@@ -277,10 +240,8 @@ export class ServiceStack extends cdk.Stack {
           : (process.env.STRIPE_SPARK_PRICE_ID_DEV ?? ""),
       // Save Spark voice transcripts (text only, 90 days) in every env; "0" turns it off.
       SPARK_TRANSCRIPTS_ENABLED: "1",
-      // Spark data store (S3/Iceberg). "0" in prod until the store is verified there.
+      // Spark data store (plain S3 objects). "0" in prod until the store is verified there.
       SPARK_STORE_ENABLED: env === "prod" ? "0" : "1",
-      // User-data deletes and retention against the store; "0" in prod until its tables exist.
-      SPARK_STORE_DELETES: env === "prod" ? "0" : "1",
       // Work-log upload scope. "all": every task's steps are kept with their text (owner, 25 Nov 2026:
       // keep everything Spark does with voice and brain, for analysis). "problem" would keep text only
       // for failed or cancelled tasks. Apps see "off" while SPARK_STORE_ENABLED is off.

@@ -948,3 +948,27 @@ async def test_a_closed_session_with_no_sideband_is_attached_and_closed_at_once(
     await until(lambda: len(sockets) == 2 and {"type": "session.close"} in sockets[1].sent)
     sockets[1].push(closed(2))
     await until(lambda: rec(ddb, sid).get("endedReason") == "client_closed")
+
+
+@pytest.fixture
+def captured(monkeypatch):
+    from core.observability import product_analytics
+
+    seen = []
+    fake = type("C", (), {"capture": lambda self, d, e, p, **kw: seen.append((d, e, p))})()
+    monkeypatch.setattr(product_analytics, "_client_or_none", lambda: fake)
+    return seen
+
+
+@pytest.mark.parametrize(("reason", "personless"), [("client_closed", False), ("signed_out", True)])
+async def test_only_an_account_deletions_close_sends_the_ended_event_personless(
+    ddb, clock, no_sideband, openai, users, captured, reason, personless
+):
+    sid = await opened_session()
+    assert await os_voice.end_session(sid, reason, 3)
+    ((distinct_id, event, props),) = [c for c in captured if c[1] == "voice_session_ended"]
+    if personless:
+        assert distinct_id != "user_a" and props["$process_person_profile"] is False
+    else:
+        assert distinct_id == "user_a" and "$process_person_profile" not in props
+    assert "$set" not in props

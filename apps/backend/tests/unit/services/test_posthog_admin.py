@@ -227,3 +227,28 @@ async def test_delete_person_calls_nothing_when_not_configured(monkeypatch, metr
     with patch("core.services.posthog_admin.httpx.AsyncClient", side_effect=AssertionError("called")):
         await posthog_admin.delete_person("user_a")
     assert metrics == []
+
+
+@pytest.mark.asyncio
+async def test_delete_person_flushes_queued_events_before_the_delete(monkeypatch, metrics):
+    _deploy(monkeypatch)
+    from core.observability import product_analytics
+    from core.services import posthog_admin
+
+    order = []
+    monkeypatch.setattr(product_analytics, "flush", lambda: order.append("flush"))
+
+    @asynccontextmanager
+    async def client(*args, **kwargs):
+        c = MagicMock()
+
+        async def post(*a, **k):
+            order.append("delete")
+            return _make_response(202, {"deletion_errors": []})
+
+        c.post = post
+        yield c
+
+    with patch("core.services.posthog_admin.httpx.AsyncClient", new=client):
+        await posthog_admin.delete_person("user_a")
+    assert order == ["flush", "delete"]

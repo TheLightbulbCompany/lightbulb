@@ -320,7 +320,8 @@ async def end_session(sid: str, reason: str, seconds: int) -> bool:
     version = client.get("appVersion")
     if isinstance(version, str) and spark_events.VERSION.fullmatch(version):
         props["app_version"] = version
-    spark_events.server_event(row["userId"], "voice_session_ended", sid, props)
+    # "signed_out" is only `forget`'s close, i.e. the account is being deleted: the event must not outlive the person
+    spark_events.server_event(row["userId"], "voice_session_ended", sid, props, personless=reason == "signed_out")
     return True
 
 

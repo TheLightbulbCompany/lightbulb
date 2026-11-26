@@ -1,10 +1,13 @@
 """PostHog HogQL client for the admin dashboard (``hogql``)."""
 
+import asyncio
+import contextlib
 import logging
 
 import httpx
 
 from core.config import settings
+from core.observability import product_analytics
 from core.observability.metrics import put_metric
 
 logger = logging.getLogger(__name__)
@@ -68,6 +71,10 @@ async def delete_person(user_id: str) -> None:
         return
     if settings.ENVIRONMENT not in ("dev", "prod"):
         return
+    # Events captured earlier in this request may still be queued: send them first, or one could recreate the person.
+    # A slow PostHog times the wait out; the thread flushes on and the delete goes ahead.
+    with contextlib.suppress(TimeoutError):
+        await asyncio.wait_for(asyncio.to_thread(product_analytics.flush), _TIMEOUT_S)
     url = f"{settings.POSTHOG_HOST}/api/projects/{settings.POSTHOG_PROJECT_ID}/persons/bulk_delete/"
     headers = {"Authorization": f"Bearer {settings.POSTHOG_PROJECT_API_KEY}"}
     body = {"distinct_ids": [user_id], "delete_events": True}

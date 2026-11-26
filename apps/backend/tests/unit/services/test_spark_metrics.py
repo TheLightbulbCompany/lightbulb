@@ -85,14 +85,19 @@ def test_internal_filter_excludes_by_person_and_drops_unsafe_ids():
     assert "'user_a'" in f and "'user_admin'" in f and "1=1" not in f
 
 
-def test_account_required_everywhere_but_anonymous_downloads():
+def test_installs_are_released_first_launches_and_usage_needs_an_account():
     f = sm._account_filter()
-    assert "startsWith(distinct_id, 'user_')" in f and f.startswith(
-        "person_id in (select person_id from person_distinct_ids"
+    qs = sm.build_queries()
+    first = (
+        qs["installs"].split("from events where event = 'app_first_launch'")[1].split("group by person_id having")[0]
     )
-    for name, q in sm.build_queries().items():
-        assert (f in q) == (name != "downloads"), name  # download clicks are anonymous web traffic
-    assert "app_version" not in f and not hasattr(sm, "_release_filter")
+    assert sm._release_install() in first and f not in first  # every released first launch, signed in or not
+    assert "if(" + f + ", 1, 0) as has_account" in qs["installs"]  # "signed in" = the person owns an account
+    assert "countIf(e.event = 'signin_completed'" not in qs["installs"]
+    for name, q in qs.items():
+        if name not in ("installs", "downloads"):
+            assert f in q, name  # usage: signed-in people only
+    assert f not in qs["downloads"] and sm._release_install() not in qs["downloads"]
 
 
 def test_queries_define_human_task_bound_scans_and_count_at_most_thirteen():

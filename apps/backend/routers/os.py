@@ -189,7 +189,9 @@ async def delete_account(auth: AuthContext = Depends(get_human_session)) -> Resp
         row = await os_billing._row(uid)  # re-read: ending a session adds to os_voice_seconds
         spark = {f"#a{i}": k for i, k in enumerate(k for k in row if k.startswith("os_") and k != "os_deleted_at")}
         if spark:
-            spark_events.server_event(uid, "account_deleted", uid)
+            spark_events.server_event(
+                uid, "account_deleted", uid, personless=True
+            )  # not on the person: it would outlive their delete
             await run_in_thread(
                 _table().update_item,
                 Key={"user_id": uid},

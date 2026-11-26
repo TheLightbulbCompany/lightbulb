@@ -502,7 +502,7 @@ async def test_account_delete_is_502_and_keeps_the_account_when_the_store_delete
 
 
 async def test_account_delete_completes_when_the_posthog_delete_fails(users, clock, monkeypatch):
-    from core.observability import spark_store
+    from core.observability import product_analytics, spark_store
     from core.services import clerk_admin, posthog_admin
 
     gone = []
@@ -535,6 +535,13 @@ async def test_account_delete_completes_when_the_posthog_delete_fails(users, clo
             return type("R", (), {"status_code": 403, "text": "scope"})()
 
     monkeypatch.setattr(posthog_admin.httpx, "AsyncClient", Client)
+    sent = []
+    fake = type("C", (), {"capture": lambda self, d, e, p, **kw: sent.append((d, e, p, kw))})()
+    monkeypatch.setattr(product_analytics, "_client_or_none", lambda: fake)
     await account()
     assert (await req("DELETE", "/os/account", A)).status_code == 204
-    assert gone == ["user_a"] and called == [{"distinct_ids": ["user_a"], "delete_events": True}]
+    ((distinct_id, event, props, kw),) = [c for c in sent if c[1] == "account_deleted"]
+    assert distinct_id != "user_a" and props["$process_person_profile"] is False and "$set" not in props
+    assert (await req("DELETE", "/os/account", A)).status_code == 204  # a retry: nothing left to delete, no event
+    assert len([c for c in sent if c[1] == "account_deleted"]) == 1
+    assert gone == ["user_a"] * 2 and called == [{"distinct_ids": ["user_a"], "delete_events": True}] * 2

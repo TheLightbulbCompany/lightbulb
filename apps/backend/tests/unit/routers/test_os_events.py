@@ -798,3 +798,69 @@ async def test_a_failing_mark_never_fails_the_event(ph, ddb, monkeypatch):
     monkeypatch.setattr(os_router.settings, "SPARK_STORE_ENABLED", True)
     assert (await send("task_started", VALID["task_started"], A)).status_code == 204
     await _settle()
+
+
+# --- webhook redelivery: no de-dup table, every effect idempotent ----------------------------------------
+
+
+async def test_stripe_webhook_delivered_twice_and_late_changes_nothing(ph, ddb, monkeypatch):
+    await req("GET", "/os/account", A)
+    state = {"status": "active"}
+    event = {
+        "id": "evt_1",
+        "type": "customer.subscription.updated",
+        "data": {
+            "object": {"id": "sub_1", "status": "trialing", "metadata": {"product": "spark", "user_id": "user_a"}}
+        },
+    }
+    monkeypatch.setattr(stripe.Webhook, "construct_event", lambda *a, **k: event)
+    monkeypatch.setattr(
+        stripe.Subscription, "retrieve", lambda sid, **kw: {"id": sid, "status": state["status"], "customer": "cus_1"}
+    )
+    monkeypatch.setattr(os_billing, "extend_trial", lambda user_id: _noop())
+    for _ in range(2):
+        r = await req("POST", "/billing/webhooks/stripe", headers={"stripe-signature": "x"}, content=b"{}")
+        assert r.status_code == 200
+    assert len(ph.named("subscription_started")) == 1 and len(ph.named("subscription_updated")) == 1
+    # An older event (its payload says trialing) arriving after the subscription was cancelled: the handler writes
+    # Stripe's current state, so nothing goes backwards.
+    state["status"] = "canceled"
+    for _ in range(2):
+        assert (
+            await req("POST", "/billing/webhooks/stripe", headers={"stripe-signature": "x"}, content=b"{}")
+        ).status_code == 200
+    assert len(ph.named("subscription_cancelled")) == 1 and len(ph.named("subscription_updated")) == 2
+    assert ddb.get_item(Key={"user_id": "user_a"})["Item"]["os_subscription_status"] == "canceled"
+
+
+async def test_clerk_user_deleted_twice_is_one_cancel_and_no_error(ph, ddb, monkeypatch):
+    from core.services import posthog_admin
+    from routers import webhooks
+
+    await req("GET", "/os/account", A)
+    ddb.update_item(
+        Key={"user_id": "user_a"},
+        UpdateExpression="SET os_subscription_id = :i, os_subscription_status = :s",
+        ExpressionAttributeValues={":i": "sub_1", ":s": "active"},
+    )
+    cancels, deleted = [], []
+
+    async def none(*a, **k):
+        return set()
+
+    monkeypatch.setattr(os_voice, "_active_sessions", none)  # the status and transcripts tables are not in this
+    monkeypatch.setattr(os_voice, "delete_transcripts", none)  # fixture; both deletes are by key anyway
+    monkeypatch.setattr(webhooks, "_verify_svix_signature", lambda *a, **k: None)
+    monkeypatch.setattr(stripe.Subscription, "cancel", lambda sid, **kw: cancels.append(sid))
+
+    async def person_delete(uid):
+        deleted.append(uid)
+
+    monkeypatch.setattr(posthog_admin, "delete_person", person_delete)
+    body = {"type": "user.deleted", "data": {"id": "user_a"}}
+    for _ in range(2):
+        r = await req("POST", "/webhooks/clerk", content=json.dumps(body).encode(), headers={"svix-id": "msg_1"})
+        assert r.status_code == 200
+    assert cancels == ["sub_1"]  # the repeat finds no row, so no second Stripe call
+    assert "Item" not in ddb.get_item(Key={"user_id": "user_a"})
+    assert deleted == ["user_a", "user_a"]  # PostHog's bulk delete of an absent person is a 404, which is fine

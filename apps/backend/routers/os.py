@@ -25,7 +25,7 @@ from core.config import settings
 from core.dynamodb import get_table, is_cancelled, run_in_thread, transact, utc_now_iso
 from core.observability import product_analytics, spark_events, spark_store
 from core.observability.metrics import put_metric
-from core.services import os_billing
+from core.services import os_billing, posthog_admin
 from core.services.rate_bucket import RateBucket
 from core.voice import os_voice
 from core.voice.os_voice import now as _now
@@ -201,6 +201,9 @@ async def delete_account(auth: AuthContext = Depends(get_human_session)) -> Resp
     except Exception:  # noqa: BLE001  Stripe, Clerk or DynamoDB: the app retries
         logger.warning("os account delete failed for %s", uid, exc_info=True)
         raise HTTPException(status_code=502, detail="delete_failed") from None
+    await posthog_admin.delete_person(
+        uid
+    )  # last, best effort: the account's own `account_deleted` event is already sent
     return Response(status_code=204)
 
 
@@ -501,6 +504,7 @@ async def create_voice_session(
     """A GPT-Live WebRTC session on the company key: the Mac's SDP offer in, OpenAI's answer out. The backend
     owns the model, `store`, the voice list, the size caps, the transport and the data channel's allowed
     events. Reconnecting is a new POST."""
+    opt_at = time.time_ns() // 1_000_000  # when the request arrived: orders it against other usage-data choices
     if not isinstance(body, dict):
         raise _bad("invalid_config")
     sdp = body.get("sdp")
@@ -525,9 +529,9 @@ async def create_voice_session(
     if os_billing.status(await _account(auth, at), at) == "ended":
         raise HTTPException(status_code=402, detail="trial_ended")
     if client.get("analytics") is False:  # a retry of the opt-out the app's event asked for
-        os_voice.spawn(os_voice.stop_transcripts(auth.user_id))
+        os_voice.spawn(os_voice.stop_transcripts(auth.user_id, opt_at))
     elif client.get("analytics") is True:
-        os_voice.spawn(os_voice.clear_opt_out(auth.user_id))
+        os_voice.spawn(os_voice.clear_opt_out(auth.user_id, opt_at))
     return await os_voice.open_session(auth.user_id, kind, client, model, config, sdp)
 
 
@@ -621,14 +625,15 @@ async def post_event(request: Request, auth: AuthContext | None = Depends(get_op
     """One product event from the app, for PostHog. Anyone may call it: with a valid session bearer the event
     is the person's, otherwise the install's. Only allow-listed events and properties are sent
     (`spark_events.APP_EVENTS`). A well-formed body is always 204, sent, dropped or rate-limited alike."""
+    opt_at = time.time_ns() // 1_000_000  # when the request arrived: orders it against other usage-data choices
     body, install_id = await _capped_body(request, EVENT_MAX_BYTES, "invalid_event")
     distinct_id = auth.user_id if auth else install_id
     if auth and body.get("event") == "analytics_optout_set":  # privacy: never lost to the rate limit
         on = spark_events.allowed_properties("analytics_optout_set", body.get("properties")).get("on")
         if on is False:
-            os_voice.spawn(os_voice.stop_transcripts(auth.user_id))
+            os_voice.spawn(os_voice.stop_transcripts(auth.user_id, opt_at))
         elif on is True:
-            os_voice.spawn(os_voice.clear_opt_out(auth.user_id))
+            os_voice.spawn(os_voice.clear_opt_out(auth.user_id, opt_at))
     if (not auth and not _PER_IP.allow(_extract_caller_ip(request))) or not _PER_ID.allow(distinct_id):
         return Response(status_code=204)
     try:

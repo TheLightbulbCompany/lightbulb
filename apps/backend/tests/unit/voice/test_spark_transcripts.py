@@ -232,7 +232,7 @@ async def test_stop_transcripts_flags_active_sessions_and_deletes_turns(table, o
         s = state(user, sid)
         await hear(s, ("user", "hi"))
         await os_voice._flush(s)
-    await os_voice.stop_transcripts("user_a")
+    await os_voice.stop_transcripts("user_a", 1)
     sessions = table.meta.client
 
     def flag(sid):
@@ -257,13 +257,13 @@ async def test_a_stale_sideband_cannot_save_after_the_flag_is_set(table, on):
 async def test_the_persons_opt_out_blocks_saves_and_clears(table, on):
     users = table.meta.client
     users.put_item(TableName=dynamodb.table_name("users"), Item={"user_id": "user_a"})
-    await os_voice.stop_transcripts("user_a")
+    await os_voice.stop_transcripts("user_a", 1)
     assert users.get_item(TableName=dynamodb.table_name("users"), Key={"user_id": "user_a"})["Item"]["os_analytics_off"]
     s = state()  # a session whose open was in flight with analytics on
     await hear(s, ("user", "late"))
     await os_voice._flush(s)
     assert rows(table) == []
-    await os_voice.clear_opt_out("user_a")
+    await os_voice.clear_opt_out("user_a", 2)
     s = state(sid="vs_2")  # the flagged session stays off; a new one saves
     await hear(s, ("user", "back on"))
     await os_voice._flush(s)
@@ -271,8 +271,8 @@ async def test_the_persons_opt_out_blocks_saves_and_clears(table, on):
 
 
 async def test_opt_out_never_creates_a_users_row(table, on):
-    await os_voice.stop_transcripts("user_nobody")
-    await os_voice.clear_opt_out("user_nobody")
+    await os_voice.stop_transcripts("user_nobody", 1)
+    await os_voice.clear_opt_out("user_nobody", 1)
     assert "Item" not in table.meta.client.get_item(
         TableName=dynamodb.table_name("users"), Key={"user_id": "user_nobody"}
     )
@@ -486,7 +486,7 @@ async def test_stop_transcripts_and_account_forget_start_the_stores_delete(table
 
     monkeypatch.setattr(spark_store, "forget", lambda u: seen.append(("optout", u)))
     monkeypatch.setattr(spark_store, "forget_account", forget_account)
-    await os_voice.stop_transcripts("user_a")
+    await os_voice.stop_transcripts("user_a", 1)
     await os_voice.forget("user_b", ())
     assert seen == [("optout", "user_a"), ("account", "user_b")]
 
@@ -498,3 +498,57 @@ async def test_an_account_forget_that_fails_raises_to_its_caller(table, on, monk
     monkeypatch.setattr(spark_store, "forget_account", boom)
     with pytest.raises(RuntimeError):
         await os_voice.forget("user_b", ())
+
+
+def _user_row(table, user="user_a"):
+    users = table.meta.client
+    users.put_item(TableName=dynamodb.table_name("users"), Item={"user_id": user})
+    return lambda: users.get_item(TableName=dynamodb.table_name("users"), Key={"user_id": user})["Item"]
+
+
+async def test_an_off_arriving_after_a_newer_on_ends_on_and_deletes_nothing(table, on):
+    row = _user_row(table)
+    await os_voice.clear_opt_out("user_a", 2)  # the later choice lands first
+    s = state()
+    await hear(s, ("user", "written after the on"))
+    await os_voice._flush(s)
+    await os_voice.stop_transcripts("user_a", 1)  # the earlier choice arrives late
+    assert "os_analytics_off" not in row() and row()["os_analytics_at"] == 2
+    assert [r["text"] for r in rows(table)] == ["written after the on"]
+
+
+async def test_an_on_arriving_after_a_newer_off_ends_off(table, on):
+    row = _user_row(table)
+    await os_voice.stop_transcripts("user_a", 2)
+    await os_voice.clear_opt_out("user_a", 1)
+    assert row()["os_analytics_off"] is True and row()["os_analytics_at"] == 2
+
+
+async def test_a_stale_off_after_a_newer_off_still_deletes(table, on):
+    _user_row(table)
+    await os_voice.stop_transcripts("user_a", 2)
+    s = state()
+    await hear(s, ("user", "x"))
+    await os_voice._flush(s)  # blocked by the flag, so nothing to delete; the call must not raise
+    await os_voice.stop_transcripts("user_a", 1)
+    assert rows(table) == []
+
+
+async def test_a_throttled_opt_out_write_is_counted_and_logged_not_silent(table, on, monkeypatch, caplog):
+    from botocore.exceptions import ClientError
+
+    seen = []
+    monkeypatch.setattr(os_voice, "put_metric", lambda name, *a, **k: seen.append(name))
+    _user_row(table)
+    s = state()
+    await hear(s, ("user", "kept"))
+    await os_voice._flush(s)
+
+    def throttled(*a, **k):
+        raise ClientError({"Error": {"Code": "ProvisionedThroughputExceededException"}}, "UpdateItem")
+
+    monkeypatch.setattr(os_voice, "get_table", lambda name: type("T", (), {"update_item": staticmethod(throttled)}))
+    await os_voice.stop_transcripts("user_a", 1)
+    assert seen == ["os_voice.opt_out_write_failed"]
+    assert "ProvisionedThroughputExceededException" in caplog.text
+    assert [r["text"] for r in rows(table)] == ["kept"]  # the flag did not apply, so nothing is deleted

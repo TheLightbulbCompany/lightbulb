@@ -286,10 +286,10 @@ async def test_the_model_is_stored_on_the_row(ddb, clock, no_sideband, openai):
 def deleted(monkeypatch):
     calls = {"stop": [], "clear": []}
 
-    async def stop(user_id):
+    async def stop(user_id, at):
         calls["stop"].append(user_id)
 
-    async def clear(user_id):
+    async def clear(user_id, at):
         calls["clear"].append(user_id)
 
     monkeypatch.setattr(os_voice, "stop_transcripts", stop)
@@ -315,7 +315,7 @@ async def test_a_session_open_syncs_the_opt_out(ddb, clock, no_sideband, openai,
 
 
 async def test_a_failing_scheduled_deletion_never_fails_the_open(ddb, clock, no_sideband, openai, monkeypatch, caplog):
-    async def boom(user_id):
+    async def boom(user_id, at):
         raise RuntimeError("ddb down")
 
     monkeypatch.setattr(os_voice, "stop_transcripts", boom)

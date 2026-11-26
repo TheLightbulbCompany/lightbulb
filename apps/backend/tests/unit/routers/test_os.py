@@ -499,3 +499,42 @@ async def test_account_delete_is_502_and_keeps_the_account_when_the_store_delete
     r = await req("DELETE", "/os/account", A)
     assert r.status_code == 502 and r.json()["detail"] == "delete_failed"
     assert "Item" in users.meta.client.get_item(TableName=users.name, Key={"user_id": "user_a"})
+
+
+async def test_account_delete_completes_when_the_posthog_delete_fails(users, clock, monkeypatch):
+    from core.observability import spark_store
+    from core.services import clerk_admin, posthog_admin
+
+    gone = []
+
+    async def clerk(uid):
+        gone.append(uid)
+
+    async def none(*_):
+        return []
+
+    from core.voice import os_voice
+
+    monkeypatch.setattr(os_voice, "_active_sessions", none)
+    monkeypatch.setattr(os_voice, "delete_transcripts", lambda uid: none())
+    monkeypatch.setattr(spark_store, "_sweep", lambda uid: None)
+    monkeypatch.setattr(clerk_admin, "delete_user", clerk)
+    monkeypatch.setattr(settings, "ENVIRONMENT", "dev")
+    monkeypatch.setattr(settings, "POSTHOG_PROJECT_ID", "1")
+    monkeypatch.setattr(settings, "POSTHOG_PROJECT_API_KEY", "k")
+    called = []
+
+    class Client:
+        def __init__(self, **kw): ...
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a): ...
+        async def post(self, url, **kw):
+            called.append(kw["json"])
+            return type("R", (), {"status_code": 403, "text": "scope"})()
+
+    monkeypatch.setattr(posthog_admin.httpx, "AsyncClient", Client)
+    await account()
+    assert (await req("DELETE", "/os/account", A)).status_code == 204
+    assert gone == ["user_a"] and called == [{"distinct_ids": ["user_a"], "delete_events": True}]

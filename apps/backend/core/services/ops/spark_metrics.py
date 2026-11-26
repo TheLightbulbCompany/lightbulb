@@ -1,8 +1,8 @@
 """Spark product metrics for the admin console: HogQL over PostHog, cached.
 
 Events come from the desktop app via POST /os/event (core/observability/spark_events.py) and from
-the server (subscription_*, ...). Every query excludes team accounts (``_internal_filter``), non-release installs
-(``_release_filter``, only where installs or versions are listed) and other environments, and is bounded by time.
+the server (subscription_*, ...). Every query excludes team accounts (``_internal_filter``), people without an account
+(``_account_filter``; not the anonymous download clicks) and other environments, and is bounded by time.
 
 Identity: pre-sign-in events are under the install id, aliased to the Clerk user at sign-in, so
 everything per-user keys on HogQL ``person_id``. Installs = persons with ``app_first_launch``.
@@ -70,18 +70,12 @@ def _internal_filter() -> str:
     return f"person_id not in (select person_id from person_distinct_ids where distinct_id in ({id_list}))"
 
 
-def _release_filter() -> str:
-    """Leave out events of non-release INSTALLATIONS: an engine run outside a released app sends no app_version
-    on its app_first_launch. Keyed on the install's own ``properties.install_id`` (every app event carries it),
-    not the person: one person can have several installs, aliased to one person_id. Events without an install_id
-    (server-emitted: subscription_*, voice_session_ended) read '' and never match; the subquery only holds
-    non-empty ids, so ``not in`` never meets a null. Same environment restriction as the outer query."""
-    env_ = _hogql_filter(settings.ENVIRONMENT or "")
-    return (
-        "coalesce(toString(properties.install_id), '') not in (select toString(properties.install_id) from events"
-        " where event = 'app_first_launch' and coalesce(toString(properties.app_version), '') = ''"
-        f" and toString(properties.install_id) != '' and {env_})"
-    )
+def _account_filter() -> str:
+    """Count only people with an account: their person owns a Clerk user id (``user_...``, the distinct id the
+    backend captures signed-in events under, routers/os.py post_event). An install that never signed in is a
+    person with only its random uuid, so it is not counted; once the person signs in, the backend aliases the
+    install id onto the account and the earlier events count."""
+    return "person_id in (select person_id from person_distinct_ids where startsWith(distinct_id, 'user_'))"
 
 
 def _human(p: str = "") -> str:
@@ -90,7 +84,7 @@ def _human(p: str = "") -> str:
 
 def build_queries() -> dict[str, str]:
     w = f"{_hogql_filter(settings.ENVIRONMENT or '')} and {_internal_filter()}"
-    rel = _release_filter()  # install-level: only the queries that list or count installs or versions
+    wa = f"{w} and {_account_filter()}"  # every query but `downloads` (anonymous web traffic) needs an account
     human = _human()
     plat = "coalesce(nullIf(toString(properties.platform), ''), 'unknown')"
     ver = "coalesce(nullIf(toString(properties.app_version), ''), 'unknown')"
@@ -104,14 +98,14 @@ def build_queries() -> dict[str, str]:
         "doers_weekly": f"""
             select wk, count() from (
               select {_UTC_WEEK} as wk, person_id from events
-              where {human} and {w} and timestamp >= now() - interval {WEEKS} week
+              where {human} and {wa} and timestamp >= now() - interval {WEEKS} week
               group by wk, person_id having uniq({_UTC_DAY}) >= 2)
             group by wk limit 100""",
         # Doers, rolling: same definition over the last 7 days (period 'last7') and the 7 before ('prev7').
         "doers_7d": f"""
             select period, count() from (
               select person_id, if(timestamp >= now() - interval 7 day, 'last7', 'prev7') as period from events
-              where {human} and {w} and timestamp >= now() - interval 14 day
+              where {human} and {wa} and timestamp >= now() - interval 14 day
               group by person_id, period having uniq({_UTC_DAY}) >= 2)
             group by period limit 10""",
         # One row per install-person (launch in the last 84d), newest first. Funnel, cohorts, channels and
@@ -142,7 +136,7 @@ def build_queries() -> dict[str, str]:
               p.heard
             from (select person_id, min(timestamp) as launch,
                     argMin({plat}, timestamp) as platform, argMin({ver}, timestamp) as version
-                  from events where event = 'app_first_launch' and {w} and {rel}
+                  from events where event = 'app_first_launch' and {wa}
                   group by person_id having launch >= now() - interval {INSTALL_DAYS} day) as l
             left join (select id, toString(properties.email) as email,
                          coalesce(nullIf(toString(properties.spark_channel), ''),
@@ -152,23 +146,23 @@ def build_queries() -> dict[str, str]:
             left join (select person_id, event, timestamp, properties from events
                        where event in ('signin_completed', 'brain_chosen', 'permission_granted', 'onboarding_completed',
                                        'task_completed', 'subscription_started', 'onboarding_step')
-                         and {w} and timestamp >= now() - interval 90 day) as e on l.person_id = e.person_id
+                         and {wa} and timestamp >= now() - interval 90 day) as e on l.person_id = e.person_id
             group by l.person_id, l.launch, l.platform, l.version, p.channel, p.email, p.heard
             order by l.launch desc limit {INSTALL_CAP}""",
         # Task success = human task_completed / (human task_completed + task_failed): weekly by platform,
         # by app_version (30d) and by brain provider (30d; latest brain_chosen per person, any age <= 180d).
         "success_weekly": f"""
             select {_UTC_WEEK} as wk, {plat} as k, {kn} from events
-            where {tasks} and {w} and timestamp >= now() - interval {WEEKS} week group by wk, k limit 500""",
+            where {tasks} and {wa} and timestamp >= now() - interval {WEEKS} week group by wk, k limit 500""",
         "success_version": f"""
             select {ver} as k, {kn} from events
-            where {tasks} and {w} and {rel} and timestamp >= now() - interval 30 day group by k limit 500""",
+            where {tasks} and {wa} and timestamp >= now() - interval 30 day group by k limit 500""",
         "success_provider": f"""
             select coalesce(nullIf(p.provider, ''), 'unknown') as k, countIf({_human("t.")}), countIf(t.event = 'task_failed')
-            from (select person_id, event, properties from events where {tasks} and {w}
+            from (select person_id, event, properties from events where {tasks} and {wa}
                   and timestamp >= now() - interval 30 day) as t
             left join (select person_id, argMax(toString(properties.provider), timestamp) as provider from events
-                       where event = 'brain_chosen' and {w} and timestamp >= now() - interval 180 day
+                       where event = 'brain_chosen' and {wa} and timestamp >= now() - interval 180 day
                        group by person_id) as p on t.person_id = p.person_id
             group by k limit 50""",
         # Last 7d: task_failed by reason and problem_raised by kind, with the distinct installs
@@ -176,7 +170,7 @@ def build_queries() -> dict[str, str]:
         "problems": f"""
             select event, coalesce(nullIf(toString(if(event = 'task_failed', properties.reason, properties.kind)), ''), 'unknown') as k,
               count(), uniqIf(toString(properties.install_id), timestamp >= now() - interval 24 hour)
-            from events where event in ('task_failed', 'problem_raised') and {w} and timestamp >= now() - interval 7 day
+            from events where event in ('task_failed', 'problem_raised') and {wa} and timestamp >= now() - interval 7 day
             group by event, k order by count() desc limit 200""",
         # Last 30d: spark_download_clicked (anonymous web traffic, never a funnel step) by source / placement.
         "downloads": f"""
@@ -189,7 +183,7 @@ def build_queries() -> dict[str, str]:
             select toString(toStartOfMonth(toTimeZone(v.timestamp, 'UTC'))) as m, v.person_id,
               sum(toInt(v.properties.seconds)), count(), coalesce(p.email, '')
             from (select person_id, timestamp, properties from events where event = 'voice_session_ended'
-                  and toString(properties.product) = 'spark' and {w} and timestamp >= now() - interval 6 month) as v
+                  and toString(properties.product) = 'spark' and {wa} and timestamp >= now() - interval 6 month) as v
             left join (select id, toString(properties.email) as email from persons) as p on p.id = v.person_id
             group by m, v.person_id, p.email limit 20000""",
         # Money facts per person, oldest first (12 months): the latest subscription_updated.status_to is the
@@ -202,7 +196,7 @@ def build_queries() -> dict[str, str]:
             from events
             where event in ('account_created', 'subscription_started', 'subscription_updated', 'subscription_cancelled')
               and toString(properties.product) = 'spark'
-              and {w} and timestamp >= now() - interval 12 month
+              and {wa} and timestamp >= now() - interval 12 month
             order by timestamp limit 50000""",
         # Setup, last 30d: distinct persons by event, key (step / reason / permission) and action.
         "setup_steps": f"""
@@ -212,7 +206,7 @@ def build_queries() -> dict[str, str]:
               if(event = 'onboarding_step', coalesce(toString(properties.action), ''), '') as a, uniq(person_id)
             from events
             where event in ('onboarding_step', 'brain_signin_failed', 'permission_prompted', 'permission_denied')
-              and {w} and timestamp >= now() - interval 30 day
+              and {wa} and timestamp >= now() - interval 30 day
             group by event, k, a limit 200""",
         # Last 30d, tasks started (not automation) >= 30 min ago: n; those with no task_completed/task_failed
         # or task_stopped carrying the same task_id: k. One row: (k, n).
@@ -224,7 +218,7 @@ def build_queries() -> dict[str, str]:
                 countIf(event in ('task_completed', 'task_failed', 'task_stopped')) as fin
               from events
               where event in ('task_started', 'task_completed', 'task_failed', 'task_stopped')
-                and {w} and timestamp >= now() - interval 30 day and toString(properties.task_id) != ''
+                and {wa} and timestamp >= now() - interval 30 day and toString(properties.task_id) != ''
               group by tid having st > 0 and first_start < now() - interval 30 minute) limit 1""",
         # Last 30d, one row per (event, key): event, key, count, distinct persons, persons in the last 7d, persons
         # with full access (voice only). Key: task_stopped.how, automation_fired '<ok>/<brain>', feature_used.feature,
@@ -238,7 +232,7 @@ def build_queries() -> dict[str, str]:
               uniqIf(person_id, toString(properties.full_access) = 'true')
             from events
             where event in ('automation_fired', 'voice_session_ended')
-              and toString(properties.product) = 'spark' and {w} and {rel} and timestamp >= now() - interval 30 day
+              and toString(properties.product) = 'spark' and {wa} and timestamp >= now() - interval 30 day
             group by event
             union all
             select event,
@@ -255,7 +249,7 @@ def build_queries() -> dict[str, str]:
                              'voice_session_ended', 'app_opened', 'update_installed')
                    or (event = 'problem_raised' and toString(properties.kind) = 'crash'))
               and (event != 'task_started' or coalesce(toString(properties.source), '') != 'automation')
-              and toString(properties.product) = 'spark' and {w} and {rel} and timestamp >= now() - interval 30 day
+              and toString(properties.product) = 'spark' and {wa} and timestamp >= now() - interval 30 day
             group by event, k limit 500""",
     }
 

@@ -28,8 +28,7 @@ export class DatabaseStack extends cdk.Stack {
     // `lightbulb-{env}-` name prefix, on-demand billing, customer-managed KMS
     // encryption, and point-in-time recovery. The factory pins them so a
     // future table can't silently regress durability by forgetting
-    // pointInTimeRecovery or the CMK. `ephemeral: true` is the deliberate
-    // opt-out for TTL'd cache/dedup tables: no PITR.
+    // pointInTimeRecovery or the CMK.
     //
     // The construct `id` is the CloudFormation logical ID — renaming an
     // existing one REPLACES the table (data loss). Never change ids here.
@@ -40,7 +39,6 @@ export class DatabaseStack extends cdk.Stack {
         partitionKey: dynamodb.Attribute;
         sortKey?: dynamodb.Attribute;
         timeToLiveAttribute?: string;
-        ephemeral?: boolean;
       },
     ): dynamodb.Table =>
       new dynamodb.Table(this, id, {
@@ -48,9 +46,8 @@ export class DatabaseStack extends cdk.Stack {
         partitionKey: schema.partitionKey,
         ...(schema.sortKey ? { sortKey: schema.sortKey } : {}),
         billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-        // `ephemeral` drops PITR only; the removal policy stays the env's.
         removalPolicy: config.removalPolicy,
-        ...(schema.ephemeral ? {} : { pointInTimeRecovery: true }),
+        pointInTimeRecovery: true,
         encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
         encryptionKey: props.kmsKey,
         ...(schema.timeToLiveAttribute
@@ -70,15 +67,6 @@ export class DatabaseStack extends cdk.Stack {
     containersTable.addGlobalSecondaryIndex({
       indexName: "status-index",
       partitionKey: { name: "status", type: dynamodb.AttributeType.STRING },
-    });
-
-    // Webhook event dedup table — shared by Stripe and Clerk webhooks
-    // PK: event_id (prefixed: "stripe:{id}" or "clerk:{id}")
-    // TTL: 30-day auto-expiry via "ttl" attribute
-    createTable("WebhookEventDedup", "webhook-event-dedup", {
-      partitionKey: { name: "event_id", type: dynamodb.AttributeType.STRING },
-      timeToLiveAttribute: "ttl",
-      ephemeral: true,
     });
 
     // Spark voice transcripts (os_voice): one row per turn, keyed by person, `<startedAt>#<sessionId>#<seq>`.

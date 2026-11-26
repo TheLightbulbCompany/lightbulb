@@ -51,7 +51,7 @@ export interface ServiceStackProps extends cdk.StackProps {
 }
 
 /** The DynamoDB tables the backend reads and writes (DatabaseStack). */
-const SPARK_TABLES = ["users", "containers", "spark-transcripts", "webhook-event-dedup"];
+const SPARK_TABLES = ["users", "containers", "spark-transcripts"];
 
 export class ServiceStack extends cdk.Stack {
   public readonly service: ecs.FargateService;
@@ -221,7 +221,6 @@ export class ServiceStack extends cdk.Stack {
               "user_3LwHy8lvhauuQFd8bmuhNwkowOr", // a team member's personal sign-in
             ].join(",")
           : "",
-      WEBHOOK_DEDUP_TABLE: tableName(env, "webhook-event-dedup"),
       CORS_ORIGINS:
         env === "prod"
           ? `https://${rootDomain},https://www.${rootDomain}`

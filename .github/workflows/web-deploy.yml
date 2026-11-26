@@ -1,0 +1,98 @@
+# Website deploy (Vercel project `frontend`). Dev on a merge that touches the website;
+# prod only when a person runs this workflow. Independent of the AWS deploy (deploy.yml).
+name: web-deploy
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "apps/frontend/**"
+      - "pnpm-lock.yaml"
+      - ".github/workflows/web-deploy.yml"
+  workflow_dispatch: {}
+
+concurrency:
+  group: web-deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+  VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+  VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+
+jobs:
+  dev:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${{ secrets.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY_DEV }}
+      NEXT_PUBLIC_API_URL: ${{ secrets.NEXT_PUBLIC_API_URL_DEV }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "20"
+          cache: pnpm
+      - run: npm install -g vercel@63.1.0
+      - run: vercel pull --yes --token="$VERCEL_TOKEN"
+      - run: vercel build --token="$VERCEL_TOKEN"
+      - id: deploy
+        run: |
+          url=$(vercel deploy --prebuilt --archive=tgz --token="$VERCEL_TOKEN")
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+      # A project domain with no git branch is a PRODUCTION domain, which every prod deploy
+      # re-points. Binding the dev hosts to a branch makes them preview domains. Register before
+      # aliasing: an unregistered host sits behind the Vercel login.
+      - name: Register dev hosts and keep them off production deploys
+        run: |
+          for host in dev.thelightbulb.company admin.dev.thelightbulb.company; do
+            vercel domains add "$host" frontend --force --token="$VERCEL_TOKEN"
+            curl -fsS -o /dev/null -X PATCH "https://api.vercel.com/v9/projects/$VERCEL_PROJECT_ID/domains/$host?teamId=$VERCEL_ORG_ID" \
+              -H "Authorization: Bearer $VERCEL_TOKEN" -H "Content-Type: application/json" -d '{"gitBranch":"main"}'
+          done
+      - name: Alias dev hosts
+        env:
+          URL: ${{ steps.deploy.outputs.url }}
+        run: |
+          for host in dev.thelightbulb.company admin.dev.thelightbulb.company dev.flickmeon.ai; do
+            vercel alias "$URL" "$host" --token="$VERCEL_TOKEN"
+          done
+
+  prod:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${{ secrets.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY_PROD }}
+      NEXT_PUBLIC_API_URL: ${{ secrets.NEXT_PUBLIC_API_URL_PROD }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "20"
+          cache: pnpm
+      - run: npm install -g vercel@63.1.0
+      - run: vercel pull --yes --environment=production --token="$VERCEL_TOKEN"
+      - run: vercel build --prod --token="$VERCEL_TOKEN"
+      - id: deploy
+        run: |
+          url=$(vercel deploy --prebuilt --archive=tgz --prod --token="$VERCEL_TOKEN")
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+      # flickmeon.ai is the retired domain; middleware redirects it, so it follows each release.
+      - name: Register and alias prod hosts
+        env:
+          URL: ${{ steps.deploy.outputs.url }}
+        run: |
+          for host in thelightbulb.company www.thelightbulb.company admin.thelightbulb.company; do
+            vercel domains add "$host" frontend --force --token="$VERCEL_TOKEN"
+            vercel alias "$URL" "$host" --token="$VERCEL_TOKEN"
+          done
+          for host in flickmeon.ai www.flickmeon.ai; do
+            vercel alias "$URL" "$host" --token="$VERCEL_TOKEN"
+          done

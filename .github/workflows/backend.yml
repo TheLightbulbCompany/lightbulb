@@ -1,14 +1,13 @@
-# Backend CI (PRs only): ruff + pytest. Image build is backend-arm64.yml; deploy is deploy.yml.
+# Backend CI (PRs): ruff and pytest. The image is built by deploy.yml on merge.
 name: Backend CI
 
 on:
   pull_request:
     branches: [main]
     paths:
-      - 'apps/backend/**'
-      - '.github/workflows/backend.yml'
+      - "apps/backend/**"
+      - ".github/workflows/backend.yml"
 
-# `github.ref` is refs/pull/<n>/merge, so a new push supersedes only its own PR's run.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -18,41 +17,24 @@ permissions:
 
 jobs:
   test:
-    name: Lint & Test (shard ${{ matrix.shard }}/4)
-    # GitHub-hosted Linux (vars.CI_RUNNER = ubuntu-latest): the repo is public, so minutes are free.
-    runs-on: ${{ vars.CI_RUNNER }}
-    strategy:
-      fail-fast: false
-      matrix:
-        # tests/conftest.py keeps every 4th test id per shard (BACKEND_TEST_SHARD); each shard runs under xdist.
-        shard: [1, 2, 3, 4]
+    runs-on: ubuntu-latest
     timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: apps/backend
     steps:
       - uses: actions/checkout@v7
-
-      - uses: astral-sh/setup-uv@v4
+      - uses: astral-sh/setup-uv@v10.4.0
         with:
           enable-cache: true
           cache-dependency-glob: apps/backend/uv.lock
-
-      - name: Install dependencies
-        run: uv sync --frozen
-        working-directory: apps/backend
-
-      - name: Lint
-        if: matrix.shard == 1
-        run: |
-          uv run ruff check .
-          uv run ruff format --check .
-        working-directory: apps/backend
-
-      - name: Run tests
+      - run: uv sync --frozen
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      - run: uv run pytest tests/ -q -n auto
         env:
           CLERK_ISSUER: https://test.clerk.accounts.dev
           AWS_DEFAULT_REGION: us-east-1
           AWS_ACCESS_KEY_ID: testing
           AWS_SECRET_ACCESS_KEY: testing
           DEBUG: "false"
-          BACKEND_TEST_SHARD: ${{ matrix.shard }}/4
-        run: uv run pytest tests/ -q -n auto
-        working-directory: apps/backend

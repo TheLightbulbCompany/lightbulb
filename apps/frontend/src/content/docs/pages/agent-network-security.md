@@ -72,7 +72,6 @@ Everything lives in `~/.lightbulb/connect/`, which is private to your user (`070
 | `state.db` | SQLite: the roster, sessions, messages, receipts, permission prompts and their answers, memory entries, and captured coding sessions with your prompts and the agents' replies (see [memory](/docs/memory)). |
 | `daemon.log` | The log (see above). |
 | `addrs.json` | Teammates' last known network addresses. |
-| `login.json` | The sign-in proof, while this computer is signed in (`0600`). |
 | `sock`, `daemon.lock` | The service's socket and lock. |
 | `bin/lightbulb` | The program. |
 
@@ -96,20 +95,11 @@ rm -rf ~/.lightbulb/connect ~/.local/bin/lightbulb
 
 For each of your sessions that is not hidden: the agent, the computer, the folder's last part (not the full path), the repository and branch, whether it is busy or idle, its title, and what it is doing now (from the agent's to-do list). They never see your files or your agents' conversations, only the messages sent to them. Hide a folder with `lightbulb folder <path> off`.
 
-## Telemetry and network requests
+## Network requests
 
-**Usage counts are on by default.** Lightbulb sends anonymous counts so the project can see adoption: installs, updates, joins, invites, and once a day the number of messages and computers and which agents are connected. The only identifier is a random install id. It never sends message text, names, keys, tickets, codes or folder paths. It sends no crash reports. The [engine README](https://github.com/TheLightbulbCompany/cli#usage-counts) lists every event.
-
-To turn the counts off, run `lightbulb telemetry off`, or set `DO_NOT_TRACK=1` (or `LIGHTBULB_NO_TELEMETRY=1`) in the environment. To send nothing at all, set it before you install:
-
-```sh
-curl -fsSL https://github.com/TheLightbulbCompany/cli/releases/latest/download/install.sh | DO_NOT_TRACK=1 sh
-```
-
-Apart from your teammates' computers and the relays, the engine makes these requests:
+**No usage counts and no crash reports are sent.** Apart from your teammates' computers and the relays, the engine makes these requests:
 
 - **Updates:** the background service checks GitHub once a day for a newer release. It installs one only when the checksum matches and, on macOS, the binary is signed with Lightbulb's Developer ID. `lightbulb update --auto off` stops the daily check. The install script, `npm install` and `lightbulb update` also download from GitHub.
-- **Lightbulb, only when you use these:** `lightbulb login` and the renewal of its proof, `lightbulb invite --agents`, and routing for hosted apps (the Claude app and others) that reach the network through your signed-in computer.
 
 ## Reporting a vulnerability
 

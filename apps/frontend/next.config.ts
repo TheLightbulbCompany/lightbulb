@@ -1,5 +1,4 @@
 import type { NextConfig } from "next";
-import withBundleAnalyzer from "@next/bundle-analyzer";
 import path from "path";
 
 import { apiOrigin } from "./src/lib/apiOrigin";
@@ -198,12 +197,4 @@ const nextConfig: NextConfig = {
   },
 };
 
-// Bundle analysis is opt-in via ANALYZE=true — with the flag unset the plugin
-// hands back the config object untouched, so dev, CI and Vercel builds are
-// unaffected. Note this is the *webpack* analyzer while `next build` defaults
-// to Turbopack, so the two are split across scripts: `pnpm analyze` runs
-// Turbopack's own analyzer (the bundler we actually ship), while
-// `pnpm analyze:webpack` forces --webpack to get the treemap report.
-export default withBundleAnalyzer({ enabled: process.env.ANALYZE === "true" })(
-  nextConfig,
-);
+export default nextConfig;

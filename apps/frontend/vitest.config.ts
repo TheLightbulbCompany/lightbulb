@@ -23,20 +23,6 @@ export default defineConfig({
     },
     // Increase test timeout for slow module initialization
     testTimeout: 30000,
-    coverage: {
-      provider: 'v8',
-      reporter: ['text', 'html'],
-      // A user-supplied exclude REPLACES vitest's defaults, which is why
-      // `**/__tests__/**` has to be spelled out — without it the ~380
-      // co-located test files count as covered source and inflate the number.
-      exclude: [
-        'node_modules/',
-        'tests/',
-        '**/__tests__/**',
-        '.next/',
-        '*.config.*',
-      ],
-    },
   },
   resolve: {
     alias: {

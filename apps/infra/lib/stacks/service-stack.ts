@@ -214,6 +214,13 @@ export class ServiceStack extends cdk.Stack {
               "user_3JISO0QYSpiaupJII105uDWMApg",
               "user_3IEMUT2a1z8za7m4lnFzpdZrccc",
             ].join(","),
+      // Accounts the Spark metrics leave out, besides the admins above. Comma-separated; dev stays empty.
+      SPARK_INTERNAL_USER_IDS:
+        env === "prod"
+          ? [
+              "user_3LwHy8lvhauuQFd8bmuhNwkowOr", // a team member's personal sign-in
+            ].join(",")
+          : "",
       WEBHOOK_DEDUP_TABLE: tableName(env, "webhook-event-dedup"),
       CORS_ORIGINS:
         env === "prod"

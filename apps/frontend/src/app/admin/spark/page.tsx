@@ -1,18 +1,30 @@
 import { auth } from "@clerk/nextjs/server";
 
+import { Card } from "@/components/admin/Card";
 import { ErrorBanner } from "@/components/admin/ErrorBanner";
 
-import { getSpark } from "../_lib/api";
+import { type SparkData, getSpark } from "../_lib/api";
 import { DoersChart } from "./charts";
 import { Channels, Cohorts, Funnel, Headline, Money, People, Reliability, Setup, Signals, Sources } from "./sections";
 
 export const dynamic = "force-dynamic";
 
+/** A section whose query failed shows a placeholder; the rest of the page still renders. */
+function Section({ title, keys, off, children }: { title: string; keys: string[]; off: string[]; children: React.ReactNode }) {
+  if (!keys.some((k) => off.includes(k))) return <>{children}</>;
+  return (
+    <Card title={title}>
+      <div className="text-xs text-muted-foreground">couldn&apos;t load</div>
+    </Card>
+  );
+}
+
 export default async function AdminSparkPage() {
   const { getToken } = await auth();
   const token = await getToken();
   const env = token ? await getSpark(token) : null;
-  const data = env?.data ?? null;
+  const data = env?.data ? (env.data as SparkData & { unavailable?: string[] }) : null;
+  const off = data?.unavailable ?? [];
 
   return (
     <div className="space-y-6">
@@ -29,7 +41,7 @@ export default async function AdminSparkPage() {
           error={
             !env
               ? "Spark metrics read failed — nothing below is trustworthy."
-              : `${env.source_state}: ${env.errors.map((e) => `${e.domain}: ${e.reason}`).join("; ") || "no detail"}. No figures are shown.`
+              : `${env.source_state}: ${env.errors.map((e) => `${e.domain}: ${e.reason}`).join("; ") || "no detail"}.${data ? " Sections that failed are marked below." : " No figures are shown."}`
           }
         />
       ) : null}
@@ -39,21 +51,43 @@ export default async function AdminSparkPage() {
           {data.truncated ? (
             <p className="text-xs text-destructive">Install list hit its 5000-row cap; older installs are missing.</p>
           ) : null}
-          <Headline data={data} />
-          <People data={data} />
+          <Section title="Headline" keys={["wad", "brain_unavailable_installs_24h"]} off={off}>
+            <Headline data={data} />
+          </Section>
+          <Section title="People" keys={["people"]} off={off}>
+            <People data={data} />
+          </Section>
           <div className="grid gap-6 xl:grid-cols-2">
-            <DoersChart data={data} />
-            <Funnel data={data} />
+            <Section title="Weekly Active Doers" keys={["wad"]} off={off}>
+              <DoersChart data={data} />
+            </Section>
+            <Section title="Funnel" keys={["funnel", "downloads"]} off={off}>
+              <Funnel data={data} />
+            </Section>
           </div>
-          <Setup data={data} />
-          <Cohorts data={data} />
+          <Section title="Setup" keys={["setup", "time_to_first_task"]} off={off}>
+            <Setup data={data} />
+          </Section>
+          <Section title="Install cohorts" keys={["cohorts"]} off={off}>
+            <Cohorts data={data} />
+          </Section>
           <div className="grid gap-6 xl:grid-cols-2">
-            <Channels data={data} />
-            <Sources data={data} />
+            <Section title="Channels" keys={["channels"]} off={off}>
+              <Channels data={data} />
+            </Section>
+            <Section title="Sources" keys={["heard_from"]} off={off}>
+              <Sources data={data} />
+            </Section>
           </div>
-          <Money data={data} />
-          <Reliability data={data} />
-          <Signals data={data} />
+          <Section title="Money" keys={["money"]} off={off}>
+            <Money data={data} />
+          </Section>
+          <Section title="Reliability" keys={["success"]} off={off}>
+            <Reliability data={data} />
+          </Section>
+          <Section title="Signals" keys={["signals"]} off={off}>
+            <Signals data={data} />
+          </Section>
           <p className="text-xs text-muted-foreground">
             Human task = task_completed not from automation. Weekly Active Doer = a person with human tasks on 2+ distinct UTC
             days. Activated 24h = a human task within 24h after launch (settled installs only). Activated d7 = human tasks on 2+

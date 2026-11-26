@@ -5,6 +5,16 @@ const getSpark = vi.fn();
 vi.mock("@clerk/nextjs/server", () => ({ auth: async () => ({ getToken: async () => "t" }) }));
 vi.mock("../../_lib/api", () => ({ getSpark: (...a: unknown[]) => getSpark(...a) }));
 vi.mock("../charts", () => ({ DoersChart: () => null }));
+vi.mock("../sections", () => {
+  const stub = (name: string) => {
+    const C = () => <div>{name} ok</div>;
+    C.displayName = name;
+    return C;
+  };
+  return Object.fromEntries(
+    ["Channels", "Cohorts", "Funnel", "Headline", "Money", "People", "Reliability", "Setup", "Signals", "Sources"].map((n) => [n, stub(n)]),
+  );
+});
 
 import AdminSparkPage from "../page";
 
@@ -27,5 +37,17 @@ describe("spark page", () => {
     render(await AdminSparkPage());
     expect(screen.getByText(/nothing below is trustworthy/)).toBeTruthy();
     expect(screen.queryByText("Headline")).toBeNull();
+  });
+
+  it("replaces only the failed section with a placeholder", async () => {
+    getSpark.mockResolvedValue({
+      data: { generated_at: "now", truncated: false, unavailable: ["money"] },
+      source_state: "partial",
+      errors: [{ domain: "posthog:subs", reason: "timeout" }],
+    });
+    render(await AdminSparkPage());
+    expect(screen.getByText("couldn't load")).toBeTruthy();
+    expect(screen.queryByText("Money ok")).toBeNull();
+    expect(screen.getByText("Headline ok")).toBeTruthy();
   });
 });

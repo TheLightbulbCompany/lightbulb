@@ -9,7 +9,8 @@ everything per-user keys on HogQL ``person_id``. Installs = persons with ``app_f
 A "human task" = task_completed whose ``source`` is missing or != 'automation'. Weeks are UTC,
 Monday start; the current week is flagged ``partial``.
 
-Any failed query -> no figures at all (``compute`` returns data=None + the failed query names).
+A failed query degrades only the sections built from it: ``data["unavailable"]`` lists their top-level keys and
+``compute`` returns the failed query names (PostHog unset -> data=None).
 """
 
 from __future__ import annotations
@@ -36,6 +37,23 @@ BUCKETS = (("lt5m", 5), ("lt30m", 30), ("lt2h", 120), ("lt24h", 1440))  # minute
 STEP_ORDER = ("sign_in", "brain", "permissions", "say_hi")
 D7_LABEL = "activated d7 (installs 7d+ old)"
 STEPS = ("signin", "brain", "permission", "onboarding", "first task", "activated d7", "subscribed")
+
+# Failed query -> the top-level payload keys built from it (see derive).
+QUERY_KEYS: dict[str, tuple[str, ...]] = {
+    "doers_weekly": ("wad",),
+    "doers_7d": ("wad",),
+    "installs": ("cohorts", "funnel", "channels", "people", "time_to_first_task", "heard_from", "truncated"),
+    "success_weekly": ("success",),
+    "success_version": ("success",),
+    "success_provider": ("success",),
+    "problems": ("success", "brain_unavailable_installs_24h"),
+    "downloads": ("downloads",),
+    "voice_monthly": ("money",),
+    "subs": ("money",),
+    "setup_steps": ("setup",),
+    "tasks_unfinished": ("setup",),
+    "signals": ("signals",),
+}
 
 _SAFE_ID = re.compile(r"^[A-Za-z0-9_\-]+$")
 _UTC_DAY = "toDate(toTimeZone(timestamp, 'UTC'))"
@@ -589,7 +607,7 @@ _cache: tuple[float, dict | None, str, list[dict]] | None = None  # (expires_at,
 
 
 async def compute() -> tuple[dict | None, str, list[dict]]:
-    """Run every query. Any failure -> (None, partial, failed query names): no figures, no fake zeros.
+    """Run every query. A failed query -> its sections are listed in data["unavailable"] (built from empty rows, never shown).
     Failures are cached too (60s) so an open page during a PostHog outage doesn't hammer the API."""
     global _cache
     if _cache is not None and _cache[0] > time.monotonic():
@@ -600,7 +618,9 @@ async def compute() -> tuple[dict | None, str, list[dict]]:
     if all(r["stubbed"] for r in results):
         return None, env.UNAVAILABLE, [{"domain": "posthog", "reason": "not configured"}]
     errors = [{"domain": f"posthog:{n}", "reason": r["error"]} for n, r in zip(queries, results) if r["error"]]
-    data = None if errors else derive({n: r["results"] for n, r in zip(queries, results)}, datetime.now(timezone.utc))
+    rows = {n: [] if r["error"] else r["results"] for n, r in zip(queries, results)}
+    data = derive(rows, datetime.now(timezone.utc))
+    data["unavailable"] = sorted({k for n, r in zip(queries, results) if r["error"] for k in QUERY_KEYS[n]})
     state = env.PARTIAL if errors else env.OK
     _cache = (time.monotonic() + (FAIL_TTL_S if errors else OK_TTL_S), data, state, errors)
     return data, state, errors

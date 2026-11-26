@@ -122,6 +122,19 @@ async def test_an_opted_out_user_gets_204_and_nothing_is_stored(store):
     assert not store.turns and not store.steps
 
 
+@pytest.mark.parametrize(
+    ("env", "version", "stored"), [("prod", "dev", False), ("prod", "2.1.18", True), ("dev", "dev", True)]
+)
+async def test_production_stores_only_logs_from_a_release_version(store, monkeypatch, env, version, stored):
+    dropped = []
+    monkeypatch.setattr(settings, "ENVIRONMENT", env)
+    monkeypatch.setattr(os_router, "put_metric", lambda name, *a, **k: dropped.append(name))
+    r = await post(payload(typed=[line()], appVersion=version))
+    assert r.status_code == 204
+    assert bool(store.turns) is stored
+    assert dropped == ([] if stored else ["spark_events.dropped_no_release_version"])
+
+
 async def test_flag_off_is_204_and_nothing_is_stored(store, monkeypatch):
     monkeypatch.setattr(settings, "SPARK_STORE_ENABLED", False)
     r = await post(payload(typed=[line()], task=task()))

@@ -1,11 +1,12 @@
 """Spark product metrics for the admin console: HogQL over PostHog, cached.
 
 Events come from the desktop app via POST /os/event (core/observability/spark_events.py) and from
-the server (subscription_*, ...). Every query excludes team accounts (``_internal_filter``), people without an account
-(``_account_filter``; not the anonymous download clicks) and other environments, and is bounded by time.
+the server (subscription_*, ...). Every query excludes team accounts (``_internal_filter``) and other
+environments, and is bounded by time. Usage queries also need an account (``_account_filter``). Not the install
+list (``installs``: every first launch of a released app, signed in or not) nor the anonymous download clicks.
 
 Identity: pre-sign-in events are under the install id, aliased to the Clerk user at sign-in, so
-everything per-user keys on HogQL ``person_id``. Installs = persons with ``app_first_launch``.
+everything per-user keys on HogQL ``person_id``. Installs = persons with an ``app_first_launch`` that carries an app_version (a released app).
 A "human task" = task_completed whose ``source`` is missing or != 'automation'. Weeks are UTC,
 Monday start; the current week is flagged ``partial``.
 
@@ -78,13 +79,19 @@ def _account_filter() -> str:
     return "person_id in (select person_id from person_distinct_ids where startsWith(distinct_id, 'user_'))"
 
 
+def _release_install() -> str:
+    """A first launch of a RELEASED app: released apps always send app_version, an engine run from source does not.
+    app_first_launch is one event per installation, so this is an install-level rule."""
+    return "coalesce(toString(properties.app_version), '') != ''"
+
+
 def _human(p: str = "") -> str:
     return f"{p}event = 'task_completed' and coalesce(toString({p}properties.source), '') != 'automation'"
 
 
 def build_queries() -> dict[str, str]:
     w = f"{_hogql_filter(settings.ENVIRONMENT or '')} and {_internal_filter()}"
-    wa = f"{w} and {_account_filter()}"  # every query but `downloads` (anonymous web traffic) needs an account
+    wa = f"{w} and {_account_filter()}"  # usage queries need an account; `installs` and `downloads` do not
     human = _human()
     plat = "coalesce(nullIf(toString(properties.platform), ''), 'unknown')"
     ver = "coalesce(nullIf(toString(properties.app_version), ''), 'unknown')"
@@ -111,7 +118,7 @@ def build_queries() -> dict[str, str]:
         # One row per install-person (launch in the last 84d), newest first. Funnel, cohorts, channels and
         # the people table are all derived from it in Python. Every event counts only at/after the person's
         # launch (`after`). Columns: launch, platform, first app_version, brain provider (latest), channel,
-        # email, then counts: signin, brain_chosen, accessibility permission, onboarding, human tasks,
+        # email, then: has_account (signed in = the person owns a Clerk id, whatever the event order), counts: brain_chosen, accessibility permission, onboarding, human tasks,
         # human tasks within 24h of launch (activated_24h), distinct UTC days with a human task within 7d of
         # launch (activated_d7 = >= 2), human tasks on days 22-28 after launch (week 4), spark subscription,
         # the last human-task UTC day, the first human task after launch (valid only when human tasks > 0),
@@ -120,7 +127,7 @@ def build_queries() -> dict[str, str]:
             select l.launch, l.platform, l.version,
               argMaxIf(toString(e.properties.provider), e.timestamp, e.event = 'brain_chosen' and {after}),
               p.channel, coalesce(p.email, ''),
-              countIf(e.event = 'signin_completed' and {after}),
+              l.has_account,
               countIf(e.event = 'brain_chosen' and {after}),
               countIf(e.event = 'permission_granted' and toString(e.properties.permission) = 'accessibility' and {after}),
               countIf(e.event = 'onboarding_completed' and {after}),
@@ -135,8 +142,9 @@ def build_queries() -> dict[str, str]:
                       and toString(e.properties.action) = 'completed' and {after}),
               p.heard
             from (select person_id, min(timestamp) as launch,
-                    argMin({plat}, timestamp) as platform, argMin({ver}, timestamp) as version
-                  from events where event = 'app_first_launch' and {wa}
+                    argMin({plat}, timestamp) as platform, argMin({ver}, timestamp) as version,
+                    if({_account_filter()}, 1, 0) as has_account
+                  from events where event = 'app_first_launch' and {w} and {_release_install()}
                   group by person_id having launch >= now() - interval {INSTALL_DAYS} day) as l
             left join (select id, toString(properties.email) as email,
                          coalesce(nullIf(toString(properties.spark_channel), ''),
@@ -144,10 +152,12 @@ def build_queries() -> dict[str, str]:
                          coalesce(nullIf(toString(properties.spark_heard_from), ''), 'not answered') as heard
                        from persons) as p on p.id = l.person_id
             left join (select person_id, event, timestamp, properties from events
-                       where event in ('signin_completed', 'brain_chosen', 'permission_granted', 'onboarding_completed',
+                       where event in ('brain_chosen', 'permission_granted', 'onboarding_completed',
                                        'task_completed', 'subscription_started', 'onboarding_step')
-                         and {wa} and timestamp >= now() - interval 90 day) as e on l.person_id = e.person_id
-            group by l.person_id, l.launch, l.platform, l.version, p.channel, p.email, p.heard
+                         and {w} and timestamp >= now() - interval 90 day
+                         and (event not in ('task_completed', 'subscription_started') or {_account_filter()})) as e
+              on l.person_id = e.person_id
+            group by l.person_id, l.launch, l.platform, l.version, l.has_account, p.channel, p.email, p.heard
             order by l.launch desc limit {INSTALL_CAP}""",
         # Task success = human task_completed / (human task_completed + task_failed): weekly by platform,
         # by app_version (30d) and by brain provider (30d; latest brain_chosen per person, any age <= 180d).

@@ -254,6 +254,10 @@ export class ServiceStack extends cdk.Stack {
       // keep everything Spark does with voice and brain, for analysis). "problem" would keep text only
       // for failed or cancelled tasks. Apps see "off" while SPARK_STORE_ENABLED is off.
       SPARK_WORKLOG_SCOPE: "all",
+      // Oldest Spark version allowed to open a voice session, per platform ("X.Y.Z"). Raised by hand;
+      // empty means no floor, and is the kill switch.
+      SPARK_MIN_VERSION_MAC: "",
+      SPARK_MIN_VERSION_WINDOWS: "",
       // PostHog server-side reads for the admin Spark metrics. Project ID is public.
       POSTHOG_HOST: "https://us.posthog.com",
       POSTHOG_PROJECT_ID: "380894",

@@ -67,20 +67,25 @@ class ConfigResponse(BaseModel):
     priceText: str
     trialDays: int
     worklogScope: Literal["all", "problem", "off"] = "off"
+    minVersion: dict[str, str] = {}  # platform -> "X.Y.Z"; a platform with no valid floor is absent
 
 
 def _price_facts() -> ConfigResponse:
     # "off" while the store is disabled here: apps then upload no work log at all (they fail closed on anything else).
     scope = "off" if not settings.SPARK_STORE_ENABLED else "all" if settings.SPARK_WORKLOG_SCOPE == "all" else "problem"
+    floors = {"mac": settings.SPARK_MIN_VERSION_MAC, "windows": settings.SPARK_MIN_VERSION_WINDOWS}
     return ConfigResponse(
-        priceText=f"${settings.SPARK_PRICE_USD}/month", trialDays=TRIAL_S // DAY_S, worklogScope=scope
+        priceText=f"${settings.SPARK_PRICE_USD}/month",
+        trialDays=TRIAL_S // DAY_S,
+        worklogScope=scope,
+        minVersion={k: v for k, v in floors.items() if re.fullmatch(r"\d+\.\d+\.\d+", v)},
     )
 
 
 @router.get("/config", response_model=ConfigResponse, operation_id="os_config")
 async def get_config() -> ConfigResponse:
     """Spark's price and trial length, for the sign-in screen before anyone is signed in, and the work-log scope
-    the server enforces. Public."""
+    the server enforces, and the oldest app version allowed to open a voice session. Public."""
     return _price_facts()
 
 

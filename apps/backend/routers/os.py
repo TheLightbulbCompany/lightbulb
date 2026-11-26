@@ -684,12 +684,13 @@ async def _store_log(user_id: str, install_id: str, body: dict, meta: dict) -> N
     try:
         if not await spark_store.allowed(user_id):  # a consistent read, just before writing
             return
+        checked_at = time.monotonic()
         scope = "all" if settings.SPARK_WORKLOG_SCOPE == "all" else "problem"
         now_us = time.time_ns() // 1000
         turns, steps = await run_in_thread(spark_store.log_rows, user_id, install_id, body, scope, now_us, meta)
         name = uuid.uuid4().hex
-        await spark_store.put("turns", user_id, name, turns)
-        await spark_store.put("task_steps", user_id, name, steps)
+        await spark_store.put("turns", user_id, name, turns, checked_at)
+        await spark_store.put("task_steps", user_id, name, steps, checked_at)
     except Exception as e:  # noqa: BLE001
         logger.warning("os log not stored: %s", type(e).__name__)
 

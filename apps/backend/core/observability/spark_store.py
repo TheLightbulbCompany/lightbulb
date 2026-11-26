@@ -1,6 +1,6 @@
 """Spark data store, write path: plain gzip JSON-lines objects in S3.
 
-One small object per write, at `data/<table>/dt=<UTC day>/<user_id>__<name>.json.gz`. Nothing here ever raises into
+One small object per write, at `data/<table>/<user_id>/<UTC day>/<name>.json.gz`. Nothing here ever raises into
 a caller and nothing blocks the event loop. A no-op unless `SPARK_STORE_ENABLED` and the environment is dev or prod,
 so local runs and CI never call AWS. Expiry is an S3 lifecycle rule (CDK); deleting one person's data is `forget`.
 """
@@ -12,7 +12,9 @@ import gzip
 import json
 import logging
 import re
+import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 
 import boto3
@@ -26,7 +28,10 @@ logger = logging.getLogger(__name__)
 
 SCRUB_MAX = 16_000  # scrub cuts its input here before any regex runs
 TABLES = ("turns", "task_steps")
-KEEP_DAYS = 92  # the 90-day expiry plus slack: `forget` looks this far back
+MAX_PENDING = 200  # writes queued or running; more are dropped and counted
+STALE_S = 60  # a write whose opt-out check is older than this when it runs is dropped
+DEDUPE_S = 3600  # no second background delete for a person within this of a successful one
+MAX_TRACKED = 10_000
 SECOND_SWEEP_S = 120  # `forget` runs again after this, to catch a write that was in flight
 _NAME = re.compile(r"[A-Za-z0-9_-]{1,128}")
 
@@ -258,6 +263,13 @@ async def allowed(user_id: str) -> bool:
 
 # --- write and delete ---------------------------------------------------------------------------------------
 
+# Store calls run on this pool and nothing else does: a slow S3 can never starve the DynamoDB calls that meter
+# voice and money, which share the event loop's default executor.
+_POOL = ThreadPoolExecutor(max_workers=2, thread_name_prefix="spark-store")
+_pending = 0  # writes queued or running
+_sweeping: set[str] = set()  # people with a background delete in progress
+_swept: dict[str, float] = {}  # person -> monotonic time of their last successful sweep
+
 
 def store_bucket() -> str:
     return f"lightbulb-{settings.ENVIRONMENT}-spark-store"
@@ -266,12 +278,16 @@ def store_bucket() -> str:
 def _client():
     global _s3
     if _s3 is None:
-        _s3 = boto3.client("s3", region_name=settings.AWS_REGION, config=Config(connect_timeout=2, read_timeout=5))
+        _s3 = boto3.client(
+            "s3",
+            region_name=settings.AWS_REGION,
+            config=Config(connect_timeout=2, read_timeout=5, retries={"max_attempts": 1}),
+        )
     return _s3
 
 
 def _valid(user_id: str) -> bool:
-    return bool(_NAME.fullmatch(user_id)) and "__" not in user_id  # so `<user_id>__` never matches another person
+    return bool(_NAME.fullmatch(user_id))  # no `/` or `.`: the `/` after the id in a prefix isolates people
 
 
 def _utc_string(us: int) -> str:
@@ -279,50 +295,110 @@ def _utc_string(us: int) -> str:
     return (datetime(1970, 1, 1) + timedelta(microseconds=us)).isoformat(sep=" ", timespec="milliseconds")
 
 
-async def put(table: str, user_id: str, name: str, rows: list[dict]) -> None:
-    """Write `rows` as one object. Never raises; on failure logs the type and counts it. No text is ever logged.
+def _write(table: str, user_id: str, name: str, rows: list[dict], checked_at: float) -> bool:
+    """Runs in the store's thread. False: the opt-out check is too old by now, nothing was written."""
+    if not (_valid(user_id) and _NAME.fullmatch(name)):
+        raise ValueError("bad object name")
+    if time.monotonic() - checked_at > STALE_S:
+        return False
+    lines = "".join(json.dumps(r | {"ts": _utc_string(r["ts"])}, separators=(",", ":")) + "\n" for r in rows)
+    # Organized by person so that deleting one person's data is a single listing; analysis, when built, reads these
+    # files as raw input. The date folder is the server's UTC day.
+    key = f"data/{table}/{user_id}/{datetime.now(UTC):%Y-%m-%d}/{name}.json.gz"
+    _client().put_object(Bucket=store_bucket(), Key=key, Body=gzip.compress(lines.encode()))
+    return True
+
+
+async def put(table: str, user_id: str, name: str, rows: list[dict], checked_at: float) -> None:
+    """Write `rows` as one object. `checked_at` is the `time.monotonic()` of the opt-out check that allows it; a
+    write that waits more than a minute is dropped. Never raises; failures and drops are counted, no text is logged.
     # ponytail: one small object per turn; batch per session if listing them ever gets slow."""
+    global _pending
     if not (_on() and rows):
         return
+    if _pending >= MAX_PENDING:
+        put_metric("spark_store.put_dropped")
+        return
+    _pending += 1
     try:
-        if not (_valid(user_id) and _NAME.fullmatch(name)):
-            raise ValueError("bad object name")
-        lines = "".join(json.dumps(r | {"ts": _utc_string(r["ts"])}, separators=(",", ":")) + "\n" for r in rows)
-        # The layout is fixed so tables (Hive-style partitions on `dt`) can be defined over it later without moving anything.
-        key = f"data/{table}/dt={datetime.now(UTC):%Y-%m-%d}/{user_id}__{name}.json.gz"
-        await run_in_thread(_client().put_object, Bucket=store_bucket(), Key=key, Body=gzip.compress(lines.encode()))
+        if not await asyncio.get_running_loop().run_in_executor(_POOL, _write, table, user_id, name, rows, checked_at):
+            put_metric("spark_store.put_dropped")
     except Exception as e:  # noqa: BLE001 -- the type only
         put_metric("spark_store.put_failed")
         logger.warning("spark store put failed: %s", type(e).__name__)
+    finally:
+        _pending -= 1
 
 
 def _sweep(user_id: str) -> None:
-    s3, today = _client(), datetime.now(UTC).date()
+    """Delete everything of the person's in both tables. One failing table does not stop the other; raises at the
+    end if anything failed."""
+    s3, failed = _client(), 0
     for table in TABLES:
-        for n in range(KEEP_DAYS):
-            prefix = f"data/{table}/dt={today - timedelta(days=n)}/{user_id}__"
-            for page in s3.get_paginator("list_objects_v2").paginate(Bucket=store_bucket(), Prefix=prefix):
-                if keys := [{"Key": o["Key"]} for o in page.get("Contents", [])]:
-                    s3.delete_objects(Bucket=store_bucket(), Delete={"Objects": keys, "Quiet": True})
-
-
-async def _forget(user_id: str) -> None:
-    for i in (0, 1):
-        if i:
-            await asyncio.sleep(SECOND_SWEEP_S)
         try:
-            await run_in_thread(_sweep, user_id)
-        except Exception as e:  # noqa: BLE001 -- the type only
-            put_metric("spark_store.forget_failed")
-            logger.warning("spark store delete failed: %s", type(e).__name__)
+            for page in s3.get_paginator("list_objects_v2").paginate(
+                Bucket=store_bucket(), Prefix=f"data/{table}/{user_id}/"
+            ):
+                if keys := [{"Key": o["Key"]} for o in page.get("Contents", [])]:
+                    out = s3.delete_objects(Bucket=store_bucket(), Delete={"Objects": keys, "Quiet": True})
+                    failed += bool(out.get("Errors"))
+        except Exception:  # noqa: BLE001
+            failed += 1
+    if failed:
+        raise RuntimeError(f"{failed} deletes failed")
+
+
+async def _run(user_id: str) -> None:
+    await asyncio.get_running_loop().run_in_executor(_POOL, _sweep, user_id)
+    if len(_swept) > MAX_TRACKED:
+        _swept.clear()
+    _swept[user_id] = time.monotonic()
+
+
+async def _run_counted(user_id: str) -> None:
+    try:
+        await _run(user_id)
+    except Exception as e:  # noqa: BLE001 -- the type only
+        put_metric("spark_store.forget_failed")
+        logger.warning("spark store delete failed: %s", type(e).__name__)
+
+
+async def _then_again(user_id: str, first: bool, recheck: bool) -> None:
+    """The background part of a delete: the first sweep (when not already done), then a second two minutes later to
+    catch a write that was in flight. `recheck`: skip the second when the person has turned usage data back on."""
+    try:
+        if first:
+            await _run_counted(user_id)
+        await asyncio.sleep(SECOND_SWEEP_S)
+        if not (recheck and await allowed(user_id)):
+            await _run_counted(user_id)
+    finally:
+        _sweeping.discard(user_id)
+
+
+def _gate(user_id: str) -> bool:
+    # Not gated by SPARK_STORE_ENABLED: data written before a rollback must still go.
+    return settings.ENVIRONMENT in ("dev", "prod") and _valid(user_id)
 
 
 def forget(user_id: str) -> None:
-    """Delete all of this person's objects (last 92 days, both tables): now, and again two minutes later. Runs in
-    the background and never raises. Not gated by SPARK_STORE_ENABLED: data written before a rollback must still
-    go."""
-    if settings.ENVIRONMENT not in ("dev", "prod") or not _valid(user_id):
+    """The person turned usage data off: delete their objects (both tables) in the background,
+    now and again two minutes later. Skipped while one is running for them or one succeeded in the last hour. Never
+    raises; a failure is counted (`spark_store.forget_failed`) and the app's next `analytics:false` retries it."""
+    if not _gate(user_id) or user_id in _sweeping or time.monotonic() - _swept.get(user_id, -DEDUPE_S) < DEDUPE_S:
         return
     from core.voice.os_voice import spawn  # here: os_voice imports this module
 
-    spawn(_forget(user_id))
+    _sweeping.add(user_id)
+    spawn(_then_again(user_id, first=True, recheck=True))
+
+
+async def forget_account(user_id: str) -> None:
+    """The person's account is being deleted: the first sweep is awaited and its failure raises (the caller keeps
+    the row and the request is retried); the second runs in the background. Never skipped as a duplicate."""
+    if not _gate(user_id):
+        return
+    from core.voice.os_voice import spawn
+
+    await _run(user_id)
+    spawn(_then_again(user_id, first=False, recheck=False))

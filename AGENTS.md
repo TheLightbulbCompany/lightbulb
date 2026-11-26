@@ -107,12 +107,16 @@ to the ALB), observability (the backend's alarms), database, and **spark-store**
 bucket, with a lifecycle rule that expires `data/` after 90 days).
 
 The Spark store is storage only (`core/observability/spark_store.py`): gzip JSON-lines objects at
-`data/<table>/dt=<YYYY-MM-DD>/<user_id>__<name>.json.gz` (tables `turns` and `task_steps`), written straight to S3
-by voice-turn saves and `POST /os/log`, after a consistent read of the person's `users` row (no row or
-`os_analytics_off`: nothing is written). Deleting a person's data (usage data turned off, account deleted, Clerk
-`user.deleted`) lists and deletes their objects of the last 92 days, now and again two minutes later. No job, queue,
-Firehose, Athena or Glue; analysis is not built yet, and the layout lets tables be defined over it later. Events stay
-in PostHog only.
+`data/<table>/<user_id>/<YYYY-MM-DD>/<name>.json.gz` (tables `turns` and `task_steps`), organized by person so that
+deleting one person's data is a single listing per table. Voice turns are written after the `_save_turn`
+transaction succeeds (which checks the session and `os_analytics_off`); `POST /os/log` first does a consistent read
+of the person's `users` row (no row or `os_analytics_off`: nothing is written). A write whose check is over 60
+seconds old is dropped. Deleting a person's data lists and deletes their objects: for an account deletion (Clerk
+`user.deleted` or `DELETE /os/account`) the first sweep is awaited and a failure fails the request, with a second
+sweep two minutes later in the background; for usage data turned off both run in the background, skipped while one is
+running or after a success within the hour (the app's next `analytics:false` retries a failure). The store uses its
+own two-thread pool, so S3 never shares threads with DynamoDB. One alarm, W91, fires on `spark_store.forget_failed`.
+No job, queue, Firehose, Athena or Glue; analysis is not built yet. Events stay in PostHog only.
 
 The database stack holds four DynamoDB tables, named `lightbulb-{env}-{suffix}`: `users` (the Spark account),
 `containers` (voice-session rows, found through `status-index`), `spark-transcripts` and `webhook-event-dedup` (Stripe

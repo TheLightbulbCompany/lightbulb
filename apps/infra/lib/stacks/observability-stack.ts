@@ -1088,6 +1088,18 @@ def handler(event, context):
       severity: "warn",
     });
 
+    // W91: a Spark store delete failed (spark_store.forget_failed; put_metric, no dims). One in 15 minutes warns.
+    this.createAlarm({
+      id: "W91",
+      name: "spark-store-forget-failed",
+      description: "A Spark store delete of a person's data failed",
+      metricName: "spark_store.forget_failed",
+      periodMinutes: 15,
+      threshold: 1,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      severity: "warn",
+    });
+
     // NOTE: AWS Cost Anomaly Detection is intentionally NOT managed here.
     // A Cost Anomaly Detection monitor is an ACCOUNT-GLOBAL resource; a
     // per-environment stack (dev + prod both deploy this stack) cannot own

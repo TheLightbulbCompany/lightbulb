@@ -31,24 +31,30 @@ def check(ok: bool, what: str) -> None:
 
 
 def objects(user_id: str) -> list[str]:
-    s3 = spark_store._client()
-    found = []
+    s3, found = spark_store._client(), []
     for table in spark_store.TABLES:
         for page in s3.get_paginator("list_objects_v2").paginate(
-            Bucket=spark_store.store_bucket(), Prefix=f"data/{table}/"
+            Bucket=spark_store.store_bucket(), Prefix=f"data/{table}/{user_id}/"
         ):
-            found += [o["Key"] for o in page.get("Contents", []) if f"/{user_id}__" in o["Key"]]
-    return found  # fine for a check: the throwaway user's day is small
+            found += [o["Key"] for o in page.get("Contents", [])]
+    return found
 
 
 async def main() -> None:
     user = f"check_{secrets.token_hex(4)}"
     now_us = time.time_ns() // 1000
     base = {"ts": now_us, "user_id": user, "platform": "check", "app_version": "0"}
+    checked = time.monotonic()
     await spark_store.put(
-        "turns", user, "t1", [base | {"row_id": "t", "role": "person", "source": "typed", "text": "check turn"}]
+        "turns",
+        user,
+        "t1",
+        [base | {"row_id": "t", "role": "person", "source": "typed", "text": "check turn"}],
+        checked,
     )
-    await spark_store.put("task_steps", user, "k1", [base | {"row_id": f"s{n}", "step_no": n} for n in range(2)])
+    await spark_store.put(
+        "task_steps", user, "k1", [base | {"row_id": f"s{n}", "step_no": n} for n in range(2)], checked
+    )
     keys = objects(user)
     check(len(keys) == 2, f"two objects written: {keys}")
     for key in keys:
@@ -59,7 +65,7 @@ async def main() -> None:
             f"{key}: {len(rows)} line(s) read back",
         )
     spark_store.SECOND_SWEEP_S = 0
-    spark_store.forget(user)
+    await spark_store.forget_account(user)
     from core.voice.os_voice import _BACKGROUND
 
     await asyncio.gather(*_BACKGROUND)

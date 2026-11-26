@@ -293,7 +293,7 @@ def stored(table, on, monkeypatch):
     monkeypatch.setattr(settings, "SPARK_STORE_ENABLED", True)
     calls = []
 
-    async def put(table_name, user_id, name, batch):
+    async def put(table_name, user_id, name, batch, checked_at):
         calls.append(batch)
 
     monkeypatch.setattr(spark_store, "put", put)
@@ -424,7 +424,7 @@ async def test_tick_copies_the_current_task(stored, table):
 async def test_a_turn_is_written_under_the_persons_id_and_a_name_of_its_own(stored, table, monkeypatch):
     seen = []
 
-    async def put(table_name, user_id, name, batch):
+    async def put(table_name, user_id, name, batch, checked_at):
         seen.append((table_name, user_id, name))
 
     monkeypatch.setattr(spark_store, "put", put)
@@ -478,9 +478,23 @@ async def test_mark_task_for_a_person_with_no_row_does_nothing(table):
     await os_voice.mark_task("user_nobody", "dlg_abcdefghij12")
 
 
-async def test_stop_transcripts_and_forget_start_the_stores_delete(table, on, monkeypatch):
+async def test_stop_transcripts_and_account_forget_start_the_stores_delete(table, on, monkeypatch):
     seen = []
-    monkeypatch.setattr(spark_store, "forget", seen.append)
+
+    async def forget_account(user_id):
+        seen.append(("account", user_id))
+
+    monkeypatch.setattr(spark_store, "forget", lambda u: seen.append(("optout", u)))
+    monkeypatch.setattr(spark_store, "forget_account", forget_account)
     await os_voice.stop_transcripts("user_a")
     await os_voice.forget("user_b", ())
-    assert seen == ["user_a", "user_b"]
+    assert seen == [("optout", "user_a"), ("account", "user_b")]
+
+
+async def test_an_account_forget_that_fails_raises_to_its_caller(table, on, monkeypatch):
+    async def boom(user_id):
+        raise RuntimeError("s3 down")
+
+    monkeypatch.setattr(spark_store, "forget_account", boom)
+    with pytest.raises(RuntimeError):
+        await os_voice.forget("user_b", ())

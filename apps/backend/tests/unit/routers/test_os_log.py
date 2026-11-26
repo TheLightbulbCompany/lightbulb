@@ -39,7 +39,7 @@ def store(monkeypatch, jwks):  # noqa: F811
     async def allowed(user_id):
         return s.ok
 
-    async def put(table, user_id, name, rows):
+    async def put(table, user_id, name, rows, checked_at):
         if s.raises:
             raise RuntimeError("s3 down")
         (s.turns if table == "turns" else s.steps).extend(rows)

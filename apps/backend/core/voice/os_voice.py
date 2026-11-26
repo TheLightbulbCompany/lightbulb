@@ -485,7 +485,8 @@ def _store_turn(s: dict, role: str, text: str, start_ms: int) -> None:
         "platform": client.get("platform"),
         "app_version": client.get("appVersion"),
     }
-    spawn(spark_store.put("turns", s["userId"], f"{s['sessionId']}_{start_ms}_{role}", [row]))
+    checked_at = time.monotonic()  # the save's transaction has just succeeded
+    spawn(spark_store.put("turns", s["userId"], f"{s['sessionId']}_{start_ms}_{role}", [row], checked_at))
 
 
 async def _flush(s: dict, idle: float = 0.0) -> None:
@@ -623,7 +624,7 @@ async def forget(user_id: str, sessions) -> None:
     for sid in await _active_sessions(user_id, sessions):
         await close_and_wait(sid, "signed_out")  # OpenAI gets session.close before the cleanup
     await delete_transcripts(user_id)
-    spark_store.forget(user_id)
+    await spark_store.forget_account(user_id)  # a failure raises: the caller keeps the row and retries
 
 
 async def _set_opt_out(user_id: str, off: bool) -> None:

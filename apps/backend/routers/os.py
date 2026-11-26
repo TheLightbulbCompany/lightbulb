@@ -622,6 +622,12 @@ async def _capped_body(request: Request, limit: int, code: str) -> tuple[dict, s
     return body, install_id
 
 
+def _unreleased(body: dict) -> bool:
+    """Production keeps only what a released app reports: its body carries a valid release version. An engine run
+    from source sends "dev" (dropped by the allow-list), so it is no production data. Other environments take all."""
+    return settings.ENVIRONMENT == "prod" and "app_version" not in spark_events.common_properties(body)
+
+
 @router.post("/event", status_code=204, operation_id="os_event")
 async def post_event(request: Request, auth: AuthContext | None = Depends(get_optional_human_session)) -> Response:
     """One product event from the app, for PostHog. Anyone may call it: with a valid session bearer the event
@@ -636,6 +642,9 @@ async def post_event(request: Request, auth: AuthContext | None = Depends(get_op
             os_voice.spawn(os_voice.stop_transcripts(auth.user_id, opt_at))
         elif on is True:
             os_voice.spawn(os_voice.clear_opt_out(auth.user_id, opt_at))
+    if _unreleased(body):  # after the opt-out above; a 204 like any dropped event, so the app's gates behave the same
+        put_metric("spark_events.dropped_no_release_version")
+        return Response(status_code=204)
     if (not auth and not _PER_IP.allow(_extract_caller_ip(request))) or not _PER_ID.allow(distinct_id):
         return Response(status_code=204)
     try:
@@ -717,6 +726,9 @@ async def post_log(
         return Response(status_code=204)
     if not _LOG_PER_USER.allow(auth.user_id):
         put_metric("os.log_rate_limited")
+        return Response(status_code=204)
+    if _unreleased(body):
+        put_metric("spark_events.dropped_no_release_version")
         return Response(status_code=204)
     meta = spark_events.common_properties(body)
     background.add_task(_store_log, auth.user_id, install_id, body, meta)

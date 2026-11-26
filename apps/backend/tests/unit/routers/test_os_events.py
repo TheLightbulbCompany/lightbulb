@@ -125,6 +125,17 @@ async def send(event, properties=None, who=None, install=INSTALL, **extra):
 # --- POST /os/event ------------------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize(("env", "version", "captured"), [("prod", "dev", 0), ("prod", "2.1.1", 1), ("dev", "dev", 1)])
+async def test_production_keeps_only_events_from_a_release_version(env, version, captured, ph, ddb, monkeypatch):
+    dropped = []
+    monkeypatch.setattr(os_router.settings, "ENVIRONMENT", env)
+    monkeypatch.setattr(os_router, "put_metric", lambda name, *a, **k: dropped.append(name))
+    r = await send("app_opened", appVersion=version)
+    assert r.status_code == 204  # the same answer either way: the app's once-only gates behave the same
+    assert len(ph.captures) == captured
+    assert dropped == ([] if captured else ["spark_events.dropped_no_release_version"])
+
+
 @pytest.mark.parametrize("signed_in", [False, True])
 @pytest.mark.parametrize("event", sorted(VALID))
 async def test_each_allowed_event_is_captured(event, signed_in, ph, ddb):

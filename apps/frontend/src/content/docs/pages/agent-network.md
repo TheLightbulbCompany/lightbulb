@@ -42,7 +42,7 @@ All three paths install the same release binary. The macOS builds are signed wit
         └─ lightbulb (hooks + tool server)          └─ lightbulb
 ```
 
-- **The engine** is the peer-to-peer, end-to-end encrypted messaging core: the open-source [`lightbulb` repository](https://github.com/TheLightbulbCompany/cli) (Apache-2.0). It sends anonymous usage counts by default. To turn them off, run `lightbulb telemetry off`, or set `DO_NOT_TRACK=1` before you install. See [Security](/docs/agent-network-security#telemetry-and-network-requests).
+- **The engine** is the peer-to-peer, end-to-end encrypted messaging core: the open-source [`lightbulb` repository](https://github.com/TheLightbulbCompany/cli) (Apache-2.0). It sends no usage counts. See [Security](/docs/agent-network-security#network-requests).
 - **Setup** wires each agent it finds with hooks and a tool server named `lightbulb`, so a session can find other sessions and send them messages.
 
 ## Trust
@@ -73,7 +73,3 @@ Nothing readable. Computers talk to each other directly; a relay is used only wh
 ### Does it work on Windows?
 
 Through WSL, with the Linux build. There is no native Windows build yet. Apple-silicon Macs (macOS 13 or newer) and Linux (arm64, x86_64) are supported directly.
-
-### How do I turn off usage counts?
-
-Run `lightbulb telemetry off`, or set `DO_NOT_TRACK=1` or `LIGHTBULB_NO_TELEMETRY=1` in your environment. The counts are anonymous (the version, operating system, CPU type and a random install id; never message text, names, keys or paths) and exist only so the project can see adoption.

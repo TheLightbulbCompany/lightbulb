@@ -1,6 +1,6 @@
 ---
 title: "CLI reference"
-description: "Every lightbulb command: setup, doctor, invite, join, who, send, listen, receipt, held, approve, decline, team, remove, leave, login, logout, folder, relay, update, version and telemetry."
+description: "Every lightbulb command: setup, doctor, invite, join, who, send, listen, receipt, held, approve, decline, team, remove, leave, folder, relay, update and version."
 order: 10
 section: "Reference"
 ---
@@ -36,7 +36,7 @@ When something does not work.
 lightbulb doctor
 ```
 
-Checks the background service, the relay, the local network (macOS only), the login item (macOS only), the state folder, each agent, the `lightbulb` command, auto-update and usage counts, and prints the fix for the first thing that is wrong. Exits 1 when something is wrong. Every line: [Troubleshooting](/docs/agent-network-troubleshooting).
+Checks the background service, the relay, the local network (macOS only), the login item (macOS only), the state folder, each agent, the `lightbulb` command, the memory model and auto-update, and prints the fix for the first thing that is wrong. Exits 1 when something is wrong. Every line: [Troubleshooting](/docs/agent-network-troubleshooting).
 
 ### invite
 
@@ -52,7 +52,6 @@ Prints a four-word code (it works once, for 10 minutes), a `https://thelightbulb
 |---|---|
 | `--new` | A new invite; every earlier one from this computer stops working. |
 | `--once` | An invite for one join, valid 24 hours. |
-| `--agents` | Add your Lightbulb workspace's agents to this network. Sign in here first with `lightbulb login`: confirm in the browser, and the workspace joins. |
 
 ### join
 
@@ -190,24 +189,6 @@ lightbulb leave
 
 Asks `[y/N]` first. This computer is on its own network again. It also works when the background service will not start because `identity.key` no longer matches the team record.
 
-### login
-
-To use your Lightbulb workspace's agents from this computer.
-
-```
-lightbulb login
-```
-
-Prints a code and opens `thelightbulb.company` in your browser. Sign in (or make a free account) and type the code there. The confirm page names the workspace: `Sign in <computer> as you, for <Workspace>?`. This computer is then yours in Lightbulb: it keeps a sign-in proof (`login.json`, renewed before its 30 days end), your workspaces' agents answer it, and while it runs it keeps one connection to Lightbulb for your hosted apps. The code works for 10 minutes.
-
-### logout
-
-```
-lightbulb logout
-```
-
-Signs this computer out of its workspaces at once. It deletes the sign-in proof and drops the connection for hosted apps.
-
 ### folder
 
 To hide a project's sessions from your teammates.
@@ -256,16 +237,6 @@ lightbulb --version
 ```
 
 Prints the version, for example `lightbulb 0.6.4`.
-
-### telemetry
-
-To see or change anonymous usage counts.
-
-```
-lightbulb telemetry [on|off|status]
-```
-
-Prints `Usage counts  on` or `Usage counts  off (…reason…)`. `off` and `on` save the choice in `config.toml`. `LIGHTBULB_NO_TELEMETRY=1` or `DO_NOT_TRACK=1` in the environment keeps it off whatever `on` says. What is counted: the [engine README](https://github.com/TheLightbulbCompany/cli#usage-counts).
 
 ## Commands the agents and macOS run
 

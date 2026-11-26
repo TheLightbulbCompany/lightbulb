@@ -189,6 +189,46 @@ async def handle_clerk_webhook(request: Request):
     if event_type.startswith("organization"):
         return {"status": "ignored"}
     data: dict[str, Any] = payload.get("data", {})
+    svix_id = request.headers.get("svix-id")
+    lifecycle_event = event_type == "user.deleted"
+    lifecycle_id = svix_id or f"local-{hashlib.sha256(body).hexdigest()}"
+    processing_claim = None
+
+    # Idempotency dedupe — svix retries on any non-2xx and redelivers on its own
+    # at-least-once insurance. Keyed on svix-id, which is unique per genuine Clerk
+    # event and identical across retries.
+    if svix_id:
+        if lifecycle_event:
+            from core.services.webhook_dedup import (
+                WebhookProcessingInProgress,
+                begin_event_processing,
+            )
+
+            try:
+                processing_claim = await begin_event_processing(svix_id, source="clerk")
+            except WebhookProcessingInProgress as exc:
+                raise HTTPException(status_code=503, detail="Clerk lifecycle event is already processing") from exc
+            if processing_claim is None:
+                put_metric("clerk.webhook.dedup_skipped")
+                logger.info("completed clerk lifecycle webhook duplicate suppressed: %s", svix_id)
+                return {"status": "duplicate"}
+        else:
+            try:
+                from core.services.webhook_dedup import (
+                    WebhookDedupResult,
+                    record_event_or_skip,
+                )
+
+                dedup = await record_event_or_skip(svix_id, source="clerk")
+                if dedup is WebhookDedupResult.ALREADY_SEEN:
+                    put_metric("clerk.webhook.dedup_skipped")
+                    logger.info("clerk webhook duplicate suppressed: %s", svix_id)
+                    return {"status": "duplicate"}
+            except Exception:
+                # Non-security events retain the historical best-effort
+                # behavior; lifecycle claims above deliberately fail closed.
+                logger.exception("clerk webhook dedupe check failed; processing anyway")
+
     put_metric("webhook.clerk.received", dimensions={"event_type": event_type})
 
     if event_type == "user.created":
@@ -230,4 +270,8 @@ async def handle_clerk_webhook(request: Request):
     else:
         logger.debug("Clerk webhook: unhandled event type %s", event_type)
 
+    if processing_claim is not None:
+        from core.services.webhook_dedup import complete_event_processing
+
+        await complete_event_processing(lifecycle_id, processing_claim)
     return {"status": "ok"}

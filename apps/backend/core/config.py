@@ -110,6 +110,10 @@ class Settings(BaseSettings):
     onto the person. This is the SAME public key the frontend ships as
     NEXT_PUBLIC_POSTHOG_KEY. Empty disables the bridge (events stay EMF-only)."""
 
+    # Webhook event-id dedup table (Stripe + Clerk). Conditional PutItem with
+    # attribute_not_exists drops replays at the edge. Wired via CDK service-stack.
+    WEBHOOK_DEDUP_TABLE: str = ""
+
     OPENAI_API_KEY: str = ""
     """Platform key for GPT-Live voice sessions. From Secrets Manager. Not a real ``sk-`` key ⇒ calls 503 voice_unavailable."""
 

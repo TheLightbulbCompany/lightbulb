@@ -125,107 +125,18 @@ const PROD_TEMPLATE = buildTemplate("prod");
  * the emitter, the alarm has nothing to watch.
  */
 const EMITTED_DIMENSION_SETS: Record<string, string[][]> = {
+  // core/auth.py
   "auth.jwks.refresh": [["status"]],
   "auth.jwt.fail": [["reason"]],
-  "auth.org_admin.denied": [[]],
-  "billing.pricing.missing_model": [[]],
-  // core/repositories/paperclip_repo.py — mark_bootstrap_delivered /
-  // mark_bootstrap_failed, on the conditional write that lands the terminal
-  // transition. W66 binds the "failed" status rollup.
-  "bootstrap.state": [["status"]],
-  "channel.configure": [["provider", "status"]],
-  "channel.rpc": [["provider", "status"]],
-  "container.efs.access_point": [["op", "status"]],
-  "container.error_state": [[]],
-  "container.lifecycle.latency": [["op"]],
-  "container.provision": [["status"]],
-  "container.task_def.register": [["status"]],
-  "debug.endpoint.prod_hit": [["endpoint"]],
-  "gateway.cold_start.count": [["outcome"]],
-  "gateway.cold_start.latency": [[]],
-  // main.py:_running_count_gauge_loop. P12 divides the fleet sample count by
-  // HealthyHostCount (C5) but binds only {env, service} -- the emitting ECS
-  // task id is a log field (running_count), not a metric dimension, since it
-  // is a new identity per task per deploy (the _DENIED_DIMENSIONS class).
-  "gateway.running.count": [[]],
-  // core/voice/voice_calls.py sweep_calls_once; W84 binds the rollup.
-  "voice.calls.open": [[]],
-  // core/voice/phone/voice_onboarding.py _provision_number (LINE write failed after a purchase), no dims; W86 binds the rollup.
-  "voice.number.orphaned": [[]],
-  // core/services/watchdog.py (spec 11): tick_metric {Mode}; every repo write; cap refusals {Kind};
-  // the judge's Jev cost via jev.decide(metric_prefix="watchdog.judge"), no dims. P48-P51 bind the rollup.
-  "watchdog.tick": [["Mode"]],
-  "watchdog.write": [[]],
-  "watchdog.cap_hit": [["Kind"]],
-  "watchdog.judge.cost": [[]],
-  "marketplace.path_traversal_attempt": [[]],
-  // routers/paperclip_events.py receive_paperclip_event, before the push
-  // decision. No alarm since the Paperclip exit.
-  "paperclip.run.failed": [["error_code"]],
-  // core/services/paperclip_escalation.py escalate; no alarm since the Paperclip exit.
-  "paperclip.escalation.exhausted": [[]],
-  // routers/messaging.py _count_hook_auth_failure; dashboard only.
-  "internal_hook.auth_failed": [["route"]],
-  // core/services/jev.py decide(); P26 binds the rollup and outcome=error|forbidden|timeout|rate_limited.
-  "messaging.jev.decision": [["outcome"]],
-  // core/services/run_analytics.py _enrich_and_capture; no alarm since the Paperclip exit.
-  "nightly_ceo.run": [["outcome"]],
   // routers/webhooks.py user.deleted, when the tenant wipe has a failed step; no dims. W90.
   "clerk.webhook.user_deleted_wipe_failed": [[]],
-  // Spark store delete failed; W91, bare rollup.
+  // core/observability/spark_store.py: Spark store delete failed; W91, bare rollup.
   "spark_store.forget_failed": [[]],
-  // core/services/messaging.py count_first_turn_failure; P29 binds the bare rollup.
-  "messaging.run.first_turn_failed": [[]],
-  // apps/infra/lambda/openrouter-settlement/index.py Store.commit (EMF, own service); W81.
-  "openrouter.settlement.overshoot_microcents": [[]],
-  // apps/infra/lambda/openrouter-gate/core.mjs (EMF, own service); P34.
-  "openrouter.gate.account_refused": [[]],
-  // apps/infra/hermes/bridge/network.py (EMF, service hermes-bridge); P35.
-  "network.member_key_contested": [[]],
-  // --- messaging platform (emitters ship with the 2026-09-12 backend tasks) ---
-  // core/services/messaging.py — create_human_message / create_agent_message.
-  "messaging.message.created": [["author_kind", "has_targets", "room_kind"]],
-  // core/services/messaging.py — after each select_dispatch_targets call.
-  "messaging.dispatch.targets": [["count_bucket", "room_kind", "source"]],
-  "messaging.mention.unresolved": [["reason"]],
-  "messaging.reply.latency": [["event_kind", "matched", "room_kind"]],
-  // core/services/container_rpc.py — one HTTP RPC per call to the container
-  // plugin. "method" is not a rollup dimension, so it only publishes with the
-  // full set or the outcome-only rollup, never alone.
-  "messaging.rpc": [["outcome", "method"], ["outcome"]],
-  // core/services/openclaw_work.py — the work-queue consumer.
-  "messaging.work.queue_wait": [["kind"]],
-  "messaging.worker.message": [["error", "kind", "outcome"]],
-  "messaging.ingress.post": [["event_kind", "status_class"]],
-  "messaging.wake.outcome": [["outcome"]],
-  // core/services/live_events.py
-  "messaging.live.publish": [["outcome", "status_class"]],
-  // apps/infra/lambda/messaging-projector/index.py — note this one emits with
-  // service="messaging-projector", not the backend's service dimension.
-  "messaging.projector.push": [["outcome"]],
-  "metronome.gate.refresh_error": [[]],
-  "metronome.webhook": [["result"], ["blocked", "result"]],
-  // core/services/openrouter_keys.py — check_account_balance, from the
-  // running-gauges loop in main.py. Prod-only alarms (W79/P25); dev and prod
-  // share one OpenRouter account.
-  "openrouter.account.balance_usd": [[]],
-  "operator.upstream.closed": [[]],
-  "paperclip.upstream.error": [["kind"]],
-  // core/services/push_service.py — send_push_to_user.
-  "push.send": [["error_kind", "outcome"]],
-  "provision.gate.blocked": [["code"]],
-  // core/services/hermes_provisioning.py — reconcile_runtime's except arm.
-  "provision.reconcile.failed": [[]],
-  // run_analytics.schedule_run_completed — full set {outcome, source}.
-  "run.completed": [["outcome", "source"]],
-  "stripe.api.latency": [["op"]],
+  // routers/billing.py
   "stripe.webhook.received": [["event_type"]],
   "stripe.webhook.sig_fail": [[]],
-  "update.scheduled_worker.error": [[]],
-  "update.scheduled_worker.heartbeat": [[]],
+  // routers/webhooks.py
   "webhook.clerk.sig_fail": [[]],
-  "workspace.file.write.error": [[]],
-  "workspace.path_traversal.attempt": [[]],
 };
 
 /**

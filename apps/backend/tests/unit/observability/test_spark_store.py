@@ -180,8 +180,8 @@ class Flaky:
         return getattr(self.real, name)
 
 
-async def test_forget_removes_the_persons_objects_in_both_tables_across_date_folders(s3):
-    for table in ("turns", "task_steps"):
+async def test_forget_removes_the_persons_objects_in_every_table_across_date_folders(s3):
+    for table in ("turns", "task_steps", "traces"):
         for day in ("2026-11-01", "2026-09-01", "2026-06-01"):
             seed(s3, "user_1", table, day, "a")
             seed(s3, "user_1", table, day, "b")
@@ -193,11 +193,12 @@ async def test_forget_removes_the_persons_objects_in_both_tables_across_date_fol
 
 @pytest.mark.parametrize(("gone", "kept"), [("user_1", "user_12"), ("user_a", "user_a_"), ("user_a_", "user_a")])
 async def test_forget_leaves_a_person_whose_id_starts_the_same(s3, gone, kept):
-    seed(s3, gone)
-    seed(s3, kept)
+    for table in ("turns", "traces"):
+        seed(s3, gone, table)
+        seed(s3, kept, table)
     spark_store.forget(gone)
     await settle()
-    assert keys(s3) == [f"data/turns/{kept}/2026-11-01/n.json.gz"]
+    assert keys(s3) == [f"data/traces/{kept}/2026-11-01/n.json.gz", f"data/turns/{kept}/2026-11-01/n.json.gz"]
 
 
 async def test_forget_pages_past_a_thousand_objects(s3):
@@ -209,12 +210,12 @@ async def test_forget_pages_past_a_thousand_objects(s3):
 
 
 async def test_one_failing_listing_or_delete_does_not_stop_the_rest_and_the_failure_is_reported(s3, monkeypatch):
-    for table in ("turns", "task_steps"):
+    for table in ("turns", "task_steps", "traces"):
         seed(s3, "user_1", table)
     monkeypatch.setattr(spark_store, "_s3", Flaky(s3, list_fails=("data/turns/",)))
     with pytest.raises(RuntimeError):
         await spark_store.forget_account("user_1")
-    assert keys(s3) == ["data/turns/user_1/2026-11-01/n.json.gz"]  # task_steps went
+    assert keys(s3) == ["data/turns/user_1/2026-11-01/n.json.gz"]  # task_steps and traces went
     seed(s3, "user_1", "task_steps")
     monkeypatch.setattr(spark_store, "_s3", Flaky(s3, delete_errors=True))
     with pytest.raises(RuntimeError):

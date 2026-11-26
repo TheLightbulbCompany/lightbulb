@@ -27,7 +27,9 @@ from core.observability.metrics import put_metric
 logger = logging.getLogger(__name__)
 
 SCRUB_MAX = 16_000  # scrub cuts its input here before any regex runs
-TABLES = ("turns", "task_steps")
+# `traces` is the layout the next release writes (`data/traces/<user_id>/<day>/<name>`); sweeping it first means a
+# delete handled by this release also covers objects a newer task writes during a rolling deploy.
+TABLES = ("turns", "task_steps", "traces")
 MAX_PENDING = 200  # writes queued or running; more are dropped and counted
 STALE_S = 60  # a write whose opt-out check is older than this when it runs is dropped
 SECOND_SWEEP_S = 120  # `forget` runs again after this, to catch a write that was in flight
@@ -328,7 +330,7 @@ async def put(table: str, user_id: str, name: str, rows: list[dict], checked_at:
 
 
 def _sweep(user_id: str) -> None:
-    """Delete everything of the person's in both tables. One failing table does not stop the other; raises at the
+    """Delete everything of the person's in every table. One failing table does not stop the other; raises at the
     end if anything failed."""
     s3, failed = _client(), 0
     for table in TABLES:

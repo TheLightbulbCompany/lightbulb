@@ -111,7 +111,7 @@ bucket, with a lifecycle rule that expires `data/` after 90 days).
 
 The Spark store is storage only (`core/observability/spark_store.py`): gzip JSON-lines objects at
 `data/<table>/<user_id>/<YYYY-MM-DD>/<name>.json.gz` (tables `turns` and `task_steps`), organized by person so that
-deleting one person's data is a single listing per table. Voice turns are written after the `_save_turn`
+deleting one person's data is a single listing per table; the sweep also lists `data/traces/<user_id>/`, the next release's layout, so a delete handled by an older task still covers it during a rolling deploy. Voice turns are written after the `_save_turn`
 transaction succeeds (which checks the session and `os_analytics_off`); `POST /os/log` first does a consistent read
 of the person's `users` row (no row or `os_analytics_off`: nothing is written). A write whose check is over 60
 seconds old is dropped. Deleting a person's data lists and deletes their objects: for an account deletion (Clerk

@@ -39,19 +39,13 @@ def store(monkeypatch, jwks):  # noqa: F811
     async def allowed(user_id):
         return s.ok
 
-    async def put_turns(rows):
+    async def put(table, user_id, name, rows):
         if s.raises:
-            raise RuntimeError("firehose down")
-        s.turns += rows
-
-    async def put_steps(rows):
-        if s.raises:
-            raise RuntimeError("firehose down")
-        s.steps += rows
+            raise RuntimeError("s3 down")
+        (s.turns if table == "turns" else s.steps).extend(rows)
 
     monkeypatch.setattr(spark_store, "allowed", allowed)
-    monkeypatch.setattr(spark_store, "put_turns", put_turns)
-    monkeypatch.setattr(spark_store, "put_steps", put_steps)
+    monkeypatch.setattr(spark_store, "put", put)
     monkeypatch.setattr(settings, "SPARK_STORE_ENABLED", True)
     monkeypatch.setattr(settings, "SPARK_WORKLOG_SCOPE", "problem")
     os_router._LOG_PER_USER.clear()

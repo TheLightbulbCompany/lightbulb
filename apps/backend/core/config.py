@@ -125,10 +125,8 @@ class Settings(BaseSettings):
     #: Save Spark voice transcripts (text only, 90 days) to the spark-transcripts table. On in dev and prod
     #: (set by CDK); off: nothing is saved.
     SPARK_TRANSCRIPTS_ENABLED: bool = False
-    #: Spark data store (S3/Iceberg via Firehose). Off: nothing is written there.
+    #: Spark data store (plain objects in S3). Off: nothing is written there.
     SPARK_STORE_ENABLED: bool = False
-    #: Spark data store maintenance (per-user deletes, OPTIMIZE/VACUUM, 90-day retention). Off: none run.
-    SPARK_STORE_DELETES: bool = False
     #: Work-log upload scope: "problem" keeps text only for failed or cancelled tasks, "all" keeps every task.
     SPARK_WORKLOG_SCOPE: str = "problem"
     # Display dollars for STRIPE_SPARK_PRICE_ID (Spark's monthly price); lockstep with its unit amount.

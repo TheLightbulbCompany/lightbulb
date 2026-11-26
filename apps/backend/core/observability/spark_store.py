@@ -1,28 +1,19 @@
-"""Spark data store, write path: rows go to Firehose, which delivers them to Iceberg tables in S3.
+"""Spark data store, write path: plain gzip JSON-lines objects in S3.
 
-One JSON object per Firehose record (the Iceberg destination takes no more), sent with `PutRecordBatch` in chunks
-of 500 records / 4 MiB. Nothing here ever raises into a caller and nothing blocks one: puts run in the background
-(`os_voice.spawn`) on a small dedicated thread pool, and are dropped, counted, when too many are waiting. A no-op
-unless `SPARK_STORE_ENABLED` and the environment is dev or prod, so local runs and CI never call AWS.
-
-Timestamps: Firehose's Iceberg destination says "for Timestamp data types, you must always send in microseconds",
-so `ts` is epoch microseconds (an int) and `dt` is the UTC day as `YYYY-MM-DD`. `bucket()` must equal the SQL
-`mod(bitwise_and(from_big_endian_32(substr(sha256(to_utf8(user_id)), 1, 4)), 2147483647), 64)`.
+One small object per write, at `data/<table>/dt=<UTC day>/<user_id>__<name>.json.gz`. Nothing here ever raises into
+a caller and nothing blocks the event loop. A no-op unless `SPARK_STORE_ENABLED` and the environment is dev or prod,
+so local runs and CI never call AWS. Expiry is an S3 lifecycle rule (CDK); deleting one person's data is `forget`.
 """
 
 from __future__ import annotations
 
 import asyncio
-import contextlib
-import functools
-import hashlib
+import gzip
 import json
 import logging
 import re
-import time
 import uuid
-from concurrent.futures import ThreadPoolExecutor
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import boto3
 from botocore.config import Config
@@ -33,40 +24,17 @@ from core.observability.metrics import put_metric
 
 logger = logging.getLogger(__name__)
 
-BUCKETS = 64
-CHUNK_RECORDS = 500
-CHUNK_BYTES = 4 * 1024 * 1024
-RETRY_S = 0.2
-MAX_PENDING = 200  # puts waiting or running; more are dropped and counted
-# A cache hit can be up to this stale: after an opt-out in another task, a row may still be stored for up to a
-# minute. The delete PR's repeat passes (45 min, 24 h) remove such rows.
-CACHE_TTL_S = 60.0
-READ_TIMEOUT_S = 2.0  # the opt-out read: slower than this reads False
 SCRUB_MAX = 16_000  # scrub cuts its input here before any regex runs
+TABLES = ("turns", "task_steps")
+KEEP_DAYS = 92  # the 90-day expiry plus slack: `forget` looks this far back
+SECOND_SWEEP_S = 120  # `forget` runs again after this, to catch a write that was in flight
+_NAME = re.compile(r"[A-Za-z0-9_-]{1,128}")
 
-TABLES = ("turns", "task_steps", "events")
-POLL_S = 1.0  # Athena status poll
-_FILTER = re.compile(r"\b(?:dt|user_bucket)\b", re.I)
-
-_firehose = None  # created at first use; tests put a fake here
-_athena = None  # likewise
-# Firehose calls only: a Firehose outage can fill these 4 threads but never delays an opt-out read, which runs
-# on the shared pool via run_in_thread like the other DynamoDB calls.
-_POOL = ThreadPoolExecutor(max_workers=4, thread_name_prefix="spark-store")
-_pending = 0
-_cache: dict[str, tuple[float, bool]] = {}  # user_id -> (expires, allowed)
-_refreshing: set[str] = set()  # people with a background refresh in flight
-_forgotten: dict[str, int] = {}  # per person: how many local opt-outs; a read that started earlier is ignored
+_s3 = None  # created at first use; tests reset it
 
 
 def _on() -> bool:
     return bool(settings.SPARK_STORE_ENABLED) and settings.ENVIRONMENT in ("dev", "prod")
-
-
-def bucket(user_id: str | None) -> int:
-    if user_id is None:
-        return -1
-    return (int.from_bytes(hashlib.sha256(user_id.encode()).digest()[:4], "big") & 0x7FFFFFFF) % BUCKETS
 
 
 # --- scrub ----------------------------------------------------------------------------------------------
@@ -267,325 +235,94 @@ def log_rows(user_id: str, install_id: str, body: dict, scope: str, now_us: int,
 STATUSES = ("done", "failed", "cancelled")
 KINDS = ("tool", "confirm", "error", "note", "screenshot")
 
-
-# --- opt-out --------------------------------------------------------------------------------------------
-
-
-async def _lookup(user_id: str) -> bool:
-    """Read the users row (bounded; an error or timeout reads False) and cache the answer, unless the person
-    opted out locally meanwhile (`forget_locally`), which wins over a read that started before it."""
-    seen = _forgotten.get(user_id, 0)
-    try:
-        item = (
-            await asyncio.wait_for(
-                run_in_thread(
-                    get_table("users").get_item,
-                    Key={"user_id": user_id},
-                    ProjectionExpression="user_id, os_analytics_off, os_deleted_at",
-                ),
-                READ_TIMEOUT_S,
-            )
-        ).get("Item") or {}
-        ok = bool(item) and not item.get("os_analytics_off") and not item.get("os_deleted_at")
-    except Exception as e:  # noqa: BLE001 -- fail closed; the type only
-        logger.warning("spark store opt-out read failed: %s", type(e).__name__)
-        return False
-    if _forgotten.get(user_id, 0) != seen:
-        return False
-    _remember(user_id, ok)
-    return ok
+# --- opt-out ----------------------------------------------------------------------------------------------
 
 
 async def allowed(user_id: str) -> bool:
-    """May this person's data be stored: they have a row, no `os_analytics_off`, not deleted. Cached 60 s; an
-    error reads False. For callers already off the request path (the event tee)."""
-    if (hit := _cache.get(user_id)) and hit[0] > time.monotonic():
-        return hit[1]
-    return await _lookup(user_id)
-
-
-def allowed_now(user_id: str) -> bool:
-    """`allowed()` for the voice sideband, which must never wait on it: the cached answer when fresh; else the
-    last known answer (False when there is none yet) while ONE background refresh per person runs."""
-    hit = _cache.get(user_id)
-    if hit and hit[0] > time.monotonic():
-        return hit[1]
-    if user_id not in _refreshing:
-        _refreshing.add(user_id)
-        from core.voice.os_voice import spawn  # here: os_voice imports this module
-
-        spawn(_refresh(user_id))
-    return hit[1] if hit else False
-
-
-async def _refresh(user_id: str) -> None:
+    """May this person's data be stored: they have a users row, no `os_analytics_off`, not deleted. A consistent
+    read, never cached; an error reads False."""
     try:
-        await _lookup(user_id)
-    finally:
-        _refreshing.discard(user_id)
-
-
-def _remember(user_id: str, ok: bool) -> None:
-    _cache[user_id] = (time.monotonic() + CACHE_TTL_S, ok)
-
-
-def forget_locally(user_id: str) -> None:
-    """The person just opted out: this process stops storing for them now, not after the cache expires."""
-    _forgotten[user_id] = _forgotten.get(user_id, 0) + 1
-    _remember(user_id, False)
-
-
-# --- put ------------------------------------------------------------------------------------------------
-
-
-def _client():
-    global _firehose
-    if _firehose is None:
-        _firehose = boto3.client(
-            "firehose",
-            region_name=settings.AWS_REGION,
-            config=Config(connect_timeout=2, read_timeout=5, retries={"max_attempts": 1}),
-        )
-    return _firehose
-
-
-def _record(row: dict) -> dict:
-    out = row | {"dt": datetime.fromtimestamp(row["ts"] // 1_000_000, UTC).date().isoformat()}
-    out["user_bucket"] = bucket(row.get("user_id"))
-    return {"Data": json.dumps(out, separators=(",", ":")).encode() + b"\n"}
-
-
-def _chunks(records: list[dict]):
-    chunk, size = [], 0
-    for rec in records:
-        n = len(rec["Data"])
-        if chunk and (len(chunk) == CHUNK_RECORDS or size + n > CHUNK_BYTES):
-            yield chunk
-            chunk, size = [], 0
-        chunk.append(rec)
-        size += n
-    if chunk:
-        yield chunk
-
-
-async def _send(stream: str, records: list[dict]) -> None:
-    """One PutRecordBatch; the records it rejects are retried once, then counted. No text is ever logged."""
-    loop = asyncio.get_running_loop()
-    for attempt in (0, 1):
-        code = None
-        try:
-            call = functools.partial(_client().put_record_batch, DeliveryStreamName=stream, Records=records)
-            out = await loop.run_in_executor(_POOL, call)
-            results = out.get("RequestResponses", []) if out.get("FailedPutCount") else []
-            bad = [(rec, r) for rec, r in zip(records, results, strict=False) if r.get("ErrorCode")]
-            code = bad[0][1]["ErrorCode"] if bad else None
-            failed = [rec for rec, _ in bad]
-        except Exception as e:  # noqa: BLE001
-            failed = records
-            code = (getattr(e, "response", None) or {}).get("Error", {}).get("Code") or type(e).__name__
-        if not failed:
-            return
-        records = failed
-        if attempt == 0:
-            await asyncio.sleep(RETRY_S)
-    put_metric("spark_store.put_failed", len(records))
-    logger.warning("spark store put to %s failed for %d records: %s", stream, len(records), code)
-
-
-def _take(n: int) -> bool:
-    """Claim a pending slot; past the cap the work is dropped and counted."""
-    global _pending
-    if _pending >= MAX_PENDING:
-        put_metric("spark_store.put_failed", n)
+        item = (
+            await run_in_thread(
+                get_table("users").get_item,
+                Key={"user_id": user_id},
+                ProjectionExpression="user_id, os_analytics_off, os_deleted_at",
+                ConsistentRead=True,
+            )
+        ).get("Item") or {}
+    except Exception as e:  # noqa: BLE001 -- fail closed; the type only
+        logger.warning("spark store opt-out read failed: %s", type(e).__name__)
         return False
-    _pending += 1
-    return True
+    return bool(item) and not item.get("os_analytics_off") and not item.get("os_deleted_at")
 
 
-async def _deliver(kind: str, rows: list[dict]) -> None:
-    """Send `rows` to the `kind` stream (turns, steps, events). Never raises."""
-    try:
-        records = [_record(row) for row in rows]
-        stream = f"lightbulb-{settings.ENVIRONMENT}-spark-{kind}"
-        for chunk in _chunks(records):
-            await _send(stream, chunk)
-    except Exception as e:  # noqa: BLE001 -- the type only
-        put_metric("spark_store.put_failed", len(rows))
-        logger.warning("spark store put failed: %s", type(e).__name__)
-
-
-async def _put(kind: str, rows: list[dict]) -> None:
-    global _pending
-    if not _on() or not _take(len(rows)):
-        return
-    try:
-        await _deliver(kind, rows)
-    finally:
-        _pending -= 1
-
-
-async def put_turns(rows: list[dict]) -> None:
-    await _put("turns", rows)
-
-
-async def put_steps(rows: list[dict]) -> None:
-    await _put("steps", rows)
-
-
-_UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
-
-
-def user_of(distinct_id: str) -> str | None:
-    """The user id a PostHog distinct id stands for: None for an install id (a UUID)."""
-    return None if _UUID.fullmatch(distinct_id.lower()) else distinct_id
-
-
-def put_event(
-    distinct_id: str,
-    user_id: str | None,
-    install_id: str | None,
-    event: str,
-    props: dict,
-    event_uuid: str | None = None,
-) -> None:
-    """Store one product event, off the caller: scheduled in the background, dropped when no loop is running."""
-    if not _on():
-        return
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        return
-    from core.voice.os_voice import spawn  # here: os_voice imports this module
-
-    row = {
-        "row_id": event_uuid or str(uuid.uuid4()),
-        "ts": time.time_ns() // 1000,
-        "distinct_id": distinct_id,
-        "user_id": user_id,
-        "install_id": install_id,
-        "event": event,
-        "properties": json.dumps(props, default=str),
-        "platform": props.get("platform"),
-        "app_version": props.get("app_version"),
-        "environment": props.get("environment"),
-    }
-    if _take(1):  # pending from here on: the opt-out read is bounded too
-        spawn(_put_event(row))
-
-
-async def _put_event(row: dict) -> None:
-    global _pending
-    try:
-        if not row["user_id"] or await allowed(row["user_id"]):
-            await _deliver("events", [row])
-    finally:
-        _pending -= 1
-
-
-# --- query and forget -------------------------------------------------------------------------------------
-
-
-def db() -> str:
-    """The one place the database, bucket and workgroup names come from."""
-    return f"lightbulb_{settings.ENVIRONMENT}_spark"
+# --- write and delete ---------------------------------------------------------------------------------------
 
 
 def store_bucket() -> str:
     return f"lightbulb-{settings.ENVIRONMENT}-spark-store"
 
 
-def _literal(v: str | int | datetime) -> str:
-    """An Athena execution-parameter value: strings must be single-quoted (quotes doubled), numbers are bare, a
-    datetime is a `TIMESTAMP '...'` literal in UTC (what a `timestamp` column compares against)."""
-    if isinstance(v, datetime):
-        return "TIMESTAMP '" + v.astimezone(UTC).strftime("%Y-%m-%d %H:%M:%S.%f") + "'"
-    return str(int(v)) if isinstance(v, int) else "'" + v.replace("'", "''") + "'"
+def _client():
+    global _s3
+    if _s3 is None:
+        _s3 = boto3.client("s3", region_name=settings.AWS_REGION, config=Config(connect_timeout=2, read_timeout=5))
+    return _s3
 
 
-async def query(
-    sql: str,
-    params: list[str | int | datetime],
-    timeout_s: float = 20,
-    unfiltered: bool = False,
-    workgroup: str | None = None,
-) -> list[dict]:
-    """Run `sql` on `workgroup` (default: the app workgroup `lightbulb-{env}-spark`) with `?` placeholders bound through ExecutionParameters, wait for it and
-    return the rows as dicts (all values strings). Refuses a statement with no `dt` or `user_bucket` (a missing
-    partition filter would scan the table) unless `unfiltered`, which only the retention job and VACUUM use.
-    Past `timeout_s` the query is stopped and TimeoutError raised; a failed query raises RuntimeError (state only)."""
-    global _athena
-    if not unfiltered and not _FILTER.search(sql):
-        raise ValueError("spark store query needs a dt or user_bucket filter")
-    if _athena is None:
-        _athena = boto3.client(
-            "athena",
-            region_name=settings.AWS_REGION,
-            config=Config(connect_timeout=2, read_timeout=10, retries={"max_attempts": 2}),
-        )
-    kw = {"ExecutionParameters": [_literal(p) for p in params]} if params else {}
-    started = await run_in_thread(
-        _athena.start_query_execution,
-        QueryString=sql,
-        WorkGroup=workgroup or f"lightbulb-{settings.ENVIRONMENT}-spark",
-        **kw,
-    )
-    qid, deadline, settled = started["QueryExecutionId"], time.monotonic() + timeout_s, False
-    try:
-        while True:
-            status = (await run_in_thread(_athena.get_query_execution, QueryExecutionId=qid))["QueryExecution"]
-            state = status["Status"]["State"]
-            if state == "SUCCEEDED":
-                settled = True
-                break
-            if state in ("FAILED", "CANCELLED"):
-                settled = True
-                raise RuntimeError(f"athena query {state}")  # the reason can quote SQL values: not repeated
-            if time.monotonic() >= deadline:
-                raise TimeoutError("athena query timed out")
-            await asyncio.sleep(POLL_S)
-    finally:
-        if not settled:  # timed out or cancelled: do not leave it running (and billing)
-            with contextlib.suppress(Exception):
-                await run_in_thread(_athena.stop_query_execution, QueryExecutionId=qid)
-    if not sql.lstrip().upper().startswith(("SELECT", "WITH")):
-        return []  # DELETE, OPTIMIZE, VACUUM have no result set
-    rows, token, header = [], None, None
-    while True:
-        page = await run_in_thread(
-            _athena.get_query_results, QueryExecutionId=qid, **({"NextToken": token} if token else {})
-        )
-        for r in page["ResultSet"]["Rows"]:
-            cells = [c.get("VarCharValue") for c in r["Data"]]
-            if header is None:
-                header = cells
-            else:
-                rows.append(dict(zip(header, cells, strict=False)))
-        if not (token := page.get("NextToken")):
-            return rows
+def _valid(user_id: str) -> bool:
+    return bool(_NAME.fullmatch(user_id)) and "__" not in user_id  # so `<user_id>__` never matches another person
 
 
-async def forget(user_id: str, bounded: bool = True) -> None:
-    """The person opted out (`bounded`: only rows up to 5 minutes after the request go) or deleted their account
-    (`bounded=False`: all their rows go). Writes the job marker (so a restart cannot lose the request), then runs
-    pass 1 in the background. Never raises. Gated by SPARK_STORE_DELETES, not SPARK_STORE_ENABLED: data written
-    before a rollback must still be deletable. If the marker cannot be written, pass 1 still runs now and the
-    marker write is retried in the background (a minute apart, for an hour). Passes 2 and 3 are the runner's."""
-    if settings.ENVIRONMENT not in ("dev", "prod"):
+def _utc_string(us: int) -> str:
+    """Epoch microseconds as a UTC `YYYY-MM-DD HH:MM:SS.mmm` string."""
+    return (datetime(1970, 1, 1) + timedelta(microseconds=us)).isoformat(sep=" ", timespec="milliseconds")
+
+
+async def put(table: str, user_id: str, name: str, rows: list[dict]) -> None:
+    """Write `rows` as one object. Never raises; on failure logs the type and counts it. No text is ever logged.
+    # ponytail: one small object per turn; batch per session if listing them ever gets slow."""
+    if not (_on() and rows):
         return
-    if not settings.SPARK_STORE_DELETES:
-        if settings.SPARK_STORE_ENABLED:  # rows are being stored that this request cannot delete
-            put_metric("spark_store.forget_disabled")
-            logger.error("spark store forget requested while SPARK_STORE_DELETES is off: nothing was deleted")
-        return
-    from core.observability import spark_store_jobs as jobs  # here: the jobs module imports this one
-    from core.voice.os_voice import spawn
-
-    at = jobs._now()
     try:
-        await asyncio.wait_for(jobs.request_forget(user_id, at, bounded), 5)
-        spawn(jobs.step(jobs.forget_key(user_id)))
+        if not (_valid(user_id) and _NAME.fullmatch(name)):
+            raise ValueError("bad object name")
+        lines = "".join(json.dumps(r | {"ts": _utc_string(r["ts"])}, separators=(",", ":")) + "\n" for r in rows)
+        # The layout is fixed so tables (Hive-style partitions on `dt`) can be defined over it later without moving anything.
+        key = f"data/{table}/dt={datetime.now(UTC):%Y-%m-%d}/{user_id}__{name}.json.gz"
+        await run_in_thread(_client().put_object, Bucket=store_bucket(), Key=key, Body=gzip.compress(lines.encode()))
     except Exception as e:  # noqa: BLE001 -- the type only
-        put_metric("spark_store.forget_start_failed")
-        logger.warning("spark store forget marker failed: %s", type(e).__name__)
-        spawn(jobs.bounded(jobs.forget_pass(user_id, False, at + jobs.CUTOFF_SLACK if bounded else None)))
-        spawn(jobs.retry_marker(user_id, at, bounded))
+        put_metric("spark_store.put_failed")
+        logger.warning("spark store put failed: %s", type(e).__name__)
+
+
+def _sweep(user_id: str) -> None:
+    s3, today = _client(), datetime.now(UTC).date()
+    for table in TABLES:
+        for n in range(KEEP_DAYS):
+            prefix = f"data/{table}/dt={today - timedelta(days=n)}/{user_id}__"
+            for page in s3.get_paginator("list_objects_v2").paginate(Bucket=store_bucket(), Prefix=prefix):
+                if keys := [{"Key": o["Key"]} for o in page.get("Contents", [])]:
+                    s3.delete_objects(Bucket=store_bucket(), Delete={"Objects": keys, "Quiet": True})
+
+
+async def _forget(user_id: str) -> None:
+    for i in (0, 1):
+        if i:
+            await asyncio.sleep(SECOND_SWEEP_S)
+        try:
+            await run_in_thread(_sweep, user_id)
+        except Exception as e:  # noqa: BLE001 -- the type only
+            put_metric("spark_store.forget_failed")
+            logger.warning("spark store delete failed: %s", type(e).__name__)
+
+
+def forget(user_id: str) -> None:
+    """Delete all of this person's objects (last 92 days, both tables): now, and again two minutes later. Runs in
+    the background and never raises. Not gated by SPARK_STORE_ENABLED: data written before a rollback must still
+    go."""
+    if settings.ENVIRONMENT not in ("dev", "prod") or not _valid(user_id):
+        return
+    from core.voice.os_voice import spawn  # here: os_voice imports this module
+
+    spawn(_forget(user_id))

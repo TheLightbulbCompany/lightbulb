@@ -404,8 +404,6 @@ async def _tick(ws, s: dict) -> bool:
     # The latest task started in this session, deliberately never cleared: the person's reaction after a task is
     # tagged with it.
     s["taskId"] = row.get("currentTaskId")
-    if settings.SPARK_STORE_ENABLED:
-        s["storeOk"] = spark_store.allowed_now(s["userId"])  # never waits: off until the first answer
     if s["noTranscript"]:
         s.pop("turns", None)  # opted out: what is held is dropped unsaved
     await _flush(s, idle=TURN_PAUSE_S)
@@ -470,13 +468,14 @@ async def _save_turn(s: dict, role: str, text: str, start_ms: int) -> None:
 
 
 def _store_turn(s: dict, role: str, text: str, start_ms: int) -> None:
-    """Also hand the turn it just saved to the data store, in the background (it never delays or fails the save)."""
-    if not (settings.SPARK_STORE_ENABLED and s.get("storeOk") and _saves(s)):
+    """Also write the turn it just saved to the data store, in the background (it never delays or fails the save).
+    The save's transaction already proved the person has not opted out."""
+    if not (settings.SPARK_STORE_ENABLED and _saves(s)):
         return
     client = s.get("client") or {}
     row = {
         "row_id": str(uuid.uuid5(spark_events.NS, f"{s['sessionId']}:{start_ms}:{role}")),
-        "ts": (int(s["startedAt"]) * 1000 + start_ms) * 1000,  # epoch microseconds
+        "ts": (int(s["startedAt"]) * 1000 + start_ms) * 1000,  # epoch microseconds; `put` writes it as a string
         "user_id": s["userId"],
         "session_id": s["sessionId"],
         "task_id": s.get("taskId"),
@@ -486,7 +485,7 @@ def _store_turn(s: dict, role: str, text: str, start_ms: int) -> None:
         "platform": client.get("platform"),
         "app_version": client.get("appVersion"),
     }
-    spawn(spark_store.put_turns([row]))
+    spawn(spark_store.put("turns", s["userId"], f"{s['sessionId']}_{start_ms}_{role}", [row]))
 
 
 async def _flush(s: dict, idle: float = 0.0) -> None:
@@ -567,7 +566,6 @@ async def run_sideband(sid: str) -> None:
         return
     s = await get(sid)
     s["trialEndsAt"] = await _trial_ends_at(s["userId"])
-    s["storeOk"] = bool(settings.SPARK_STORE_ENABLED) and spark_store.allowed_now(s["userId"])
     connected = False
     try:
         try:
@@ -625,13 +623,11 @@ async def forget(user_id: str, sessions) -> None:
     for sid in await _active_sessions(user_id, sessions):
         await close_and_wait(sid, "signed_out")  # OpenAI gets session.close before the cleanup
     await delete_transcripts(user_id)
-    await spark_store.forget(user_id, bounded=False)  # a deleted account sends nothing legitimate later
+    spark_store.forget(user_id)
 
 
 async def _set_opt_out(user_id: str, off: bool) -> None:
     """Mark (or unmark) the person's users row `os_analytics_off`; a person with no row gets none."""
-    if off:
-        spark_store.forget_locally(user_id)
     with contextlib.suppress(ClientError):
         await run_in_thread(
             get_table("users").update_item,
@@ -665,7 +661,7 @@ async def stop_transcripts(user_id: str) -> None:
                 ExpressionAttributeValues={":t": True, ":active": ACTIVE},
             )
     await delete_transcripts(user_id)
-    await spark_store.forget(user_id)
+    spark_store.forget(user_id)
 
 
 async def mark_task(user_id: str, task_id: str) -> None:

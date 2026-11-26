@@ -12,22 +12,6 @@ export const logGroupPath = (env: string, suffix: string) =>
 export const tableName = (env: string, suffix: string) =>
   `${tablePrefix(env)}${suffix}`;
 
-/**
- * Names of the Spark data store (SparkStoreStack). ServiceStack builds its grants
- * from these instead of importing the stack, so a failed spark-store deploy cannot
- * hold the backend's deploy back. Glue names use underscores: Firehose rejects hyphens.
- */
-// Mirrored in apps/backend/scripts/spark_store_ddl.py (and the Athena workgroup names in the backend). The task_steps table's stream is named "...-spark-steps".
-export const sparkStoreNames = (env: string) => {
-  const p = resourcePrefix(env);
-  return {
-    bucket: `${p}spark-store`,
-    database: `lightbulb_${env}_spark`,
-    streams: ["turns", "steps", "events"].map((s) => `${p}spark-${s}`),
-    workgroup: `${p}spark`,
-    adhocWorkgroup: `${p}spark-adhoc`,
-    jobsWorkgroup: `${p}spark-jobs`,
-    firehoseRole: `${p}spark-firehose`,
-    logGroup: `/aws/firehose/${p}spark`,
-  };
-};
+/** Name of the Spark data store bucket (SparkStoreStack). ServiceStack builds its grants from this instead of
+ * importing the stack, so a failed spark-store deploy cannot hold the backend's deploy back. */
+export const sparkStoreNames = (env: string) => ({ bucket: `${resourcePrefix(env)}spark-store` });

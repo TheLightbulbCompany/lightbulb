@@ -172,14 +172,6 @@ const EMITTED_DIMENSION_SETS: Record<string, string[][]> = {
   "nightly_ceo.run": [["outcome"]],
   // routers/webhooks.py user.deleted, when the tenant wipe has a failed step; no dims. W90.
   "clerk.webhook.user_deleted_wipe_failed": [[]],
-  // Spark store delete and retention jobs; W91-W97, bare rollup.
-  "spark_store.forget_start_failed": [[]],
-  "spark_store.forget_stuck": [[]],
-  "spark_store.forget_remaining": [[]],
-  "spark_store.jobs_failed": [[]],
-  "spark_store.retention_late": [[]],
-  "spark_store.forget_disabled": [[]],
-  "spark_store.forget_error_skipped": [[]],
   // core/services/messaging.py count_first_turn_failure; P29 binds the bare rollup.
   "messaging.run.first_turn_failed": [[]],
   // apps/infra/lambda/openrouter-settlement/index.py Store.commit (EMF, own service); W81.
@@ -334,7 +326,7 @@ describe("ObservabilityStack", () => {
     // deleted in Task 10, plus W77-messaging-rpc-errors added in the
     // whole-branch review fix round) + 3 x 7 per-table DDB + remaining
     // AWS-native + 2 cost
-    expect(count).toBeGreaterThanOrEqual(25);
+    expect(count).toBeGreaterThanOrEqual(21);
   });
 
   // GuardDuty + Access Analyzer already exist at account level — not created by CDK.
@@ -855,23 +847,6 @@ describe("ObservabilityStack — prod-only paths", () => {
       Threshold: 1,
       ComparisonOperator: "GreaterThanOrEqualToThreshold",
       AlarmActions: [{ Ref: Match.stringLikeRegexp("^AlertsWarn") }],
-    });
-  });
-
-  test.each(["dev", "prod"] as const)("%s warns on each Spark store job metric over 15 minutes", (env) => {
-    const t = buildTemplate(env);
-    ["forget_start_failed", "forget_stuck", "forget_remaining", "jobs_failed", "retention_late", "forget_disabled", "forget_error_skipped"].forEach((m, i) => {
-      t.hasResourceProperties("AWS::CloudWatch::Alarm", {
-        AlarmName: `lightbulb-${env}-W${91 + i}-spark-store-${m.replace(/_/g, "-")}`,
-        Namespace: "LightbulbAI",
-        MetricName: `spark_store.${m}`,
-        Statistic: "Sum",
-        Period: 900,
-        Threshold: 1,
-        ComparisonOperator: "GreaterThanOrEqualToThreshold",
-        TreatMissingData: "notBreaching",
-        AlarmActions: [{ Ref: Match.stringLikeRegexp("^AlertsWarn") }],
-      });
     });
   });
 

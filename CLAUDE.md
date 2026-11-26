@@ -91,7 +91,7 @@ sweeper (`os_voice_sweeper`, started in `main.py`'s lifespan).
 
 Re-runnable ops tools in `apps/backend/scripts/`:
 
-- `spark_store_ddl.py` and `spark_store_sql/`: create the Spark store's Iceberg tables.
+- `spark_store_check.py`: write, read back and delete a throwaway person's objects on dev (run by a person with dev credentials, not CI).
 - `spark_transcripts.py`: print recent saved transcripts, with each person shown as a hash. Read-only.
 
 ## The infrastructure (`apps/infra`)
@@ -103,8 +103,16 @@ domain is `thelightbulb.company` in both environments.
 The stacks (`apps/infra/lib/stacks/`): network (VPC, ALB; no NAT), dns (hosted zone, wildcard cert), auth (Secrets
 Manager and the KMS key), container (the ECS cluster and its task-event
 trail), service (the backend on ECS Fargate), api (the `api[-dev]` HTTP API on API Gateway, VPC Link V2
-to the ALB), observability (the backend's alarms), database, and **spark-store** (`spark-store-stack.ts`: an S3
-bucket of Iceberg tables, three Athena workgroups, and one Firehose delivery stream per table).
+to the ALB), observability (the backend's alarms), database, and **spark-store** (`spark-store-stack.ts`: one S3
+bucket, with a lifecycle rule that expires `data/` after 90 days).
+
+The Spark store is storage only (`core/observability/spark_store.py`): gzip JSON-lines objects at
+`data/<table>/dt=<YYYY-MM-DD>/<user_id>__<name>.json.gz` (tables `turns` and `task_steps`), written straight to S3
+by voice-turn saves and `POST /os/log`, after a consistent read of the person's `users` row (no row or
+`os_analytics_off`: nothing is written). Deleting a person's data (usage data turned off, account deleted, Clerk
+`user.deleted`) lists and deletes their objects of the last 92 days, now and again two minutes later. No job, queue,
+Firehose, Athena or Glue; analysis is not built yet, and the layout lets tables be defined over it later. Events stay
+in PostHog only.
 
 The database stack holds four DynamoDB tables, named `lightbulb-{env}-{suffix}`: `users` (the Spark account),
 `containers` (voice-session rows, found through `status-index`), `spark-transcripts` and `webhook-event-dedup` (Stripe

@@ -1088,29 +1088,6 @@ def handler(event, context):
       severity: "warn",
     });
 
-    // W91-W97: the Spark store's delete and retention jobs (core/services spark_store; put_metric, no dims).
-    // Any one occurrence in 15 minutes warns.
-    [
-      ["forget-start-failed", "A Spark store delete could not be started"],
-      ["forget-stuck", "A Spark store delete is stuck"],
-      ["forget-remaining", "A Spark store delete finished with rows still remaining"],
-      ["jobs-failed", "A Spark store maintenance job failed"],
-      ["retention-late", "The Spark store 90-day retention run is late"],
-      ["forget-disabled", "Spark store writes are on but deletes are off (misconfiguration)"],
-      ["forget-error-skipped", "A Spark store error object was too large to sweep for a delete"],
-    ].forEach(([name, description], i) => {
-      this.createAlarm({
-        id: `W${91 + i}`,
-        name: `spark-store-${name}`,
-        description,
-        metricName: `spark_store.${name.replace(/-/g, "_")}`,
-        periodMinutes: 15,
-        threshold: 1,
-        comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
-        severity: "warn",
-      });
-    });
-
     // NOTE: AWS Cost Anomaly Detection is intentionally NOT managed here.
     // A Cost Anomaly Detection monitor is an ACCOUNT-GLOBAL resource; a
     // per-environment stack (dev + prod both deploy this stack) cannot own

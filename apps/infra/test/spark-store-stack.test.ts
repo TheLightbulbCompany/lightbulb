@@ -3,30 +3,18 @@ import * as kms from "aws-cdk-lib/aws-kms";
 import { Match, Template } from "aws-cdk-lib/assertions";
 import { SparkStoreStack } from "../lib/stacks/spark-store-stack";
 
-function build(environment: "dev" | "prod", tablesExist = true): Template {
+function build(environment: "dev" | "prod"): Template {
   const app = new cdk.App();
   const env = { account: "877352799272", region: "us-east-1" };
   const key = new kms.Key(new cdk.Stack(app, `Support-${environment}`, { env }), "KmsKey");
-  return Template.fromStack(
-    new SparkStoreStack(app, `Spark-${environment}`, { env, environment, kmsKey: key, tablesExist }),
-  );
+  return Template.fromStack(new SparkStoreStack(app, `Spark-${environment}`, { env, environment, kmsKey: key }));
 }
-
-// Firehose fails the whole stack when it creates a stream for a table that does not exist yet
-// (production run 45707783131), so an environment without its tables gets everything but the streams.
-test("without the tables: no delivery streams, the rest of the stack is there", () => {
-  const t = build("prod", false);
-  t.resourceCountIs("AWS::KinesisFirehose::DeliveryStream", 0);
-  t.resourceCountIs("AWS::Logs::LogStream", 0);
-  t.resourceCountIs("AWS::S3::Bucket", 1);
-  t.resourceCountIs("AWS::Athena::WorkGroup", 3);
-  t.hasResourceProperties("AWS::IAM::Role", { RoleName: "lightbulb-prod-spark-firehose" });
-});
 
 describe.each(["dev", "prod"] as const)("SparkStoreStack %s", (environment) => {
   const t = build(environment);
 
-  test("bucket: public access blocked, KMS, not versioned, four lifecycle rules", () => {
+  test("one bucket: public access blocked, KMS, not versioned", () => {
+    t.resourceCountIs("AWS::S3::Bucket", 1);
     t.hasResourceProperties("AWS::S3::Bucket", {
       BucketName: `lightbulb-${environment}-spark-store`,
       PublicAccessBlockConfiguration: {
@@ -43,119 +31,38 @@ describe.each(["dev", "prod"] as const)("SparkStoreStack %s", (environment) => {
           }),
         ],
       },
-      LifecycleConfiguration: {
-        Rules: [
-          Match.objectLike({ Id: "AbortIncompleteUploads", AbortIncompleteMultipartUpload: { DaysAfterInitiation: 1 } }),
-          Match.objectLike({ Id: "ExpireAthenaResults", Prefix: "athena-results/", ExpirationInDays: 7 }),
-          Match.objectLike({ Id: "ExpireRetentionMarkers", Prefix: "jobs/retention/", ExpirationInDays: 7 }),
-          Match.objectLike({ Id: "ExpireFirehoseErrors", Prefix: "errors/", ExpirationInDays: 3 }),
-        ],
-      },
     });
-    const [bucket] = Object.values(t.findResources("AWS::S3::Bucket"));
+    const [bucket] = Object.values(t.findResources("AWS::S3::Bucket")) as any[];
     expect(bucket.Properties.VersioningConfiguration).toBeUndefined();
     expect(bucket.DeletionPolicy).toBe(environment === "prod" ? "Retain" : "Delete");
   });
 
-  test("workgroups: 1 GB app cap, 20 GB adhoc cap, configuration enforced", () => {
-    for (const [name, cutoff] of [
-      [`lightbulb-${environment}-spark`, 1073741824],
-      [`lightbulb-${environment}-spark-adhoc`, 21474836480],
-    ] as const) {
-      t.hasResourceProperties("AWS::Athena::WorkGroup", {
-        Name: name,
-        WorkGroupConfiguration: Match.objectLike({
-          EnforceWorkGroupConfiguration: true,
-          BytesScannedCutoffPerQuery: cutoff,
-        }),
-      });
-    }
-  });
-
-  test("jobs workgroup: 100 GB cap, results under athena-results/jobs/", () => {
-    t.hasResourceProperties("AWS::Athena::WorkGroup", {
-      Name: `lightbulb-${environment}-spark-jobs`,
-      WorkGroupConfiguration: Match.objectLike({
-        EnforceWorkGroupConfiguration: true,
-        BytesScannedCutoffPerQuery: 107374182400,
-        ResultConfiguration: Match.objectLike({
-          OutputLocation: Match.objectLike({ "Fn::Join": ["", Match.arrayWith(["/athena-results/jobs/"])] }),
-        }),
-      }),
+  test("everything under data/ expires after 90 days", () => {
+    t.hasResourceProperties("AWS::S3::Bucket", {
+      LifecycleConfiguration: {
+        Rules: Match.arrayWith([Match.objectLike({ Prefix: "data/", ExpirationInDays: 90, Status: "Enabled" })]),
+      },
     });
   });
 
-  test("workgroup results are SSE_KMS encrypted", () => {
-    const wgs = Object.values(t.findResources("AWS::Athena::WorkGroup")) as any[];
-    expect(wgs).toHaveLength(3);
-    for (const w of wgs) {
-      expect(w.Properties.WorkGroupConfiguration.ResultConfiguration.EncryptionConfiguration.EncryptionOption).toBe(
-        "SSE_KMS",
-      );
-    }
-  });
-
-  test("no lifecycle rule matches jobs/forget/ or warehouse/", () => {
+  test("the retired prefixes expire after a day and no other rule matches data/", () => {
     const [bucket] = Object.values(t.findResources("AWS::S3::Bucket")) as any[];
-    for (const r of bucket.Properties.LifecycleConfiguration.Rules)
-      for (const key of ["warehouse/x", "jobs/forget/x"]) expect(key.startsWith(r.Prefix ?? "\u0000")).toBe(false);
+    const rules = bucket.Properties.LifecycleConfiguration.Rules as any[];
+    for (const prefix of ["warehouse/", "errors/", "jobs/", "athena-results/"]) {
+      expect(rules).toContainEqual(expect.objectContaining({ Prefix: prefix, ExpirationInDays: 1 }));
+    }
+    const hitsData = rules.filter((r) => r.ExpirationInDays && "data/x".startsWith(r.Prefix ?? ""));
+    expect(hitsData).toHaveLength(1);
   });
 
-  test("firehose KMS use is limited to S3 via kms:ViaService", () => {
-    t.hasResourceProperties("AWS::IAM::Policy", {
-      PolicyDocument: Match.objectLike({
-        Statement: Match.arrayWith([
-          Match.objectLike({
-            Action: ["kms:GenerateDataKey", "kms:Decrypt"],
-            Condition: { StringEquals: { "kms:ViaService": "s3.us-east-1.amazonaws.com" } },
-          }),
-        ]),
-      }),
-    });
-  });
-
-  test("firehose role and log group exist", () => {
-    t.hasResourceProperties("AWS::IAM::Role", { RoleName: `lightbulb-${environment}-spark-firehose` });
-    t.hasResourceProperties("AWS::Logs::LogGroup", { LogGroupName: `/aws/firehose/lightbulb-${environment}-spark` });
-  });
-
-  test.each([
-    ["turns", "turns"],
-    ["steps", "task_steps"],
-    ["events", "events"],
-  ])("delivery stream %s writes append-only to table %s", (suffix, table) => {
-    t.hasResourceProperties("AWS::KinesisFirehose::DeliveryStream", {
-      DeliveryStreamName: `lightbulb-${environment}-spark-${suffix}`,
-      DeliveryStreamType: "DirectPut",
-      DeliveryStreamEncryptionConfigurationInput: { KeyType: "CUSTOMER_MANAGED_CMK", KeyARN: Match.anyValue() },
-      IcebergDestinationConfiguration: Match.objectLike({
-        AppendOnly: true,
-        s3BackupMode: "FailedDataOnly", // CloudFormation spells this one with a lowercase s
-        BufferingHints: { IntervalInSeconds: environment === "prod" ? 900 : 60, SizeInMBs: 128 },
-        RetryOptions: { DurationInSeconds: 3600 },
-        RoleARN: { "Fn::GetAtt": [Match.stringLikeRegexp("^FirehoseRole"), "Arn"] },
-        CatalogConfiguration: { CatalogArn: Match.anyValue() },
-        DestinationTableConfigurationList: [
-          {
-            DestinationDatabaseName: `lightbulb_${environment}_spark`,
-            DestinationTableName: table,
-            S3ErrorOutputPrefix: `errors/${table}/`,
-          },
-        ],
-        S3Configuration: Match.objectLike({ ErrorOutputPrefix: `errors/${table}/` }),
-        CloudWatchLoggingOptions: {
-          Enabled: true,
-          LogGroupName: `/aws/firehose/lightbulb-${environment}-spark`,
-          LogStreamName: table,
-        },
-      }),
-    });
-    t.hasResourceProperties("AWS::Logs::LogStream", { LogStreamName: table });
-  });
-
-  test("exactly three streams, each waiting for the role policy", () => {
-    const streams = Object.values(t.findResources("AWS::KinesisFirehose::DeliveryStream")) as any[];
-    expect(streams).toHaveLength(3);
-    for (const s of streams) expect(s.DependsOn.some((d: string) => d.startsWith("FirehoseRoleDefaultPolicy"))).toBe(true);
+  test("no delivery stream, workgroup or Glue resource", () => {
+    for (const type of [
+      "AWS::KinesisFirehose::DeliveryStream",
+      "AWS::Athena::WorkGroup",
+      "AWS::Glue::Database",
+      "AWS::Glue::Table",
+    ]) {
+      t.resourceCountIs(type, 0);
+    }
   });
 });

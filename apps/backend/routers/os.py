@@ -682,15 +682,14 @@ async def _store_log(user_id: str, install_id: str, body: dict, meta: dict) -> N
     """The slow part of an upload, after the 204: the opt-out check, the rows (scrubbing runs in a thread, off
     the event loop) and the puts. Nothing here reaches the app, and no text is logged."""
     try:
-        if not await spark_store.allowed(user_id):
+        if not await spark_store.allowed(user_id):  # a consistent read, just before writing
             return
         scope = "all" if settings.SPARK_WORKLOG_SCOPE == "all" else "problem"
         now_us = time.time_ns() // 1000
         turns, steps = await run_in_thread(spark_store.log_rows, user_id, install_id, body, scope, now_us, meta)
-        if turns:
-            await spark_store.put_turns(turns)
-        if steps:
-            await spark_store.put_steps(steps)
+        name = uuid.uuid4().hex
+        await spark_store.put("turns", user_id, name, turns)
+        await spark_store.put("task_steps", user_id, name, steps)
     except Exception as e:  # noqa: BLE001
         logger.warning("os log not stored: %s", type(e).__name__)
 

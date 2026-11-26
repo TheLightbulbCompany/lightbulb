@@ -33,6 +33,11 @@ from core.services.ops.growth import _hogql_filter, _monday, _parse_ts, _utc_dat
 WEEKS = 12
 INSTALL_DAYS = 84  # install scan window (12 weeks); event scans use 90d so day-29 follow-ups fit
 OK_TTL_S, FAIL_TTL_S = 300, 60
+# PostHog runs 3 API queries at once per project and makes the rest wait (posthog.com/docs/api/queries, read
+# 2026-11-26). Sent all together, the waiting ones used up their client timeout in PostHog's line and their sections
+# showed "couldn't load" although every query finished. So we send 3 at a time and a query's timeout covers only its
+# own run (PostHog caps a run at 10s). BUDGET_S bounds the whole load, under the load balancer's 60s.
+PARALLEL, QUERY_TIMEOUT_S, BUDGET_S = 3, 15.0, 45.0
 INSTALL_CAP = 5000
 BUCKETS = (("lt5m", 5), ("lt30m", 30), ("lt2h", 120), ("lt24h", 1440))  # minutes: launch -> first human task
 STEP_ORDER = ("sign_in", "brain", "permissions", "say_hi")
@@ -633,7 +638,16 @@ async def compute() -> tuple[dict | None, str, list[dict]]:
         return _cache[1], _cache[2], _cache[3]
 
     queries = build_queries()
-    results = await asyncio.gather(*(posthog_admin.hogql(q) for q in queries.values()))
+    gate, deadline = asyncio.Semaphore(PARALLEL), time.monotonic() + BUDGET_S
+
+    async def run(q: str) -> dict:
+        async with gate:
+            left = deadline - time.monotonic()
+            if left <= 0:  # not sent: it could not finish inside the request
+                return {"columns": [], "results": [], "stubbed": False, "error": "timeout"}
+            return await posthog_admin.hogql(q, timeout_s=min(QUERY_TIMEOUT_S, left))
+
+    results = await asyncio.gather(*(run(q) for q in queries.values()))
     if all(r["stubbed"] for r in results):
         return None, env.UNAVAILABLE, [{"domain": "posthog", "reason": "not configured"}]
     errors = [{"domain": f"posthog:{n}", "reason": r["error"]} for n, r in zip(queries, results) if r["error"]]

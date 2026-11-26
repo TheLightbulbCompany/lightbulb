@@ -1,5 +1,6 @@
 """Spark admin metrics: derive() over canned HogQL rows, compute() with posthog_admin.hogql mocked."""
 
+import asyncio
 import os
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, patch
@@ -234,6 +235,48 @@ async def test_failed_query_degrades_only_its_sections_and_is_cached_briefly():
     assert data["unavailable"] == ["downloads"] and data["wad"]["last7"] == 0  # other sections still there
     assert mock.await_count == calls  # failure served from the 60s cache
     assert sm._cache[0] - __import__("time").monotonic() <= sm.FAIL_TTL_S
+
+
+@pytest.mark.asyncio
+async def test_compute_runs_three_queries_at_a_time():
+    """PostHog runs 3 API queries at once per project and queues the rest: sent all together, the queued ones spent
+    their whole client timeout waiting in line and their sections showed "couldn't load" (seen in prod 2026-11-26)."""
+    running = peak = 0
+
+    async def fake(q, **_):
+        nonlocal running, peak
+        running += 1
+        peak = max(peak, running)
+        await asyncio.sleep(0.01)
+        running -= 1
+        return _ok([])
+
+    with patch("core.services.posthog_admin.hogql", AsyncMock(side_effect=fake)) as mock:
+        _, state, _ = await sm.compute()
+    assert state == "ok" and peak == sm.PARALLEL == 3 and mock.await_count == len(sm.QUERY_KEYS)
+
+
+@pytest.mark.asyncio
+async def test_a_query_that_cannot_start_inside_the_budget_is_a_timeout_and_is_not_sent(monkeypatch):
+    monkeypatch.setattr(sm, "BUDGET_S", 0.0)
+    with patch("core.services.posthog_admin.hogql", AsyncMock(return_value=_ok([]))) as mock:
+        data, state, errors = await sm.compute()
+    assert mock.await_count == 0 and state == "partial"
+    assert {e["reason"] for e in errors} == {"timeout"} and len(errors) == len(sm.QUERY_KEYS)
+    assert set(data["unavailable"]) == {k for keys in sm.QUERY_KEYS.values() for k in keys}
+
+
+@pytest.mark.asyncio
+async def test_each_query_gets_the_time_left_in_the_budget_never_more_than_its_own_timeout(monkeypatch):
+    monkeypatch.setattr(sm, "BUDGET_S", 4.0)
+    with patch("core.services.posthog_admin.hogql", AsyncMock(return_value=_ok([]))) as mock:
+        await sm.compute()
+    assert all(0 < c.kwargs["timeout_s"] <= 4.0 for c in mock.await_args_list)
+    monkeypatch.setattr(sm, "BUDGET_S", 600.0)
+    sm._cache = None
+    with patch("core.services.posthog_admin.hogql", AsyncMock(return_value=_ok([]))) as mock:
+        await sm.compute()
+    assert {c.kwargs["timeout_s"] for c in mock.await_args_list} == {sm.QUERY_TIMEOUT_S}
 
 
 def test_every_query_has_section_keys():

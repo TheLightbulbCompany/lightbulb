@@ -8,6 +8,8 @@ import { DoersChart } from "./charts";
 import { Channels, Cohorts, Funnel, Headline, Money, People, Reliability, Setup, Signals, Sources } from "./sections";
 
 export const dynamic = "force-dynamic";
+// The backend sends PostHog 3 queries at a time, so a load with nothing cached can take up to 45 seconds.
+export const maxDuration = 60;
 
 /** A section whose query failed shows a placeholder; the rest of the page still renders. */
 function Section({ title, keys, off, children }: { title: string; keys: string[]; off: string[]; children: React.ReactNode }) {

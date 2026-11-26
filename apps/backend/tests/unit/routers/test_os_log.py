@@ -337,7 +337,7 @@ async def test_unknown_fields_and_screenshots_are_never_stored(store):
 
 
 async def test_a_bad_step_is_skipped_but_keeps_its_number(store):
-    await post(payload(task=task(steps=[step(), step(kind="thinking"), step()])))
+    await post(payload(task=task(steps=[step(), step(kind="bogus"), step()])))
     assert [r["step_no"] for r in store.steps] == [0, 1, 3]
 
 
@@ -397,14 +397,14 @@ async def test_every_text_field_is_scrubbed(store):
     ("where", "limit", "keep_end"),
     [
         ("typed", 2000, False),
-        ("request", 4000, True),
-        ("answer", 2000, False),
-        ("input", 1000, False),
-        ("result", 1000, False),
+        ("request", 8000, True),
+        ("answer", 8000, False),
+        ("input", 8000, False),
+        ("result", 8000, False),
     ],
 )
 async def test_each_text_is_cut_to_its_limit(store, where, limit, keep_end):
-    big = "START" + "m " * 4500 + "THE ASK"
+    big = "START" + "m " * 9000 + "THE ASK"
     st = step(input=big if where == "input" else "i", result=big if where == "result" else "r")
     t = task(request=big if where == "request" else "q", answer=big if where == "answer" else "a", steps=[st])
     await post(payload(typed=[line(text=big if where == "typed" else "t")], task=t))
@@ -417,6 +417,48 @@ async def test_each_text_is_cut_to_its_limit(store, where, limit, keep_end):
         if keep_end
         else (got.startswith("START") and got.endswith(CUT))
     )
+
+
+async def test_new_kinds_and_the_thread_name_are_stored_with_their_text(store):
+    steps = [
+        step(kind="thinking", tool=None, app=None, ok=None, ms=None, input=None, result="hmm"),
+        step(kind="commentary", result="opening it", thread="Ada"),
+        step(kind="note", tool=None, app=None, ok=None, ms=None, input=None, result="queued"),
+        step(thread="Ada"),
+    ]
+    await post(payload(task=task("failed", steps=steps)))
+    _, think, comm, note, tool_ = store.steps
+    assert [r["kind"] for r in (think, comm, note, tool_)] == ["thinking", "commentary", "note", "tool"]
+    assert think["result"] == "hmm" and "thread" not in think
+    assert comm["thread"] == "Ada" and tool_["thread"] == "Ada"
+    spans_ = [
+        sp for e in store.objects[0] for rs in e["resourceSpans"] for ss in rs["scopeSpans"] for sp in ss["spans"]
+    ]
+    got = {sp["name"]: {a["key"]: a["value"] for a in sp["attributes"]} for sp in spans_}
+    assert len(spans_) == 5
+    assert got["chat thinking"]["gen_ai.output.messages"]["arrayValue"]
+    assert got["chat commentary"]["spark.thread"] == {"stringValue": "Ada"}
+
+
+async def test_new_kinds_carry_no_text_or_thread_name_when_the_task_is_category_only(store):
+    steps = [step(kind="thinking", result="private", thread="Ada")]
+    await post(payload(task=task("done", steps=steps)))
+    assert store.steps[1]["result"] is None and "thread" not in store.steps[1]
+
+
+async def test_the_brains_timings_are_stored_on_the_task_row_only_when_sent(store):
+    await post(payload(task=task(firstThinkingMs=250, firstActionMs=900, firstCommentaryMs=-5)))
+    head = store.steps[0]
+    assert head["first_thinking_ms"] == 250 and head["first_action_ms"] == 900 and "first_commentary_ms" not in head
+    assert "first_thinking_ms" not in store.steps[1]
+
+
+async def test_an_old_app_body_still_stores_the_same_row_shape(store):
+    await post(payload(task=task("failed", steps=[step()])))
+    assert set(store.steps[1]) == {
+        "row_id", "ts", "user_id", "task_id", "session_id", "source", "automation_id", "step_no", "kind", "tool",
+        "app", "input", "result", "ok", "ms", "status", "text_kept", "platform", "app_version",
+    }  # fmt: skip
 
 
 async def test_over_200_steps_keep_the_first_150_and_last_50(store):

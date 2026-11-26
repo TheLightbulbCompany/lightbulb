@@ -3,7 +3,8 @@
 Pure functions, no I/O. `spark_store.log_rows` (and the voice session's end) produce the rows, already scrubbed and
 cut; this module only changes their shape. Every span also carries `spark.session_id`, the stable join key whatever
 the conventions' names do next. One uploaded task is one trace: the root span is the agent invocation, each
-step a child tool-execution span. A conversation turn is a span in the trace of its task, else of its session.
+step a child span: `execute_tool` for a tool, `chat {kind}` (the text as an assistant message) for thinking,
+commentary and note. A conversation turn is a span in the trace of its task, else of its session.
 
 Read on 2026-11-26 (all "Development" status, so names may still change):
 - GenAI tool spans: https://github.com/open-telemetry/semantic-conventions-genai/blob/main/docs/gen-ai/execute-tool.md
@@ -31,6 +32,7 @@ import hashlib
 INTERNAL, CLIENT = 1, 3  # SpanKind
 UNSET, OK, ERROR = 0, 1, 2  # Status.code
 SCOPE = {"name": "lightbulb.spark.backend"}
+_SAID = ("thinking", "commentary", "note")  # steps that are the brain's or the engine's words, not a tool call
 _OS = {"mac": "darwin", "windows": "windows"}
 
 
@@ -97,6 +99,9 @@ def _task_span(r: dict, trace: str) -> dict:
         spark__text_kept=r["text_kept"],
         spark__task__status=status,
         spark__duration_ms=r["ms"],
+        spark__first_thinking_ms=r.get("first_thinking_ms"),
+        spark__first_commentary_ms=r.get("first_commentary_ms"),
+        spark__first_action_ms=r.get("first_action_ms"),
     )
     s["status"] = {"code": {"done": OK, "failed": ERROR}.get(status, UNSET)}
     return s
@@ -104,21 +109,23 @@ def _task_span(r: dict, trace: str) -> dict:
 
 def _step_span(r: dict, trace: str) -> dict:
     tool = r["tool"] or r["kind"]  # a step with no tool (a note, a screenshot) is named by its kind
+    said = r["kind"] in _SAID  # the brain's own words: an assistant message, not a tool call
     s = _span(
         trace,
         _id(8, "step", r["user_id"], r["task_id"], str(r["step_no"])),
         _id(8, "task", r["user_id"], r["task_id"]),
-        f"execute_tool {tool}",
+        f"chat {r['kind']}" if said else f"execute_tool {tool}",
         INTERNAL,
         r["ts"],
         r["ms"],
     )
     s["attributes"] = _attrs(
-        gen_ai__operation__name="execute_tool",
-        gen_ai__tool__name=tool,
+        gen_ai__operation__name="chat" if said else "execute_tool",
+        gen_ai__tool__name=None if said else tool,
         gen_ai__conversation__id=r["session_id"],
+        gen_ai__output__messages=_message("assistant", r["result"]) if said and r["result"] is not None else None,
         gen_ai__tool__call__arguments=r["input"],
-        gen_ai__tool__call__result=r["result"],
+        gen_ai__tool__call__result=None if said else r["result"],
         error__type="tool_failed" if r["ok"] is False else None,
         spark__row_id=r["row_id"],
         spark__session_id=r["session_id"],
@@ -130,6 +137,7 @@ def _step_span(r: dict, trace: str) -> dict:
         spark__text_kept=r["text_kept"],
         spark__tool=r["tool"],
         spark__app=r["app"],
+        spark__thread=r.get("thread"),
         spark__ok=r["ok"],
         spark__duration_ms=r["ms"],
     )

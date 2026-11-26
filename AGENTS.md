@@ -114,7 +114,7 @@ of the person's `users` row (no row or `os_analytics_off`: nothing is written). 
 seconds old is dropped. Deleting a person's data lists and deletes their objects: for an account deletion (Clerk
 `user.deleted` or `DELETE /os/account`) the first sweep is awaited and a failure fails the request, with a second
 sweep two minutes later in the background; for usage data turned off both run in the background, skipped while one is
-running or after a success within the hour (the app's next `analytics:false` retries a failure). The store uses its
+running (its second sweep covers a later opt-out; the app's next `analytics:false` retries a failure). The store uses its
 own two-thread pool, so S3 never shares threads with DynamoDB. One alarm, W91, fires on `spark_store.forget_failed`.
 No job, queue, Firehose, Athena or Glue; analysis is not built yet. Events stay in PostHog only.
 

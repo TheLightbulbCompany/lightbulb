@@ -28,7 +28,6 @@ def on(monkeypatch):
     monkeypatch.setattr(spark_store, "_s3", None)
     monkeypatch.setattr(spark_store, "_pending", 0)
     monkeypatch.setattr(spark_store, "_sweeping", set())
-    monkeypatch.setattr(spark_store, "_swept", {})
 
 
 @pytest.fixture
@@ -231,7 +230,7 @@ async def test_a_failed_background_delete_is_counted_not_raised(s3, monkeypatch)
     spark_store.forget("user_1")
     await settle()
     assert seen == ["spark_store.forget_failed"] * 2  # both sweeps
-    assert "user_1" not in spark_store._sweeping and "user_1" not in spark_store._swept
+    assert "user_1" not in spark_store._sweeping
 
 
 async def _no(_):
@@ -284,38 +283,46 @@ async def test_account_deletion_always_runs_the_second_sweep(s3, monkeypatch):
     assert sweeps == ["user_1", "user_1"]
 
 
-async def test_a_second_forget_while_one_runs_or_within_the_hour_does_not_sweep_again(s3, monkeypatch):
+async def test_a_second_forget_while_one_runs_does_not_start_another(s3, monkeypatch):
     sweeps = count_sweeps(monkeypatch)
     monkeypatch.setattr(spark_store, "allowed", _no)
     spark_store.forget("user_1")
-    spark_store.forget("user_1")  # one is running
+    spark_store.forget("user_1")
     await settle()
     assert sweeps == ["user_1", "user_1"]
-    spark_store.forget("user_1")  # one succeeded just now
-    await settle()
-    assert len(sweeps) == 2
-    spark_store._swept["user_1"] -= spark_store.DEDUPE_S + 1
-    spark_store.forget("user_1")
+    spark_store.forget("user_1")  # finished: a new one starts
     await settle()
     assert len(sweeps) == 4
 
 
-async def test_account_deletion_bypasses_the_dedupe(s3, monkeypatch):
+async def test_account_deletion_sweeps_even_while_an_opt_out_delete_runs(s3, monkeypatch):
     sweeps = count_sweeps(monkeypatch)
     monkeypatch.setattr(spark_store, "allowed", _no)
     spark_store.forget("user_1")
-    await settle()
     await spark_store.forget_account("user_1")
     await settle()
     assert len(sweeps) == 4
 
 
-async def test_the_swept_map_stays_bounded(s3, monkeypatch):
-    monkeypatch.setattr(spark_store, "MAX_TRACKED", 3)
-    for i in range(10):
-        await spark_store.forget_account(f"user_{i}")
+async def test_opt_out_in_write_out_inside_two_minutes_is_cleaned_by_the_pending_second_sweep(s3, monkeypatch):
+    state = {"allowed": False}
+
+    async def allowed(_):
+        return state["allowed"]
+
+    async def during_the_wait(_):
+        # the person opted in, a write landed, and they opted out again: the second `forget` is skipped
+        state["allowed"] = True
+        await spark_store.put("turns", "user_1", "between", [row()], fresh())
+        state["allowed"] = False
+        spark_store.forget("user_1")
+
+    monkeypatch.setattr(spark_store, "allowed", allowed)
+    monkeypatch.setattr(spark_store.asyncio, "sleep", during_the_wait)
+    seed(s3, "user_1")
+    spark_store.forget("user_1")
     await settle()
-    assert len(spark_store._swept) <= 4
+    assert keys(s3) == []
 
 
 async def test_forget_with_an_invalid_id_does_nothing(s3, monkeypatch):

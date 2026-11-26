@@ -30,8 +30,6 @@ SCRUB_MAX = 16_000  # scrub cuts its input here before any regex runs
 TABLES = ("turns", "task_steps")
 MAX_PENDING = 200  # writes queued or running; more are dropped and counted
 STALE_S = 60  # a write whose opt-out check is older than this when it runs is dropped
-DEDUPE_S = 3600  # no second background delete for a person within this of a successful one
-MAX_TRACKED = 10_000
 SECOND_SWEEP_S = 120  # `forget` runs again after this, to catch a write that was in flight
 _NAME = re.compile(r"[A-Za-z0-9_-]{1,128}")
 
@@ -268,7 +266,6 @@ async def allowed(user_id: str) -> bool:
 _POOL = ThreadPoolExecutor(max_workers=2, thread_name_prefix="spark-store")
 _pending = 0  # writes queued or running
 _sweeping: set[str] = set()  # people with a background delete in progress
-_swept: dict[str, float] = {}  # person -> monotonic time of their last successful sweep
 
 
 def store_bucket() -> str:
@@ -350,9 +347,6 @@ def _sweep(user_id: str) -> None:
 
 async def _run(user_id: str) -> None:
     await asyncio.get_running_loop().run_in_executor(_POOL, _sweep, user_id)
-    if len(_swept) > MAX_TRACKED:
-        _swept.clear()
-    _swept[user_id] = time.monotonic()
 
 
 async def _run_counted(user_id: str) -> None:
@@ -383,9 +377,9 @@ def _gate(user_id: str) -> bool:
 
 def forget(user_id: str) -> None:
     """The person turned usage data off: delete their objects (both tables) in the background,
-    now and again two minutes later. Skipped while one is running for them or one succeeded in the last hour. Never
+    now and again two minutes later. Skipped while one is running for them: its second sweep covers a later opt-out, because it re-checks `allowed` first. Never
     raises; a failure is counted (`spark_store.forget_failed`) and the app's next `analytics:false` retries it."""
-    if not _gate(user_id) or user_id in _sweeping or time.monotonic() - _swept.get(user_id, -DEDUPE_S) < DEDUPE_S:
+    if not _gate(user_id) or user_id in _sweeping:
         return
     from core.voice.os_voice import spawn  # here: os_voice imports this module
 
@@ -395,7 +389,7 @@ def forget(user_id: str) -> None:
 
 async def forget_account(user_id: str) -> None:
     """The person's account is being deleted: the first sweep is awaited and its failure raises (the caller keeps
-    the row and the request is retried); the second runs in the background. Never skipped as a duplicate."""
+    the row and the request is retried); the second runs in the background. Never skipped for one in progress."""
     if not _gate(user_id):
         return
     from core.voice.os_voice import spawn

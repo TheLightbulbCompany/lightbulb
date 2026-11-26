@@ -37,4 +37,4 @@ jobs:
       - run: pnpm run build
         env:
           NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: pk_test_dXAtbW90aC01NS5jbGVyay5hY2NvdW50cy5kZXYk
-          NEXT_PUBLIC_API_URL: https://api-dev.thelightbulb.company/api/v1
+          API_ORIGIN: https://api-dev.thelightbulb.company

@@ -1,6 +1,6 @@
 import "server-only";
 
-import { apiUrl } from "./url";
+import { apiOrigin } from "@/lib/apiOrigin";
 
 // Response shapes mirror apps/backend/routers/admin.py (GET /admin/me) and routers/ops.py (GET /ops/spark).
 
@@ -25,7 +25,7 @@ export interface OpsEnvelope<T> {
  */
 async function adminFetch<T>(token: string, path: string): Promise<T | null> {
   try {
-    const res = await fetch(`${apiUrl().replace(/\/+$/, "")}${path}`, {
+    const res = await fetch(`${apiOrigin()}/api/v1${path}`, {
       method: "GET",
       cache: "no-store",
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },

@@ -41,7 +41,7 @@ async function page() {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  vi.stubEnv("NEXT_PUBLIC_API_URL", "https://api-dev.thelightbulb.company/api/v1");
+  vi.stubEnv("API_ORIGIN", "https://api-dev.thelightbulb.company");
   // jsdom has no canvas: the art renders its box and canvas and draws nothing.
   vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(null);
   stub(302);

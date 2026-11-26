@@ -1,37 +1,40 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import nextConfig from "../../next.config";
+async function loadConfig() {
+  vi.resetModules();
+  return (await import("../../next.config")).default;
+}
 
-describe("local development API proxy", () => {
+async function afterFiles() {
+  const rewrites = await (await loadConfig()).rewrites?.();
+  return !Array.isArray(rewrites) ? rewrites?.afterFiles : undefined;
+}
+
+describe("same-origin API rewrite", () => {
   afterEach(() => {
     vi.unstubAllEnvs();
   });
 
-  it("only adds the dev API rewrite behind the explicit development flag", async () => {
-    vi.stubEnv("NODE_ENV", "development");
-    vi.stubEnv("LOCAL_DEV_API_PROXY", "1");
-    const enabled = await nextConfig.rewrites?.();
-    const enabledAfterFiles = !Array.isArray(enabled) ? enabled?.afterFiles : undefined;
-    expect(enabledAfterFiles).toContainEqual({
+  it("proxies only /api/v1 to API_ORIGIN", async () => {
+    vi.stubEnv("API_ORIGIN", "https://api.thelightbulb.company/");
+    expect(await afterFiles()).toContainEqual({
       source: "/api/v1/:path*",
-      destination: "https://api-dev.thelightbulb.company/api/v1/:path*",
+      destination: "https://api.thelightbulb.company/api/v1/:path*",
     });
+  });
 
-    vi.stubEnv("LOCAL_DEV_API_PROXY", "");
-    const disabled = await nextConfig.rewrites?.();
-    const disabledAfterFiles = !Array.isArray(disabled) ? disabled?.afterFiles : undefined;
-    expect(disabledAfterFiles).not.toContainEqual({
+  it("defaults to the dev API off Vercel", async () => {
+    vi.stubEnv("API_ORIGIN", "");
+    vi.stubEnv("VERCEL", "");
+    expect(await afterFiles()).toContainEqual({
       source: "/api/v1/:path*",
       destination: "https://api-dev.thelightbulb.company/api/v1/:path*",
     });
+  });
 
-    vi.stubEnv("LOCAL_DEV_API_PROXY", "1");
-    vi.stubEnv("NODE_ENV", "production");
-    const production = await nextConfig.rewrites?.();
-    const productionAfterFiles = !Array.isArray(production) ? production?.afterFiles : undefined;
-    expect(productionAfterFiles).not.toContainEqual({
-      source: "/api/v1/:path*",
-      destination: "https://api-dev.thelightbulb.company/api/v1/:path*",
-    });
+  it("fails the build on Vercel when API_ORIGIN is unset", async () => {
+    vi.stubEnv("API_ORIGIN", "");
+    vi.stubEnv("VERCEL", "1");
+    await expect(loadConfig()).rejects.toThrow("API_ORIGIN");
   });
 });

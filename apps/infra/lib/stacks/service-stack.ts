@@ -240,8 +240,9 @@ export class ServiceStack extends cdk.Stack {
           : (process.env.STRIPE_SPARK_PRICE_ID_DEV ?? ""),
       // Save Spark voice transcripts (text only, 90 days) in every env; "0" turns it off.
       SPARK_TRANSCRIPTS_ENABLED: "1",
-      // Spark data store (plain S3 objects). "0" in prod until the store is verified there.
-      SPARK_STORE_ENABLED: env === "prod" ? "0" : "1",
+      // Spark data store (plain S3 objects): on in both environments. Setting it to "0" stops every write
+      // and makes GET /os/config answer worklogScope "off", so apps upload nothing.
+      SPARK_STORE_ENABLED: "1",
       // Work-log upload scope. "all": every task's steps are kept with their text (owner, 25 Nov 2026:
       // keep everything Spark does with voice and brain, for analysis). "problem" would keep text only
       // for failed or cancelled tasks. Apps see "off" while SPARK_STORE_ENABLED is off.

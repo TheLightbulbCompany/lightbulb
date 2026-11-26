@@ -92,7 +92,7 @@ describe("ServiceStack — the Spark backend", () => {
 
   test.each([
     ["dev", SERVICE_TEMPLATE_DEV, "1"],
-    ["prod", SERVICE_TEMPLATE_PROD, "0"],
+    ["prod", SERVICE_TEMPLATE_PROD, "1"],
   ] as const)("%s backend sets SPARK_STORE_ENABLED=%s and no SPARK_STORE_DELETES", (_env, template, value) => {
     const env = backendContainer(template).Environment;
     expect(env).toContainEqual({ Name: "SPARK_STORE_ENABLED", Value: value });

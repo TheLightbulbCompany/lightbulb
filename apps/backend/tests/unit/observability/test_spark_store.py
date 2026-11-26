@@ -1,12 +1,13 @@
-"""Spark data store: plain gzip JSON-lines objects in S3 (moto, no real AWS) and the opt-out read (moto DynamoDB)."""
+"""Spark data store: OTLP trace objects (gzip JSON lines) in S3 (moto, no real AWS) and the opt-out read (moto DynamoDB)."""
 
 import asyncio
 import gzip
 import json
 import logging
+import re
 import threading
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import boto3
 import pytest
@@ -49,43 +50,43 @@ def lines(s3, key):
 
 
 def row(i=0, **kw):
-    return {"row_id": f"r{i}", "ts": NOW_US, "user_id": "user_a", "text": f"t{i}"} | kw
+    """One OTLP trace export (the store treats it as opaque JSON)."""
+    return {"resourceSpans": [{"i": i}]} | kw
+
+
+def day(n=0):
+    """The UTC day `n` days from today, as the store writes it."""
+    return (datetime.now(UTC).date() + timedelta(days=n)).isoformat()
 
 
 def fresh():
     return time.monotonic()
 
 
-async def test_a_turn_is_one_gzipped_json_line_under_the_person_and_day(s3):
-    await spark_store.put("turns", "user_a", "vs_1_1000_user", [row()], fresh())
+async def test_an_object_is_gzipped_jsonl_under_the_person_then_the_day(s3):
+    await spark_store.put("user_a", [row(0), row(1)], fresh())
     (key,) = keys(s3)
-    today = datetime.now(UTC).date().isoformat()
-    assert key == f"data/turns/user_a/{today}/vs_1_1000_user.json.gz"
-    assert lines(s3, key) == [{"row_id": "r0", "ts": "2024-11-25 02:00:00.123", "user_id": "user_a", "text": "t0"}]
+    assert re.fullmatch(rf"data/traces/user_a/{day()}/[0-9a-f]{{32}}\.jsonl\.gz", key)
+    assert lines(s3, key) == [row(0), row(1)]
 
 
-async def test_many_rows_are_many_lines_of_one_object(s3):
-    await spark_store.put("task_steps", "user_a", "abc", [row(0), row(1)], fresh())
-    (key,) = keys(s3)
-    assert key.startswith("data/task_steps/user_a/") and key.endswith("/abc.json.gz")
-    assert [x["row_id"] for x in lines(s3, key)] == ["r0", "r1"]
-    assert all(isinstance(x["ts"], str) for x in lines(s3, key))
+async def test_every_object_has_its_own_name(s3):
+    await spark_store.put("user_a", [row()], fresh())
+    await spark_store.put("user_a", [row()], fresh())
+    assert len(keys(s3)) == 2
 
 
 @pytest.mark.parametrize(("flag", "env"), [(False, "dev"), (True, "local"), (True, ""), (True, "staging")])
 async def test_off_writes_nothing(s3, monkeypatch, flag, env):
     monkeypatch.setattr(settings, "SPARK_STORE_ENABLED", flag)
     monkeypatch.setattr(settings, "ENVIRONMENT", env)
-    await spark_store.put("turns", "user_a", "n", [row()], fresh())
+    await spark_store.put("user_a", [row()], fresh())
     assert keys(s3) == []
 
 
-@pytest.mark.parametrize(
-    ("user", "name"),
-    [("a/b", "n"), ("a.b", "n"), ("..", "n"), ("", "n"), ("user_a", "a b"), ("user_a", "../x"), ("user_a", "x" * 129)],
-)
-async def test_a_bad_user_id_or_name_writes_nothing(s3, user, name):
-    await spark_store.put("turns", user, name, [row()], fresh())
+@pytest.mark.parametrize("user", ["a/b", "a.b", "..", "", "user a", "../x", "x" * 129])
+async def test_a_bad_user_id_writes_nothing(s3, user):
+    await spark_store.put(user, [row()], fresh())
     assert keys(s3) == []
 
 
@@ -98,16 +99,16 @@ async def test_a_failing_put_never_raises_and_is_counted_without_text(monkeypatc
     monkeypatch.setattr(spark_store, "_s3", Down())
     monkeypatch.setattr(spark_store, "put_metric", lambda name, *a, **kw: seen.append(name))
     with caplog.at_level(logging.WARNING):
-        await spark_store.put("turns", "user_a", "n", [row()], fresh())
+        await spark_store.put("user_a", [row()], fresh())
     assert seen == ["spark_store.put_failed"] and "secret" not in caplog.text
 
 
 async def test_a_write_whose_check_is_over_a_minute_old_is_dropped(s3, monkeypatch):
     seen = []
     monkeypatch.setattr(spark_store, "put_metric", lambda name, *a, **kw: seen.append(name))
-    await spark_store.put("turns", "user_a", "n", [row()], fresh() - 61)
+    await spark_store.put("user_a", [row()], fresh() - 61)
     assert keys(s3) == [] and seen == ["spark_store.put_dropped"]
-    await spark_store.put("turns", "user_a", "n", [row()], fresh() - 30)
+    await spark_store.put("user_a", [row()], fresh() - 30)
     assert len(keys(s3)) == 1
 
 
@@ -115,10 +116,10 @@ async def test_the_201st_pending_write_is_dropped_and_the_count_does_not_leak(s3
     seen = []
     monkeypatch.setattr(spark_store, "put_metric", lambda name, *a, **kw: seen.append(name))
     monkeypatch.setattr(spark_store, "_pending", 200)
-    await spark_store.put("turns", "user_a", "n", [row()], fresh())
+    await spark_store.put("user_a", [row()], fresh())
     assert keys(s3) == [] and seen == ["spark_store.put_dropped"] and spark_store._pending == 200
     monkeypatch.setattr(spark_store, "_pending", 199)
-    await spark_store.put("turns", "user_a", "n", [row()], fresh())
+    await spark_store.put("user_a", [row()], fresh())
     assert len(keys(s3)) == 1 and spark_store._pending == 199
 
 
@@ -134,7 +135,7 @@ async def test_store_calls_run_on_the_stores_own_threads(monkeypatch):
             return type("P", (), {"paginate": lambda self, **kw: []})()
 
     monkeypatch.setattr(spark_store, "_s3", Spy())
-    await spark_store.put("turns", "user_a", "n", [row()], fresh())
+    await spark_store.put("user_a", [row()], fresh())
     await spark_store.forget_account("user_a")
     assert names and all(n.startswith("spark-store") for n in names)
     assert not any(n.startswith("asyncio") for n in names)
@@ -143,8 +144,12 @@ async def test_store_calls_run_on_the_stores_own_threads(monkeypatch):
 # --- forget --------------------------------------------------------------------------------------------
 
 
-def seed(s3, user, table="turns", day="2026-11-01", name="n"):
-    s3.put_object(Bucket=BUCKET, Key=f"data/{table}/{user}/{day}/{name}.json.gz", Body=b"x")
+def seed(s3, user, d=None, name="n"):
+    s3.put_object(Bucket=BUCKET, Key=f"data/traces/{user}/{d or day()}/{name}.jsonl.gz", Body=b"x")
+
+
+def seed_old(s3, user, table="turns", d="2026-11-01", name="n"):
+    s3.put_object(Bucket=BUCKET, Key=f"data/{table}/{user}/{d}/{name}.json.gz", Body=b"x")
 
 
 async def settle():
@@ -180,25 +185,43 @@ class Flaky:
         return getattr(self.real, name)
 
 
-async def test_forget_removes_the_persons_objects_in_every_table_across_date_folders(s3):
-    for table in ("turns", "task_steps", "traces"):
-        for day in ("2026-11-01", "2026-09-01", "2026-06-01"):
-            seed(s3, "user_1", table, day, "a")
-            seed(s3, "user_1", table, day, "b")
+async def test_forget_removes_every_object_of_the_person_whatever_its_age_and_the_old_prefixes(s3):
+    for d in (day(-400), day(-91), day(-1), day(0), day(1)):  # also days past the lifecycle rule, not yet expired
+        seed(s3, "user_1", d, "a")
+        seed(s3, "user_1", d, "b")
+    for table in ("turns", "task_steps"):
+        seed_old(s3, "user_1", table, "2026-11-01", "a")
+        seed_old(s3, "user_1", table, "2026-09-01", "b")
     seed(s3, "user_2")
+    seed_old(s3, "user_2")
     spark_store.forget("user_1")
     await settle()
-    assert keys(s3) == ["data/turns/user_2/2026-11-01/n.json.gz"]
+    assert keys(s3) == [f"data/traces/user_2/{day()}/n.jsonl.gz", "data/turns/user_2/2026-11-01/n.json.gz"]
+
+
+async def test_the_sweep_is_one_listing_per_prefix(s3, monkeypatch):
+    seen = []
+
+    class Spy(Flaky):
+        def get_paginator(self, name):
+            real = super().get_paginator(name)
+            return type("P", (), {"paginate": lambda self, **kw: (seen.append(kw["Prefix"]), real.paginate(**kw))[1]})()
+
+    monkeypatch.setattr(spark_store, "_s3", Spy(s3))
+    await spark_store.forget_account("user_1")
+    # the layout, then the one before traces until it has expired
+    assert seen == ["data/traces/user_1/", "data/turns/user_1/", "data/task_steps/user_1/"]
 
 
 @pytest.mark.parametrize(("gone", "kept"), [("user_1", "user_12"), ("user_a", "user_a_"), ("user_a_", "user_a")])
 async def test_forget_leaves_a_person_whose_id_starts_the_same(s3, gone, kept):
-    for table in ("turns", "traces"):
-        seed(s3, gone, table)
-        seed(s3, kept, table)
+    seed(s3, gone)
+    seed(s3, kept)
+    seed_old(s3, gone)
+    seed_old(s3, kept)
     spark_store.forget(gone)
     await settle()
-    assert keys(s3) == [f"data/traces/{kept}/2026-11-01/n.json.gz", f"data/turns/{kept}/2026-11-01/n.json.gz"]
+    assert keys(s3) == [f"data/traces/{kept}/{day()}/n.jsonl.gz", f"data/turns/{kept}/2026-11-01/n.json.gz"]
 
 
 async def test_forget_pages_past_a_thousand_objects(s3):
@@ -206,21 +229,22 @@ async def test_forget_pages_past_a_thousand_objects(s3):
         seed(s3, "user_1", name=f"n{i}")
     seed(s3, "user_2")
     await spark_store.forget_account("user_1")
-    assert keys(s3) == ["data/turns/user_2/2026-11-01/n.json.gz"]
+    assert keys(s3) == [f"data/traces/user_2/{day()}/n.jsonl.gz"]
 
 
 async def test_one_failing_listing_or_delete_does_not_stop_the_rest_and_the_failure_is_reported(s3, monkeypatch):
-    for table in ("turns", "task_steps", "traces"):
-        seed(s3, "user_1", table)
-    monkeypatch.setattr(spark_store, "_s3", Flaky(s3, list_fails=("data/turns/",)))
+    seed(s3, "user_1")
+    seed_old(s3, "user_1", "turns")
+    seed_old(s3, "user_1", "task_steps")
+    monkeypatch.setattr(spark_store, "_s3", Flaky(s3, list_fails=("data/traces/",)))
     with pytest.raises(RuntimeError):
         await spark_store.forget_account("user_1")
-    assert keys(s3) == ["data/turns/user_1/2026-11-01/n.json.gz"]  # task_steps and traces went
-    seed(s3, "user_1", "task_steps")
+    assert keys(s3) == [f"data/traces/user_1/{day()}/n.jsonl.gz"]  # the old prefixes went
+    seed_old(s3, "user_1", "task_steps")
     monkeypatch.setattr(spark_store, "_s3", Flaky(s3, delete_errors=True))
     with pytest.raises(RuntimeError):
         await spark_store.forget_account("user_1")
-    assert keys(s3) == ["data/task_steps/user_1/2026-11-01/n.json.gz"]  # turns went, task_steps was refused
+    assert keys(s3) == ["data/task_steps/user_1/2026-11-01/n.json.gz"]  # all else went; this one was refused
 
 
 async def test_a_failed_background_delete_is_counted_not_raised(s3, monkeypatch):
@@ -314,7 +338,7 @@ async def test_opt_out_in_write_out_inside_two_minutes_is_cleaned_by_the_pending
     async def during_the_wait(_):
         # the person opted in, a write landed, and they opted out again: the second `forget` is skipped
         state["allowed"] = True
-        await spark_store.put("turns", "user_1", "between", [row()], fresh())
+        await spark_store.put("user_1", [row()], fresh())
         state["allowed"] = False
         spark_store.forget("user_1")
 

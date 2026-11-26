@@ -1,8 +1,11 @@
-"""Spark data store, write path: plain gzip JSON-lines objects in S3.
+"""Spark data store, write path: OpenTelemetry traces as gzip JSON-lines objects in S3.
 
-One small object per write, at `data/<table>/<user_id>/<UTC day>/<name>.json.gz`. Nothing here ever raises into
-a caller and nothing blocks the event loop. A no-op unless `SPARK_STORE_ENABLED` and the environment is dev or prod,
-so local runs and CI never call AWS. Expiry is an S3 lifecycle rule (CDK); deleting one person's data is `forget`.
+One object per write (an uploaded task, or a finished voice session), at
+`data/traces/<user_id>/<UTC day>/<unique>.jsonl.gz`, each line an OTLP/JSON trace export (`spark_traces`). The `/` after
+the id isolates one person (an id never contains `/`), so deleting a person is one listing. Nothing here
+ever raises into a caller and nothing blocks the event loop. A no-op unless `SPARK_STORE_ENABLED` and the environment
+is dev or prod, so local runs and CI never call AWS. Expiry is an S3 lifecycle rule (CDK); deleting one person's data
+is `forget`.
 """
 
 from __future__ import annotations
@@ -15,7 +18,7 @@ import re
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
 import boto3
 from botocore.config import Config
@@ -27,9 +30,10 @@ from core.observability.metrics import put_metric
 logger = logging.getLogger(__name__)
 
 SCRUB_MAX = 16_000  # scrub cuts its input here before any regex runs
-# `traces` is the layout the next release writes (`data/traces/<user_id>/<day>/<name>`); sweeping it first means a
-# delete handled by this release also covers objects a newer task writes during a rolling deploy.
-TABLES = ("turns", "task_steps", "traces")
+# One listing per prefix deletes a person: `data/traces/<user_id>/` is the layout; the other two are the layout before
+# traces (written until 2026-11-26), which expires 90 days later.
+# TODO(remove after 2027-02-24): drop "data/turns/" and "data/task_steps/" from PREFIXES.
+PREFIXES = ("data/traces/", "data/turns/", "data/task_steps/")  # each followed by `<user_id>/`
 MAX_PENDING = 200  # writes queued or running; more are dropped and counted
 STALE_S = 60  # a write whose opt-out check is older than this when it runs is dropped
 SECOND_SWEEP_S = 120  # `forget` runs again after this, to catch a write that was in flight
@@ -289,38 +293,32 @@ def _valid(user_id: str) -> bool:
     return bool(_NAME.fullmatch(user_id))  # no `/` or `.`: the `/` after the id in a prefix isolates people
 
 
-def _utc_string(us: int) -> str:
-    """Epoch microseconds as a UTC `YYYY-MM-DD HH:MM:SS.mmm` string."""
-    return (datetime(1970, 1, 1) + timedelta(microseconds=us)).isoformat(sep=" ", timespec="milliseconds")
-
-
-def _write(table: str, user_id: str, name: str, rows: list[dict], checked_at: float) -> bool:
+def _write(user_id: str, exports: list[dict], checked_at: float) -> bool:
     """Runs in the store's thread. False: the opt-out check is too old by now, nothing was written."""
-    if not (_valid(user_id) and _NAME.fullmatch(name)):
-        raise ValueError("bad object name")
+    if not _valid(user_id):
+        raise ValueError("bad user id")
     if time.monotonic() - checked_at > STALE_S:
         return False
-    lines = "".join(json.dumps(r | {"ts": _utc_string(r["ts"])}, separators=(",", ":")) + "\n" for r in rows)
-    # Organized by person so that deleting one person's data is a single listing; analysis, when built, reads these
-    # files as raw input. The date folder is the server's UTC day.
-    key = f"data/{table}/{user_id}/{datetime.now(UTC):%Y-%m-%d}/{name}.json.gz"
-    _client().put_object(Bucket=store_bucket(), Key=key, Body=gzip.compress(lines.encode()))
+    body = "".join(json.dumps(e, separators=(",", ":")) + "\n" for e in exports)
+    # Person first, so deleting one person is one listing. The date folder is the server's UTC day.
+    key = f"data/traces/{user_id}/{datetime.now(UTC):%Y-%m-%d}/{uuid.uuid4().hex}.jsonl.gz"
+    _client().put_object(Bucket=store_bucket(), Key=key, Body=gzip.compress(body.encode()))
     return True
 
 
-async def put(table: str, user_id: str, name: str, rows: list[dict], checked_at: float) -> None:
-    """Write `rows` as one object. `checked_at` is the `time.monotonic()` of the opt-out check that allows it; a
-    write that waits more than a minute is dropped. Never raises; failures and drops are counted, no text is logged.
-    # ponytail: one small object per turn; batch per session if listing them ever gets slow."""
+async def put(user_id: str, exports: list[dict], checked_at: float) -> None:
+    """Write OTLP trace exports (`spark_traces.to_otlp`) as one object. `checked_at` is the `time.monotonic()` of the
+    opt-out check that allows it; a write that waits more than a minute is dropped. Never raises; failures and drops
+    are counted, no text is logged."""
     global _pending
-    if not (_on() and rows):
+    if not (_on() and exports):
         return
     if _pending >= MAX_PENDING:
         put_metric("spark_store.put_dropped")
         return
     _pending += 1
     try:
-        if not await asyncio.get_running_loop().run_in_executor(_POOL, _write, table, user_id, name, rows, checked_at):
+        if not await asyncio.get_running_loop().run_in_executor(_POOL, _write, user_id, exports, checked_at):
             put_metric("spark_store.put_dropped")
     except Exception as e:  # noqa: BLE001 -- the type only
         put_metric("spark_store.put_failed")
@@ -330,13 +328,13 @@ async def put(table: str, user_id: str, name: str, rows: list[dict], checked_at:
 
 
 def _sweep(user_id: str) -> None:
-    """Delete everything of the person's in every table. One failing table does not stop the other; raises at the
-    end if anything failed."""
+    """Delete everything of the person's under every prefix. A failing listing or delete does not stop the rest;
+    raises at the end if anything failed."""
     s3, failed = _client(), 0
-    for table in TABLES:
+    for prefix in PREFIXES:
         try:
             for page in s3.get_paginator("list_objects_v2").paginate(
-                Bucket=store_bucket(), Prefix=f"data/{table}/{user_id}/"
+                Bucket=store_bucket(), Prefix=f"{prefix}{user_id}/"
             ):
                 if keys := [{"Key": o["Key"]} for o in page.get("Contents", [])]:
                     out = s3.delete_objects(Bucket=store_bucket(), Delete={"Objects": keys, "Quiet": True})
@@ -378,7 +376,7 @@ def _gate(user_id: str) -> bool:
 
 
 def forget(user_id: str) -> None:
-    """The person turned usage data off: delete their objects (both tables) in the background,
+    """The person turned usage data off: delete their objects in the background,
     now and again two minutes later. Skipped while one is running for them: its second sweep covers a later opt-out, because it re-checks `allowed` first. Never
     raises; a failure is counted (`spark_store.forget_failed`) and the app's next `analytics:false` retries it."""
     if not _gate(user_id) or user_id in _sweeping:

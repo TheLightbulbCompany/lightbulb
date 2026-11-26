@@ -94,7 +94,7 @@ sweeper (`os_voice_sweeper`, started in `main.py`'s lifespan).
 
 Re-runnable ops tools in `apps/backend/scripts/`:
 
-- `spark_store_check.py`: write, read back and delete a throwaway person's objects on dev (run by a person with dev credentials, not CI).
+- `spark_store_check.py`: write, read back, parse as OTLP and delete a throwaway person's objects on dev (run by a person with dev credentials, not CI).
 - `spark_transcripts.py`: print recent saved transcripts, with each person shown as a hash. Read-only.
 
 ## The infrastructure (`apps/infra`)
@@ -109,17 +109,45 @@ trail), service (the backend on ECS Fargate), api (the `api[-dev]` HTTP API on A
 to the ALB), observability (the backend's alarms), database, and **spark-store** (`spark-store-stack.ts`: one S3
 bucket, with a lifecycle rule that expires `data/` after 90 days).
 
-The Spark store is storage only (`core/observability/spark_store.py`): gzip JSON-lines objects at
-`data/<table>/<user_id>/<YYYY-MM-DD>/<name>.json.gz` (tables `turns` and `task_steps`), organized by person so that
-deleting one person's data is a single listing per table; the sweep also lists `data/traces/<user_id>/`, the next release's layout, so a delete handled by an older task still covers it during a rolling deploy. Voice turns are written after the `_save_turn`
-transaction succeeds (which checks the session and `os_analytics_off`); `POST /os/log` first does a consistent read
-of the person's `users` row (no row or `os_analytics_off`: nothing is written). A write whose check is over 60
-seconds old is dropped. Deleting a person's data lists and deletes their objects: for an account deletion (Clerk
-`user.deleted` or `DELETE /os/account`) the first sweep is awaited and a failure fails the request, with a second
-sweep two minutes later in the background; for usage data turned off both run in the background, skipped while one is
-running (its second sweep covers a later opt-out; the app's next `analytics:false` retries a failure). The store uses its
-own two-thread pool, so S3 never shares threads with DynamoDB. One alarm, W91, fires on `spark_store.forget_failed`.
-No job, queue, Firehose, Athena or Glue; analysis is not built yet. Events stay in PostHog only; an account deletion also deletes the person and their events there (`posthog_admin.delete_person`, best effort, needs `person:write` on the personal key; a failure counts `posthog.person_delete_failed`). The usage-data switch writes `os_analytics_at` (request arrival, ns) and ignores an older write, so the person's last choice wins; a tie goes to off.
+The Spark store is storage only (`core/observability/spark_store.py`): OpenTelemetry traces at rest, gzip JSON Lines
+at `data/traces/<user_id>/<UTC YYYY-MM-DD>/<uuid>.jsonl.gz`, each line an OTLP/JSON trace export
+(`spark_traces.py` builds them, with the GenAI semantic conventions and the doc URLs it used; the conventions are
+"Development" status, so names may still move, and every span also carries `spark.session_id` as the stable join key).
+One uploaded task is one trace: root span `invoke_agent spark`, a child `execute_tool <tool>` per step; a conversation
+turn is a span in its task's trace, else its session's. The person's id is the resource attribute `user.id`, set by the
+server; trace and span ids are hashes of the person and the task, so a retry gives the same ids. Organized by person so
+that deleting one person's data is a single listing; the `/` after the id keeps one person's prefix from matching
+another's (`_valid` rejects ids with `/` or `.`). Writes: one object per `POST /os/log` upload (it first does a
+consistent read of the person's `users` row: no row or `os_analytics_off`, nothing is written), and one object per
+voice session, written when `end_session` ends it (the one place that wins once; not for the `signed_out` close of an
+account deletion). That write reads the session's turns back from the `spark-transcripts` table, which `_save_turn`
+already fills per turn, converts them off the event loop, then does the consistent `allowed()` read and writes, so a
+restart loses nothing but that one write (the turns stay in DynamoDB 90 days). A write whose check is over 60 seconds
+old is dropped. Deleting a person's data lists and deletes `data/traces/<user_id>/`, and also the two prefixes used
+before traces, `data/turns/<user_id>/` and `data/task_steps/<user_id>/` (remove those after 2027-02-24, when their
+objects have expired); a failing listing is counted and the others still run. For an account deletion (Clerk
+`user.deleted` or `DELETE /os/account`) the first sweep is awaited and a failure fails the request, with a second sweep
+two minutes later in the background; for usage data turned off both run in the background, skipped while one is
+running (its second sweep covers a later opt-out; the app's next `analytics:false` retries a failure). The store uses
+its own two-thread pool, so S3 never shares threads with DynamoDB. One alarm, W91, fires on
+`spark_store.forget_failed`. No job, queue, Firehose, Athena or Glue. Analysis is not built yet; to read the files, for
+example the failed tasks of a week and their steps, with DuckDB (not run in CI; the query was run against a local file
+in the same layout, and returns the steps and the task's conversation turns). A date-range glob over
+`data/traces/*/<date>/*` lists every person's prefix, which is fine for occasional analysis; heavy analysis should
+load the files into a database first.
+
+```sql
+-- INSTALL httpfs; needs AWS credentials; one trace per line, so read_json_auto sees resourceSpans per line
+CREATE TEMP TABLE spans AS
+SELECT s.* FROM read_json_auto('s3://lightbulb-prod-spark-store/data/traces/*/2026-11-2*/*.jsonl.gz') t,
+  UNNEST(t.resourceSpans) AS a(rs), UNNEST(rs.scopeSpans) AS b(ss), UNNEST(ss.spans) AS c(s);
+SELECT root.traceId, root.name, step.name, step.startTimeUnixNano, step.attributes
+FROM spans root JOIN spans step ON step.parentSpanId = root.spanId
+WHERE root.parentSpanId IS NULL AND root.name = 'invoke_agent spark' AND root.status.code = 2
+ORDER BY root.traceId, step.startTimeUnixNano;
+```
+
+Events stay in PostHog only; an account deletion also deletes the person and their events there (`posthog_admin.delete_person`, best effort, needs `person:write` on the personal key; a failure counts `posthog.person_delete_failed`). The usage-data switch writes `os_analytics_at` (request arrival, ns) and ignores an older write, so the person's last choice wins; a tie goes to off.
 
 The database stack holds four DynamoDB tables, named `lightbulb-{env}-{suffix}`: `users` (the Spark account),
 `containers` (voice-session rows, found through `status-index`), `spark-transcripts` and `webhook-event-dedup` (Stripe

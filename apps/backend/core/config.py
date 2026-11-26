@@ -129,6 +129,9 @@ class Settings(BaseSettings):
     SPARK_STORE_ENABLED: bool = False
     #: Work-log upload scope: "problem" keeps text only for failed or cancelled tasks, "all" keeps every task.
     SPARK_WORKLOG_SCOPE: str = "problem"
+    #: Oldest app version allowed to open a voice session, per platform ("X.Y.Z"). Set by hand; empty: no floor.
+    SPARK_MIN_VERSION_MAC: str = ""
+    SPARK_MIN_VERSION_WINDOWS: str = ""
     # Display dollars for STRIPE_SPARK_PRICE_ID (Spark's monthly price); lockstep with its unit amount.
     SPARK_PRICE_USD: int = 20
     # What a minute of Spark voice costs us (gpt-live-1.1): a calibration value for the margin metric, unverified.

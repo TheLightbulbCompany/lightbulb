@@ -84,6 +84,8 @@ describe("ServiceStack — the Spark backend", () => {
       "SPARK_TRANSCRIPTS_ENABLED",
       "SPARK_STORE_ENABLED",
       "SPARK_WORKLOG_SCOPE",
+      "SPARK_MIN_VERSION_MAC",
+      "SPARK_MIN_VERSION_WINDOWS",
       "WEBHOOK_DEDUP_TABLE",
       "PUBLIC_API_BASE",
     ]) {

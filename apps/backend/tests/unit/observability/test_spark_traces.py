@@ -169,8 +169,26 @@ def test_a_step_with_no_tool_is_named_by_its_kind_and_a_cancelled_task_has_no_st
     exports = spark_traces.to_otlp(*rows({"task": task("cancelled", steps=[step(kind="note", tool=None, ok=None)])}))
     root, note = spans(exports)
     assert root["status"]["code"] == 0 and note["status"]["code"] == 0
-    assert note["name"] == "execute_tool note" and attrs(note)["spark.kind"] == {"stringValue": "note"}
+    assert note["name"] == "chat note" and attrs(note)["spark.kind"] == {"stringValue": "note"}
     assert "spark.tool" not in attrs(note)
+
+
+def test_thinking_commentary_and_note_text_is_an_assistant_message_and_the_thread_is_an_attribute():
+    st = [
+        step(kind=k, tool=None, ok=None, input=None, result=f"said {k}", thread="Ada")
+        for k in ("thinking", "commentary", "note")
+    ]
+    exports = spark_traces.to_otlp(*rows({"task": task(steps=st, firstThinkingMs=250)}))
+    assert_valid_otlp(exports)
+    root, *said = spans(exports)
+    assert attrs(root)["spark.first_thinking_ms"] == {"intValue": "250"}
+    assert len(said) == 3
+    for sp, k in zip(said, ("thinking", "commentary", "note")):
+        a = attrs(sp)
+        assert sp["name"] == f"chat {k}" and a["gen_ai.operation.name"] == {"stringValue": "chat"}
+        assert a["spark.kind"] == {"stringValue": k} and a["spark.thread"] == {"stringValue": "Ada"}
+        assert "gen_ai.tool.call.result" not in a and "gen_ai.tool.name" not in a
+        assert f"said {k}" in json.dumps(a["gen_ai.output.messages"])
 
 
 def test_the_same_trace_is_one_line_and_people_are_never_mixed():

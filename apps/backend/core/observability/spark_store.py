@@ -109,6 +109,7 @@ def scrub(text: str) -> str:
 # --- the app's log upload: rows for `turns` and `task_steps` ---------------------------------------------
 
 LOG_TYPED_MAX = 20
+LOG_TEXT_MAX = 8000  # a task's request and answer, and a step's input and result (released apps send up to 1000/2000)
 LOG_STEPS_KEEP = (150, 50)  # a task with more steps keeps its first 150 and last 50
 CUT = "…[cut]"
 _ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
@@ -212,10 +213,19 @@ def log_rows(user_id: str, install_id: str, body: dict, scope: str, now_us: int,
             0,
             ts=started,
             kind="task",
-            input=_fit(t.get("request"), 4000, keep_end=True) if keep else None,
-            result=_fit(t.get("answer"), 2000) if keep else None,
+            input=_fit(t.get("request"), LOG_TEXT_MAX, keep_end=True) if keep else None,
+            result=_fit(t.get("answer"), LOG_TEXT_MAX) if keep else None,
             ms=_ms(span),
             status=t["status"],
+            **{  # the brain's own timings (ms after the hand-off), only when the app sent them
+                col: v
+                for col, key in (
+                    ("first_thinking_ms", "firstThinkingMs"),
+                    ("first_commentary_ms", "firstCommentaryMs"),
+                    ("first_action_ms", "firstActionMs"),
+                )
+                if (v := _ms(t.get(key))) is not None
+            },
         )
     ]
     listed = t.get("steps") if isinstance(t.get("steps"), list) else []
@@ -232,17 +242,23 @@ def log_rows(user_id: str, install_id: str, body: dict, scope: str, now_us: int,
                 kind=st["kind"],
                 tool=_pat(st.get("tool"), _LABEL),
                 app=scrub(st["app"][:48]) if isinstance(st.get("app"), str) and st["app"] else None,
-                input=_fit(st.get("input"), 1000) if text else None,
-                result=_fit(st.get("result"), 1000) if text else None,
+                input=_fit(st.get("input"), LOG_TEXT_MAX) if text else None,
+                result=_fit(st.get("result"), LOG_TEXT_MAX) if text else None,
                 ok=st["ok"] if isinstance(st.get("ok"), bool) else None,
                 ms=_ms(st.get("ms")),
+                # a spawned thread's name (a name, scrubbed; only with text, as the app sends it)
+                **(
+                    {"thread": scrub(st["thread"][:48])}
+                    if isinstance(st.get("thread"), str) and st["thread"] and keep
+                    else {}
+                ),
             )
         )
     return turns, rows
 
 
 STATUSES = ("done", "failed", "cancelled")
-KINDS = ("tool", "confirm", "error", "note", "screenshot")
+KINDS = ("tool", "confirm", "error", "note", "screenshot", "thinking", "commentary")
 
 # --- opt-out ----------------------------------------------------------------------------------------------
 

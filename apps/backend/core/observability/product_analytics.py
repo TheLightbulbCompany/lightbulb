@@ -118,6 +118,15 @@ def alias_product_person(*, person_id: str, anonymous_id: str) -> None:
         logger.warning("PostHog alias failed (person=%s)", person_id, exc_info=True)
 
 
+def flush() -> None:
+    """Block until every event captured so far has been sent. Best effort: never raises."""
+    try:
+        if (client := _client_or_none()) is not None:
+            client.flush()
+    except Exception:
+        logger.warning("PostHog flush failed", exc_info=True)
+
+
 def _send(client: Any, distinct_id: str, event: str, props: dict, event_uuid: str | None) -> None:
     try:
         if event_uuid:

@@ -135,3 +135,120 @@ async def test_hogql_invalid_json_response(monkeypatch):
         out = await posthog_admin.hogql("select 1")
     assert out["error"] == "invalid_response"
     assert out["results"] == []
+
+
+# --- delete_person -------------------------------------------------------------------------------------------
+
+
+@pytest.fixture
+def metrics(monkeypatch):
+    seen = []
+    monkeypatch.setattr("core.services.posthog_admin.put_metric", lambda name, *a, **k: seen.append(name))
+    return seen
+
+
+def _deploy(monkeypatch):
+    _apply_posthog_settings(monkeypatch, host="https://us.posthog.com")
+    monkeypatch.setattr("core.config.settings.ENVIRONMENT", "prod")
+
+
+@pytest.mark.asyncio
+async def test_delete_person_posts_the_distinct_id_with_events(monkeypatch, metrics):
+    _deploy(monkeypatch)
+    from core.services import posthog_admin
+
+    captured = {}
+    resp = _make_response(202, {"persons_queued_for_deletion": 1, "deletion_errors": []})
+
+    @asynccontextmanager
+    async def capturing_client(*args, **kwargs):
+        client = MagicMock()
+
+        async def post(url, headers=None, json=None, **kw):
+            captured.update(url=url, headers=headers, json=json, timeout=kwargs.get("timeout"))
+            return resp
+
+        client.post = post
+        yield client
+
+    with patch("core.services.posthog_admin.httpx.AsyncClient", new=capturing_client):
+        await posthog_admin.delete_person("user_a")
+    assert captured["url"] == "https://us.posthog.com/api/projects/12345/persons/bulk_delete/"
+    assert captured["json"] == {"distinct_ids": ["user_a"], "delete_events": True}
+    assert captured["headers"]["Authorization"] == "Bearer phc_xyz"
+    assert captured["timeout"] == 5.0
+    assert metrics == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "result",
+    [
+        _make_response(404),
+        _make_response(202, {"persons_found": 0, "deletion_errors": []}),
+    ],
+)
+async def test_delete_person_treats_no_such_person_as_success(monkeypatch, metrics, result):
+    _deploy(monkeypatch)
+    from core.services import posthog_admin
+
+    with patch("core.services.posthog_admin.httpx.AsyncClient", return_value=_fake_post_client(result)):
+        await posthog_admin.delete_person("user_a")
+    assert metrics == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "result",
+    [
+        _make_response(403, text_body="missing scope"),
+        _make_response(500),
+        _make_response(202, {"deletion_errors": [{"person_uuid": "x", "step": "y"}]}),
+        httpx.TimeoutException("slow"),
+    ],
+)
+async def test_delete_person_failures_count_the_metric_and_do_not_raise(monkeypatch, metrics, caplog, result):
+    _deploy(monkeypatch)
+    from core.services import posthog_admin
+
+    with patch("core.services.posthog_admin.httpx.AsyncClient", return_value=_fake_post_client(result)):
+        await posthog_admin.delete_person("user_secret_id")
+    assert metrics == ["posthog.person_delete_failed"]
+    assert "user_secret_id" not in caplog.text and "missing scope" not in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("key,env", [("", "prod"), ("phc_xyz", "local")])
+async def test_delete_person_calls_nothing_when_not_configured(monkeypatch, metrics, key, env):
+    _apply_posthog_settings(monkeypatch, api_key=key)
+    monkeypatch.setattr("core.config.settings.ENVIRONMENT", env)
+    from core.services import posthog_admin
+
+    with patch("core.services.posthog_admin.httpx.AsyncClient", side_effect=AssertionError("called")):
+        await posthog_admin.delete_person("user_a")
+    assert metrics == []
+
+
+@pytest.mark.asyncio
+async def test_delete_person_flushes_queued_events_before_the_delete(monkeypatch, metrics):
+    _deploy(monkeypatch)
+    from core.observability import product_analytics
+    from core.services import posthog_admin
+
+    order = []
+    monkeypatch.setattr(product_analytics, "flush", lambda: order.append("flush"))
+
+    @asynccontextmanager
+    async def client(*args, **kwargs):
+        c = MagicMock()
+
+        async def post(*a, **k):
+            order.append("delete")
+            return _make_response(202, {"deletion_errors": []})
+
+        c.post = post
+        yield c
+
+    with patch("core.services.posthog_admin.httpx.AsyncClient", new=client):
+        await posthog_admin.delete_person("user_a")
+    assert order == ["flush", "delete"]

@@ -167,15 +167,19 @@ def server_event(
     row: dict | None = None,
     now: int = 0,
     set_once: dict | None = None,
+    personless: bool = False,
 ) -> None:
     """One server-side Spark event on the person, with `facts(row, now)` set on them when a row is given.
     `key` makes the event uuid deterministic, so a retried request or a redelivered webhook is dropped by
-    PostHog. `set_once` goes on the person as `$set_once`. Never raises."""
+    PostHog. `set_once` goes on the person as `$set_once`. `personless` sends it under a fresh random distinct id
+    with `$process_person_profile: false`, so it creates or changes no person (the key still sets the uuid).
+    Never raises."""
     try:
         product_analytics.capture_product_event(
-            distinct_id=user_id,
+            distinct_id=str(uuid.uuid4()) if personless else user_id,
             event=event,
-            properties={**(properties or {}), "product": PRODUCT},
+            properties={**(properties or {}), "product": PRODUCT}
+            | ({"$process_person_profile": False} if personless else {}),
             set_person=facts(row, now) if row is not None else None,
             set_once=set_once,
             event_uuid=str(uuid.uuid5(NS, f"{event}:{key}")),

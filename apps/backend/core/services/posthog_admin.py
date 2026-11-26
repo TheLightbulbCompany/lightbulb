@@ -1,10 +1,14 @@
 """PostHog HogQL client for the admin dashboard (``hogql``)."""
 
+import asyncio
+import contextlib
 import logging
 
 import httpx
 
 from core.config import settings
+from core.observability import product_analytics
+from core.observability.metrics import put_metric
 
 logger = logging.getLogger(__name__)
 
@@ -55,3 +59,34 @@ async def hogql(query: str, *, timeout_s: float = 15.0) -> dict:
         "stubbed": False,
         "error": None,
     }
+
+
+async def delete_person(user_id: str) -> None:
+    """Delete the person whose distinct id is `user_id` from PostHog, with their events, when their account is
+    deleted. One call: `POST /api/projects/{id}/persons/bulk_delete/` takes distinct ids and `delete_events`.
+    Needs the `person:write` scope on the personal key. PostHog answers 202 and removes the person in the
+    background; only events captured before the request are deleted. Best effort and never raises: a failure
+    counts `posthog.person_delete_failed` and logs the status code or exception type only."""
+    if not settings.POSTHOG_PROJECT_API_KEY or not settings.POSTHOG_PROJECT_ID:
+        return
+    if settings.ENVIRONMENT not in ("dev", "prod"):
+        return
+    # Events captured earlier in this request may still be queued: send them first, or one could recreate the person.
+    # A slow PostHog times the wait out; the thread flushes on and the delete goes ahead.
+    with contextlib.suppress(TimeoutError):
+        await asyncio.wait_for(asyncio.to_thread(product_analytics.flush), _TIMEOUT_S)
+    url = f"{settings.POSTHOG_HOST}/api/projects/{settings.POSTHOG_PROJECT_ID}/persons/bulk_delete/"
+    headers = {"Authorization": f"Bearer {settings.POSTHOG_PROJECT_API_KEY}"}
+    body = {"distinct_ids": [user_id], "delete_events": True}
+    try:
+        async with httpx.AsyncClient(timeout=_TIMEOUT_S) as client:
+            response = await client.post(url, headers=headers, json=body)
+        if response.status_code == 404:  # no such person
+            return
+        if response.status_code != 202:
+            raise RuntimeError(f"http_{response.status_code}")
+        if response.json().get("deletion_errors"):  # a 202 can still report persons not deleted
+            raise RuntimeError("deletion_errors")
+    except Exception as e:  # noqa: BLE001  best effort: the account is deleted either way
+        put_metric("posthog.person_delete_failed")
+        logger.warning("posthog person delete failed: %s", str(e) if isinstance(e, RuntimeError) else type(e).__name__)

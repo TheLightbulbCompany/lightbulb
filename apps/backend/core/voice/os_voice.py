@@ -320,7 +320,8 @@ async def end_session(sid: str, reason: str, seconds: int) -> bool:
     version = client.get("appVersion")
     if isinstance(version, str) and spark_events.VERSION.fullmatch(version):
         props["app_version"] = version
-    spark_events.server_event(row["userId"], "voice_session_ended", sid, props)
+    # "signed_out" is only `forget`'s close, i.e. the account is being deleted: the event must not outlive the person
+    spark_events.server_event(row["userId"], "voice_session_ended", sid, props, personless=reason == "signed_out")
     return True
 
 
@@ -627,27 +628,46 @@ async def forget(user_id: str, sessions) -> None:
     await spark_store.forget_account(user_id)  # a failure raises: the caller keeps the row and retries
 
 
-async def _set_opt_out(user_id: str, off: bool) -> None:
-    """Mark (or unmark) the person's users row `os_analytics_off`; a person with no row gets none."""
-    with contextlib.suppress(ClientError):
+async def _set_opt_out(user_id: str, off: bool, at: int) -> bool:
+    """Mark (or unmark) the person's users row `os_analytics_off`; a person with no row gets none. `at` is when
+    the request arrived (ns): the row keeps the newest choice in `os_analytics_at`, and a write older than it
+    is ignored (a tie goes to "off"), so two backend tasks applying an off and an on out of order still end on the later one.
+    Returns whether the person's choice is "off" now or this write applied (the caller deletes only then)."""
+    try:
         await run_in_thread(
             get_table("users").update_item,
             Key={"user_id": user_id},
-            UpdateExpression="SET os_analytics_off = :t" if off else "REMOVE os_analytics_off",
-            ConditionExpression="attribute_exists(user_id)",
-            **({"ExpressionAttributeValues": {":t": True}} if off else {}),
+            UpdateExpression="SET os_analytics_at = :at, os_analytics_off = :t"
+            if off
+            else "SET os_analytics_at = :at REMOVE os_analytics_off",
+            ConditionExpression="attribute_exists(user_id)"
+            " AND (attribute_not_exists(os_analytics_at) OR os_analytics_at " + ("<=" if off else "<") + " :at)",
+            ExpressionAttributeValues={":at": at} | ({":t": True} if off else {}),
+            ReturnValuesOnConditionCheckFailure="ALL_OLD",
         )
+    except ClientError as e:
+        code = e.response.get("Error", {}).get("Code")
+        if code != "ConditionalCheckFailedException":
+            put_metric("os_voice.opt_out_write_failed")
+            logger.warning("os voice opt-out write failed: %s", code)
+            return False
+        item = e.response.get("Item")
+        if not item:  # no users row: nothing to order against
+            return True
+        return off and bool(item.get("os_analytics_off"))  # a newer choice landed: this one is stale
+    return True
 
 
-async def clear_opt_out(user_id: str) -> None:
+async def clear_opt_out(user_id: str, at: int) -> None:
     """The person turned usage data back on: their sessions may save turns again."""
-    await _set_opt_out(user_id, False)
+    await _set_opt_out(user_id, False, at)
 
 
-async def stop_transcripts(user_id: str) -> None:
+async def stop_transcripts(user_id: str, at: int) -> None:
     """The person turned usage data off: their active sessions save no more turns and the turns already saved
     are deleted. The sessions stay open; each sideband sees `noTranscript` on its next tick."""
-    await _set_opt_out(user_id, True)  # first: a session still opening then saves nothing
+    if not await _set_opt_out(user_id, True, at):  # first: a session still opening then saves nothing
+        return  # a newer "on" won, or the write failed: delete nothing
     person = (await run_in_thread(get_table("users").get_item, Key={"user_id": user_id}, ConsistentRead=True)).get(
         "Item"
     ) or {}

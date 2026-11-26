@@ -254,10 +254,10 @@ async def test_an_invalid_heard_from_choice_sets_nothing(ph, ddb):
 def stopped(monkeypatch):
     calls = []
 
-    async def fake(user_id):
+    async def fake(user_id, at):
         calls.append(user_id)
 
-    async def clear(user_id):
+    async def clear(user_id, at):
         calls.append(("clear", user_id))
 
     monkeypatch.setattr(os_voice, "stop_transcripts", fake)
@@ -306,7 +306,7 @@ async def test_optout_deletion_survives_a_posthog_failure(ph, ddb, stopped):
 
 
 async def test_a_failing_stop_is_logged_not_raised(ph, ddb, monkeypatch):
-    async def boom(user_id):
+    async def boom(user_id, at):
         raise RuntimeError("ddb down")
 
     monkeypatch.setattr(os_voice, "stop_transcripts", boom)

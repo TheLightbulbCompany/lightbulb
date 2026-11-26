@@ -120,3 +120,16 @@ def test_user_distinct_id_is_untouched(monkeypatch):
         product_analytics.capture_product_event(distinct_id="user_1", event="x", properties={"workspace_id": "org_9"})
     assert mock_client.capture.call_args.args[0] == "user_1"
     assert mock_client.capture.call_args.args[2]["workspace_id"] == "org_9"
+
+
+def test_a_personless_server_event_keeps_its_uuid_under_a_fresh_distinct_id(monkeypatch):
+    from core.observability import spark_events
+
+    sent = []
+    fake = type("C", (), {"capture": lambda self, d, e, p, **kw: sent.append((d, p, kw))})()
+    monkeypatch.setattr(product_analytics, "_client_or_none", lambda: fake)
+    for _ in range(2):  # a retried request
+        spark_events.server_event("user_a", "account_deleted", "user_a", personless=True)
+    (d1, p1, k1), (d2, _, k2) = sent
+    assert d1 != d2 and "user_a" not in (d1, d2) and k1["uuid"] == k2["uuid"]
+    assert p1["$process_person_profile"] is False and "$set" not in p1

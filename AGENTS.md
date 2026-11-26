@@ -118,7 +118,7 @@ seconds old is dropped. Deleting a person's data lists and deletes their objects
 sweep two minutes later in the background; for usage data turned off both run in the background, skipped while one is
 running (its second sweep covers a later opt-out; the app's next `analytics:false` retries a failure). The store uses its
 own two-thread pool, so S3 never shares threads with DynamoDB. One alarm, W91, fires on `spark_store.forget_failed`.
-No job, queue, Firehose, Athena or Glue; analysis is not built yet. Events stay in PostHog only.
+No job, queue, Firehose, Athena or Glue; analysis is not built yet. Events stay in PostHog only; an account deletion also deletes the person and their events there (`posthog_admin.delete_person`, best effort, needs `person:write` on the personal key; a failure counts `posthog.person_delete_failed`). The usage-data switch writes `os_analytics_at` (request arrival, ns) and ignores an older write, so the person's last choice wins; a tie goes to off.
 
 The database stack holds four DynamoDB tables, named `lightbulb-{env}-{suffix}`: `users` (the Spark account),
 `containers` (voice-session rows, found through `status-index`), `spark-transcripts` and `webhook-event-dedup` (Stripe

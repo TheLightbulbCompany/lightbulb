@@ -256,6 +256,7 @@ async def handle_clerk_webhook(request: Request):
         # Stripe first (raises before any Spark data is removed): a failure fails the event, so the
         # redelivery retries. Every step is idempotent and a no-op for a person who never used Spark.
         from core.repositories import user_repo
+        from core.services import posthog_admin
         from core.services.os_billing import cancel_for_deleted_user
 
         try:
@@ -264,6 +265,7 @@ async def handle_clerk_webhook(request: Request):
         except Exception:
             put_metric("clerk.webhook.user_deleted_wipe_failed")
             raise
+        await posthog_admin.delete_person(user_id)  # last, best effort: never fails the event
 
     else:
         logger.debug("Clerk webhook: unhandled event type %s", event_type)

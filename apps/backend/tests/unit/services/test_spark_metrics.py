@@ -85,11 +85,16 @@ def test_internal_filter_excludes_by_person_and_drops_unsafe_ids():
     assert "'user_a'" in f and "'user_admin'" in f and "1=1" not in f
 
 
-def test_non_release_builds_are_left_out_of_every_query():
+def test_non_release_installs_are_left_out_of_install_level_queries_only():
     f = sm._release_filter()
-    assert "event = 'app_first_launch'" in f and "app_version" in f and f.startswith("person_id not in")
-    for name, q in sm.build_queries().items():
-        assert f in q, name  # the one shared filter: installs, funnel, cohorts, people, versions in use, ...
+    assert "install_id" in f and "event = 'app_first_launch'" in f and "app_version" in f
+    assert "properties.environment = " in f  # the subquery carries the environment restriction
+    assert "toString(properties.install_id) != ''" in f and "coalesce(toString(properties.install_id), '') not in" in f
+    qs = sm.build_queries()
+    install_level = {"installs", "success_version", "signals"}
+    for name, q in qs.items():
+        assert (f in q) == (name in install_level), name  # person-level queries are untouched
+    assert "person_id not in (select person_id from events where event = 'app_first_launch'" not in "".join(qs.values())
 
 
 def test_queries_define_human_task_bound_scans_and_count_at_most_thirteen():

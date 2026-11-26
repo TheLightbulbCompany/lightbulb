@@ -35,10 +35,12 @@ The network CLI (`TheLightbulbCompany/cli`) is kept. This repo only serves its p
 
 ## Monorepo
 
-Turborepo with **pnpm** for JS and **uv** for Python.
+Three independent apps: `apps/frontend` (pnpm, from the repo root), `apps/infra` (npm, its own
+`package-lock.json`), `apps/backend` (uv).
 
 ```bash
-pnpm install                                    # all JS deps, from the repo root
+pnpm install                                    # website deps, from the repo root
+cd apps/infra && npm ci && npx cdk synth        # CDK
 cd apps/backend && uv sync && uv run uvicorn main:app --reload --port 8000
 cd apps/frontend && pnpm run dev                # localhost:3000
 cd apps/backend && uv run pytest tests/ -v
@@ -152,16 +154,14 @@ The local `codex` CLI is the fallback when the connector does not pick a PR up; 
 
 ### Deploy model
 
-- **Dev deploys on merge to `main`. Prod deploys only on `workflow_dispatch`**
-  (`gh workflow run deploy.yml --ref main`). Every prod job in `deploy.yml` carries
-  `if: github.event_name == 'workflow_dispatch'`; a dispatch deploys dev first. The web deploys to Vercel run inside
-  the same workflow. Guarded by `apps/infra/test/deploy-prod-promotion.test.ts`.
+- **Two deploy workflows, both hand-written.** `deploy.yml` runs `cdk deploy 'dev/*'` when a merge touches
+  `apps/backend/**` or `apps/infra/**`; `web-deploy.yml` deploys the website to Vercel dev when a merge touches
+  `apps/frontend/**`. **Prod deploys only when a person runs them**: `gh workflow run deploy.yml --ref main`
+  (deploys dev first, then `cdk deploy 'prod/*'`) and `gh workflow run web-deploy.yml --ref main` (website prod).
+  The prod gate is guarded by `apps/infra/test/deploy-workflow.test.ts`.
 - **`main` is ahead of prod by default.** Never call something live because it merged. Read the running version
   from AWS (`aws ecs describe-task-definition`) and Vercel.
-- **`.github/workflows/deploy.yml` is generated** from `apps/infra/lib/app.ts` by `cdk-pipelines-github`. Any
-  change under `apps/infra/lib/` must run `cd apps/infra && npx cdk synth` and commit the regenerated `deploy.yml`
-  in the same PR. Locally, synth silently rewrites the file; drift only fails inside the deploy run, after merge.
-- One concurrency group, `lightbulb-deploy`, with `queue: max`: runs queue in order. Before you dispatch, this
+- `deploy.yml` has one concurrency group, `lightbulb-deploy`, with `queue: max`: runs queue in order. Before you dispatch, this
   should read 0:
 
 ```bash
@@ -169,7 +169,7 @@ gh run list --repo TheLightbulbCompany/lightbulb --workflow deploy.yml --limit 1
   --json status --jq '[.[]|select(.status!="completed")]|length'
 ```
 
-- A run's `status` lags its jobs; count jobs for liveness. `rerun --failed` on a deploy does not work: re-dispatch.
+- A run's `status` lags its jobs; count jobs for liveness.
 - Every session shares one GitHub identity. Pass `--interval 60` to `gh run watch`, poll no faster than once a
   minute, and on a 403 or 429 wait for `x-ratelimit-reset` / `retry-after`.
 

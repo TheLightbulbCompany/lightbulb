@@ -1,14 +1,7 @@
 {
   "name": "lightbulb",
   "private": true,
-  "devDependencies": {
-    "turbo": "^2"
-  },
   "scripts": {
-    "dev": "turbo run dev",
-    "build": "turbo run build",
-    "test": "turbo run test",
-    "lint": "turbo run lint",
     "prepare": "git config core.hooksPath .githooks"
   },
   "packageManager": "pnpm@9.15.0",

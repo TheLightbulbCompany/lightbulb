@@ -39,6 +39,7 @@ DAY_S = 86400
 TRIAL_S = 3 * DAY_S
 REFERRAL_WINDOW_S = 14 * DAY_S
 MAX_FREE_DAYS = 30  # owner, 2026-11-22: the trial and every invite day a person is given, together
+_VERSION = re.compile(r"\d+\.\d+\.\d+")
 _USER_ID = re.compile(r"user_[A-Za-z0-9]{1,64}")
 
 
@@ -73,12 +74,15 @@ class ConfigResponse(BaseModel):
 def _price_facts() -> ConfigResponse:
     # "off" while the store is disabled here: apps then upload no work log at all (they fail closed on anything else).
     scope = "off" if not settings.SPARK_STORE_ENABLED else "all" if settings.SPARK_WORKLOG_SCOPE == "all" else "problem"
-    floors = {"mac": settings.SPARK_MIN_VERSION_MAC, "windows": settings.SPARK_MIN_VERSION_WINDOWS}
+    floors = {"mac": settings.SPARK_MIN_VERSION_MAC.strip(), "windows": settings.SPARK_MIN_VERSION_WINDOWS.strip()}
+    for k, v in floors.items():
+        if v and not _VERSION.fullmatch(v):
+            logger.warning("SPARK_MIN_VERSION_%s=%r is not X.Y.Z; no floor is served for it", k.upper(), v)
     return ConfigResponse(
         priceText=f"${settings.SPARK_PRICE_USD}/month",
         trialDays=TRIAL_S // DAY_S,
         worklogScope=scope,
-        minVersion={k: v for k, v in floors.items() if re.fullmatch(r"\d+\.\d+\.\d+", v)},
+        minVersion={k: v for k, v in floors.items() if _VERSION.fullmatch(v)},
     )
 
 

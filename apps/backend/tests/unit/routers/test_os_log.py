@@ -172,11 +172,14 @@ async def test_config_returns_the_scope(monkeypatch):
         assert (await c.get("/api/v1/os/config")).json()["worklogScope"] == "problem"
 
 
-async def test_config_min_version_is_absent_valid_only(monkeypatch):
+async def test_config_min_version_is_absent_valid_only(monkeypatch, caplog):
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
         assert (await c.get("/api/v1/os/config")).json()["minVersion"] == {}
         monkeypatch.setattr(settings, "SPARK_MIN_VERSION_MAC", "2.1.20")
         monkeypatch.setattr(settings, "SPARK_MIN_VERSION_WINDOWS", "latest")
+        assert (await c.get("/api/v1/os/config")).json()["minVersion"] == {"mac": "2.1.20"}
+        assert "SPARK_MIN_VERSION_WINDOWS='latest' is not X.Y.Z" in caplog.text  # a typo is not mistaken for a floor
+        monkeypatch.setattr(settings, "SPARK_MIN_VERSION_MAC", " 2.1.20 ")  # whitespace is stripped
         assert (await c.get("/api/v1/os/config")).json()["minVersion"] == {"mac": "2.1.20"}
         monkeypatch.setattr(settings, "SPARK_MIN_VERSION_WINDOWS", "1.0.10")
         assert (await c.get("/api/v1/os/config")).json()["minVersion"] == {"mac": "2.1.20", "windows": "1.0.10"}

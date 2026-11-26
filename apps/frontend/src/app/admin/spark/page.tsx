@@ -31,7 +31,7 @@ export default async function AdminSparkPage() {
       <div>
         <h1 className="text-xl font-semibold text-foreground">Spark</h1>
         <p className="text-xs text-muted-foreground">
-          Desktop app metrics from PostHog; team accounts excluded; weeks are UTC, Monday start. Cached up to 5 minutes.
+          Desktop app metrics from PostHog; team accounts and non-release builds excluded; weeks are UTC, Monday start. Cached up to 5 minutes.
           {data ? ` Generated ${data.generated_at}.` : ""}
         </p>
       </div>

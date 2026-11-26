@@ -85,6 +85,13 @@ def test_internal_filter_excludes_by_person_and_drops_unsafe_ids():
     assert "'user_a'" in f and "'user_admin'" in f and "1=1" not in f
 
 
+def test_non_release_builds_are_left_out_of_every_query():
+    f = sm._release_filter()
+    assert "event = 'app_first_launch'" in f and "app_version" in f and f.startswith("person_id not in")
+    for name, q in sm.build_queries().items():
+        assert f in q, name  # the one shared filter: installs, funnel, cohorts, people, versions in use, ...
+
+
 def test_queries_define_human_task_bound_scans_and_count_at_most_thirteen():
     qs = sm.build_queries()
     assert len(qs) <= 13  # 12 + `signals`

@@ -1,8 +1,8 @@
 """Spark product metrics for the admin console: HogQL over PostHog, cached.
 
 Events come from the desktop app via POST /os/event (core/observability/spark_events.py) and from
-the server (subscription_*, ...). Every query excludes team accounts (``_internal_filter``) and other
-environments, and is bounded by time.
+the server (subscription_*, ...). Every query excludes team accounts (``_internal_filter``), non-release builds
+(``_release_filter``) and other environments, and is bounded by time.
 
 Identity: pre-sign-in events are under the install id, aliased to the Clerk user at sign-in, so
 everything per-user keys on HogQL ``person_id``. Installs = persons with ``app_first_launch``.
@@ -70,12 +70,22 @@ def _internal_filter() -> str:
     return f"person_id not in (select person_id from person_distinct_ids where distinct_id in ({id_list}))"
 
 
+def _release_filter() -> str:
+    """Leave out non-release builds: an engine run outside a released app (EVE_APP_VERSION unset -> the app sends
+    no app_version on its first launch). Released Mac and Windows apps always send one. One row per install, so
+    unbounded in time."""
+    return (
+        "person_id not in (select person_id from events where event = 'app_first_launch'"
+        " and coalesce(toString(properties.app_version), '') = '')"
+    )
+
+
 def _human(p: str = "") -> str:
     return f"{p}event = 'task_completed' and coalesce(toString({p}properties.source), '') != 'automation'"
 
 
 def build_queries() -> dict[str, str]:
-    w = f"{_hogql_filter(settings.ENVIRONMENT or '')} and {_internal_filter()}"
+    w = f"{_hogql_filter(settings.ENVIRONMENT or '')} and {_internal_filter()} and {_release_filter()}"
     human = _human()
     plat = "coalesce(nullIf(toString(properties.platform), ''), 'unknown')"
     ver = "coalesce(nullIf(toString(properties.app_version), ''), 'unknown')"

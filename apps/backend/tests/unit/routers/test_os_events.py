@@ -798,3 +798,40 @@ async def test_a_failing_mark_never_fails_the_event(ph, ddb, monkeypatch):
     monkeypatch.setattr(os_router.settings, "SPARK_STORE_ENABLED", True)
     assert (await send("task_started", VALID["task_started"], A)).status_code == 204
     await _settle()
+
+
+# --- webhook redelivery -----------------------------------------------------------------------------------
+
+
+async def test_redelivered_user_created_after_user_deleted_does_not_restore_the_row(ph, ddb, monkeypatch):
+    from core.services import posthog_admin
+    from routers import webhooks
+
+    boto3.client("dynamodb", region_name="us-east-1").create_table(
+        TableName="test-webhook-event-dedup",
+        KeySchema=[{"AttributeName": "event_id", "KeyType": "HASH"}],
+        AttributeDefinitions=[{"AttributeName": "event_id", "AttributeType": "S"}],
+        BillingMode="PAY_PER_REQUEST",
+    )
+    monkeypatch.setenv("WEBHOOK_DEDUP_TABLE", "test-webhook-event-dedup")
+    monkeypatch.setattr(webhooks, "_verify_svix_signature", lambda *a, **k: None)
+
+    async def none(*a, **k):
+        return set()
+
+    monkeypatch.setattr(os_voice, "_active_sessions", none)  # the status and transcripts tables are not in this
+    monkeypatch.setattr(os_voice, "delete_transcripts", none)  # fixture; both deletes are by key anyway
+    monkeypatch.setattr(posthog_admin, "delete_person", none)
+
+    async def post(svix_id, body):
+        r = await req("POST", "/webhooks/clerk", content=json.dumps(body).encode(), headers={"svix-id": svix_id})
+        assert r.status_code == 200
+        return r.json()
+
+    created = {"type": "user.created", "data": {"id": "user_a", "email_addresses": []}}
+    await post("msg_c", created)
+    assert "Item" in ddb.get_item(Key={"user_id": "user_a"})
+    await post("msg_d", {"type": "user.deleted", "data": {"id": "user_a"}})
+    assert "Item" not in ddb.get_item(Key={"user_id": "user_a"})
+    assert (await post("msg_c", created)) == {"status": "duplicate"}  # the same delivery again
+    assert "Item" not in ddb.get_item(Key={"user_id": "user_a"})

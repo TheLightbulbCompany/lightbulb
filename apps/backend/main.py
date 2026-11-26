@@ -84,10 +84,6 @@ class SecurityHeadersMiddleware:
 async def lifespan(app: FastAPI):
     """Application lifespan handler."""
     logger.info("Starting application...")
-    # A starting app instance is not shutting down. Resetting here (not only at
-    # shutdown) keeps the flag scoped to this instance's lifecycle.
-    set_shutting_down(False)
-
     from core.voice.os_voice import os_voice_sweeper
 
     os_voice_stop = asyncio.Event()
@@ -100,7 +96,7 @@ async def lifespan(app: FastAPI):
     yield
 
     logger.info("Shutting down application...")
-    set_shutting_down(True)  # 503 new business requests; /health stays green for ALB drain
+    # uvicorn runs this after it closed the listener and drained connections, so no request can arrive now.
     os_voice_stop.set()
     try:
         async with asyncio.timeout(20):
@@ -145,13 +141,6 @@ app = FastAPI(
 from core.observability.middleware import RequestContextMiddleware
 
 app.add_middleware(RequestContextMiddleware)
-
-# Shutdown-aware middleware — returns 503 to new business requests once the
-# lifespan shutdown sets the process flag, while /health stays green for ALB
-# drain. See core/middleware/shutdown_aware.py.
-from core.middleware.shutdown_aware import ShutdownAwareMiddleware, set_shutting_down
-
-app.add_middleware(ShutdownAwareMiddleware)
 
 # Proxy-headers middleware — ALB terminates TLS and forwards X-Forwarded-Proto.
 # Without this, FastAPI generates http:// URLs in redirects (e.g. redirect_slashes),

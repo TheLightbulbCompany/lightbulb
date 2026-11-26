@@ -629,8 +629,8 @@ async def forget(user_id: str, sessions) -> None:
 
 async def _set_opt_out(user_id: str, off: bool, at: int) -> bool:
     """Mark (or unmark) the person's users row `os_analytics_off`; a person with no row gets none. `at` is when
-    the request arrived (ms): the row keeps the newest choice in `os_analytics_at`, and a write older than it
-    is ignored, so two backend tasks applying an off and an on out of order still end on the later one.
+    the request arrived (ns): the row keeps the newest choice in `os_analytics_at`, and a write older than it
+    is ignored (a tie goes to "off"), so two backend tasks applying an off and an on out of order still end on the later one.
     Returns whether the person's choice is "off" now or this write applied (the caller deletes only then)."""
     try:
         await run_in_thread(
@@ -640,7 +640,7 @@ async def _set_opt_out(user_id: str, off: bool, at: int) -> bool:
             if off
             else "SET os_analytics_at = :at REMOVE os_analytics_off",
             ConditionExpression="attribute_exists(user_id)"
-            " AND (attribute_not_exists(os_analytics_at) OR os_analytics_at < :at)",
+            " AND (attribute_not_exists(os_analytics_at) OR os_analytics_at " + ("<=" if off else "<") + " :at)",
             ExpressionAttributeValues={":at": at} | ({":t": True} if off else {}),
             ReturnValuesOnConditionCheckFailure="ALL_OLD",
         )

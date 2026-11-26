@@ -506,7 +506,7 @@ async def create_voice_session(
     """A GPT-Live WebRTC session on the company key: the Mac's SDP offer in, OpenAI's answer out. The backend
     owns the model, `store`, the voice list, the size caps, the transport and the data channel's allowed
     events. Reconnecting is a new POST."""
-    opt_at = time.time_ns() // 1_000_000  # when the request arrived: orders it against other usage-data choices
+    opt_at = time.time_ns()  # when the request arrived: orders it against other usage-data choices
     if not isinstance(body, dict):
         raise _bad("invalid_config")
     sdp = body.get("sdp")
@@ -627,7 +627,7 @@ async def post_event(request: Request, auth: AuthContext | None = Depends(get_op
     """One product event from the app, for PostHog. Anyone may call it: with a valid session bearer the event
     is the person's, otherwise the install's. Only allow-listed events and properties are sent
     (`spark_events.APP_EVENTS`). A well-formed body is always 204, sent, dropped or rate-limited alike."""
-    opt_at = time.time_ns() // 1_000_000  # when the request arrived: orders it against other usage-data choices
+    opt_at = time.time_ns()  # when the request arrived: orders it against other usage-data choices
     body, install_id = await _capped_body(request, EVENT_MAX_BYTES, "invalid_event")
     distinct_id = auth.user_id if auth else install_id
     if auth and body.get("event") == "analytics_optout_set":  # privacy: never lost to the rate limit

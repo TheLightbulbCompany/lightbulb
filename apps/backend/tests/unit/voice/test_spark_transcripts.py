@@ -552,3 +552,12 @@ async def test_a_throttled_opt_out_write_is_counted_and_logged_not_silent(table,
     assert seen == ["os_voice.opt_out_write_failed"]
     assert "ProvisionedThroughputExceededException" in caplog.text
     assert [r["text"] for r in rows(table)] == ["kept"]  # the flag did not apply, so nothing is deleted
+
+
+@pytest.mark.parametrize("off_first", [True, False])
+async def test_an_off_and_an_on_with_the_same_timestamp_end_off(table, on, off_first):
+    row = _user_row(table)
+    writes = [os_voice.stop_transcripts("user_a", 5), os_voice.clear_opt_out("user_a", 5)]
+    for w in writes if off_first else writes[::-1]:
+        await w
+    assert row()["os_analytics_off"] is True

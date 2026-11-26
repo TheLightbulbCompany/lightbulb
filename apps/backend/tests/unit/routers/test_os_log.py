@@ -9,7 +9,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from core.config import settings
-from core.observability import spark_events, spark_store
+from core.observability import spark_events, spark_store, spark_traces
 from main import app
 from routers import os as os_router
 from tests.unit.auth.conftest import Tenant, jwks  # noqa: F401
@@ -28,6 +28,7 @@ class Store:
     def __init__(self):
         self.turns: list[dict] = []
         self.steps: list[dict] = []
+        self.objects: list[list[dict]] = []  # one entry per object written: its OTLP exports
         self.ok = True
         self.raises = False
 
@@ -39,10 +40,20 @@ def store(monkeypatch, jwks):  # noqa: F811
     async def allowed(user_id):
         return s.ok
 
-    async def put(table, user_id, name, rows, checked_at):
+    real = spark_traces.to_otlp
+
+    def to_otlp(turns, steps):  # the rows the upload produced, then the real conversion
+        s.turns.extend(turns)
+        s.steps.extend(steps)
+        return real(turns, steps)
+
+    async def put(user_id, exports, checked_at):
         if s.raises:
             raise RuntimeError("s3 down")
-        (s.turns if table == "turns" else s.steps).extend(rows)
+        s.objects.append(exports)
+        s.user = user_id
+
+    monkeypatch.setattr(spark_traces, "to_otlp", to_otlp)
 
     monkeypatch.setattr(spark_store, "allowed", allowed)
     monkeypatch.setattr(spark_store, "put", put)
@@ -100,6 +111,15 @@ async def test_not_signed_in_is_refused(store):
     r = await post(payload(typed=[line()]), who=None)
     assert r.status_code in (401, 403)
     assert not store.turns
+
+
+async def test_an_upload_is_one_otlp_object_for_the_caller(store):
+    r = await post(payload(typed=[line()], task=task()))
+    assert r.status_code == 204
+    (exports,) = store.objects  # typed line and task: one object, not one per table
+    assert store.user == "user_a" and len(exports) >= 1
+    spans = [sp for e in exports for rs in e["resourceSpans"] for ss in rs["scopeSpans"] for sp in ss["spans"]]
+    assert {sp["name"] for sp in spans} >= {"invoke_agent spark", "chat"}
 
 
 async def test_over_512_kb_is_413(store):

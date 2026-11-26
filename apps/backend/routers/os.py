@@ -23,7 +23,7 @@ from pydantic import BaseModel
 from core.auth import AuthContext, get_human_session, get_optional_human_session
 from core.config import settings
 from core.dynamodb import get_table, is_cancelled, run_in_thread, transact, utc_now_iso
-from core.observability import product_analytics, spark_events, spark_store
+from core.observability import product_analytics, spark_events, spark_store, spark_traces
 from core.observability.metrics import put_metric
 from core.services import os_billing, posthog_admin
 from core.services.rate_bucket import RateBucket
@@ -704,9 +704,7 @@ async def _store_log(user_id: str, install_id: str, body: dict, meta: dict) -> N
         scope = "all" if settings.SPARK_WORKLOG_SCOPE == "all" else "problem"
         now_us = time.time_ns() // 1000
         turns, steps = await run_in_thread(spark_store.log_rows, user_id, install_id, body, scope, now_us, meta)
-        name = uuid.uuid4().hex
-        await spark_store.put("turns", user_id, name, turns, checked_at)
-        await spark_store.put("task_steps", user_id, name, steps, checked_at)
+        await spark_store.put(user_id, spark_traces.to_otlp(turns, steps), checked_at)  # one object per upload
     except Exception as e:  # noqa: BLE001
         logger.warning("os log not stored: %s", type(e).__name__)
 

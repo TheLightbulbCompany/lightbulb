@@ -3,7 +3,7 @@ when SPARK_TRANSCRIPTS_ENABLED is on; a failed write never touches the session; 
 
 import asyncio
 import json
-import uuid
+import time
 
 import boto3
 import pytest
@@ -11,7 +11,7 @@ from moto import mock_aws
 
 from core import dynamodb
 from core.config import settings
-from core.observability import spark_events, spark_store
+from core.observability import spark_store, spark_traces
 from core.voice import os_voice
 from scripts import spark_transcripts
 
@@ -284,17 +284,18 @@ def test_the_script_hides_the_user_id():
     assert "user_a" not in out and spark_transcripts.person("user_a") in out and "user: hi" in out
 
 
-# --- the Spark data store dual-write ----------------------------------------------------------------------
+# --- the Spark data store: one trace object per ended session ---------------------------------------------------
 
 
 @pytest.fixture
 def stored(table, on, monkeypatch):
-    """Store on; `put` is a recorder. Returns the list of row batches it was given."""
+    """Store on, the person allowed, `put` a recorder. Returns the list of (user_id, exports) objects written."""
     monkeypatch.setattr(settings, "SPARK_STORE_ENABLED", True)
+    table.meta.client.put_item(TableName=dynamodb.table_name("users"), Item={"user_id": "user_a"})
     calls = []
 
-    async def put(table_name, user_id, name, batch, checked_at):
-        calls.append(batch)
+    async def put(user_id, exports, checked_at):
+        calls.append((user_id, exports))
 
     monkeypatch.setattr(spark_store, "put", put)
     return calls
@@ -308,102 +309,204 @@ def store_state(**kw):
     return state() | {"taskId": "dlg_abcdefghij12", "client": {"platform": "mac", "appVersion": "2.1.1"}} | kw
 
 
-async def test_a_saved_turn_is_also_handed_to_the_store_once(stored, table):
+async def finish(table, s, reason="client_closed", **fields):
+    """Save the held turns, put `fields` on the session's row (as the app's open would have), and end it."""
+    await os_voice._flush(s)
+    names = {f"#f{i}": k for i, k in enumerate(fields)}
+    table.meta.client.update_item(
+        TableName=dynamodb.table_name("containers"),
+        Key=os_voice._key(s["sessionId"]),
+        UpdateExpression="SET startedAt = :s, #c = :c" + "".join(f", {n} = :v{i}" for i, n in enumerate(names)),
+        ExpressionAttributeNames={"#c": "client"} | names,
+        ExpressionAttributeValues={":s": s["startedAt"], ":c": s.get("client") or {}}
+        | {f":v{i}": v for i, v in enumerate(fields.values())},
+    )
+    assert await os_voice.end_session(s["sessionId"], reason, 5)
+    await settle()
+
+
+def spans(exports):
+    return [sp for e in exports for rs in e["resourceSpans"] for ss in rs["scopeSpans"] for sp in ss["spans"]]
+
+
+def attr(span, key):
+    return next((a["value"] for a in span["attributes"] if a["key"] == key), None)
+
+
+async def test_turns_are_not_written_per_turn_but_once_when_the_session_ends(stored, table):
     s = store_state()
-    await hear(s, ("user", "Text Sam, my code is 482913", 1000))
+    await hear(s, ("user", "Text Sam, my code is 482913", 1000), ("spark", "Sent.", 3000))
     await os_voice._flush(s)
     await settle()
-    assert stored == [
-        [
-            {
-                "row_id": str(uuid.uuid5(spark_events.NS, f"{SID}:1000:user")),
-                "ts": (1_800_000_000 * 1000 + 1000) * 1000,
-                "user_id": "user_a",
-                "session_id": SID,
-                "task_id": "dlg_abcdefghij12",
-                "role": "person",
-                "source": "voice",
-                "text": "Text Sam, my code is [code]",
-                "platform": "mac",
-                "app_version": "2.1.1",
-            }
-        ]
-    ]
-    assert [r["text"] for r in rows(table)] == ["Text Sam, my code is 482913"]  # the DynamoDB item is untouched
+    assert stored == [] and len(rows(table)) == 2  # saved to DynamoDB, nothing in the store yet
+    await finish(table, s)
+    ((user, exports),) = stored  # one object for the whole session
+    assert user == "user_a"
+    turn, reply = sorted(spans(exports), key=lambda sp: int(sp["startTimeUnixNano"]))
+    assert turn["startTimeUnixNano"] == str((1_800_000_000 * 1000 + 1000) * 1_000_000)
+    assert attr(turn, "gen_ai.input.messages")["arrayValue"]["values"][0]["kvlistValue"]["values"][1]["value"][
+        "arrayValue"
+    ]["values"][0]["kvlistValue"]["values"][1]["value"] == {"stringValue": "Text Sam, my code is [code]"}
+    assert attr(reply, "gen_ai.output.messages") and attr(turn, "gen_ai.realtime_session.id") == {"stringValue": SID}
+    assert [r["text"] for r in rows(table)] == ["Text Sam, my code is 482913", "Sent."]  # DynamoDB copy untouched
 
 
-async def test_spark_turns_are_role_spark_and_text_is_cut_to_8000(stored):
+async def test_a_turn_with_a_task_joins_the_tasks_trace_and_one_without_the_sessions(stored, table):
+    s = store_state()
+    await hear(s, ("user", "first", 1000))
+    await os_voice._flush(s)
+    s["taskId"] = None
+    await hear(s, ("user", "second", 2000))
+    await finish(table, s)
+    ((_, exports),) = stored
+    assert len(exports) == 2  # two traces, one object
+    first, second = sorted(spans(exports), key=lambda sp: int(sp["startTimeUnixNano"]))
+    root = spark_traces._id(8, "task", "user_a", "dlg_abcdefghij12")
+    assert first["parentSpanId"] == root and first["traceId"] == spark_traces._id(
+        16, "trace", "user_a", "dlg_abcdefghij12"
+    )
+    assert "parentSpanId" not in second and second["traceId"] == spark_traces._id(16, "session", "user_a", SID)
+
+
+async def test_platform_and_version_are_on_the_resource_and_spark_text_is_cut_to_8000(stored, table):
     s = store_state()
     await hear(s, ("spark", "y" * 9000))
-    await os_voice._flush(s)
-    await settle()
-    (row,) = stored[0]
-    assert row["role"] == "spark" and len(row["text"]) == 8000
+    await finish(table, s)
+    ((_, exports),) = stored
+    resource = {a["key"]: a["value"] for a in exports[0]["resourceSpans"][0]["resource"]["attributes"]}
+    assert resource["service.version"] == {"stringValue": "2.1.1"} and resource["os.type"] == {"stringValue": "darwin"}
+    assert resource["user.id"] == {"stringValue": "user_a"}
+    (reply,) = spans(exports)
+    text = attr(reply, "gen_ai.output.messages")["arrayValue"]["values"][0]["kvlistValue"]["values"][1]["value"]
+    assert len(text["arrayValue"]["values"][0]["kvlistValue"]["values"][1]["value"]["stringValue"]) == 8000
 
 
-async def test_no_task_or_client_gives_nulls(stored):
-    s = state()
+async def test_a_session_with_no_saved_turns_writes_nothing(stored, table):
+    await finish(table, store_state())
+    assert stored == []
+
+
+async def test_ending_twice_writes_once(stored, table):
+    s = store_state()
     await hear(s, ("user", "hi"))
-    await os_voice._flush(s)
+    await finish(table, s)
+    assert await os_voice.end_session(SID, "client_closed", 5) is False
     await settle()
-    (row,) = stored[0]
-    assert (row["task_id"], row["platform"], row["app_version"]) == (None, None, None)
+    assert len(stored) == 1
 
 
 @pytest.mark.parametrize(
-    "setup",
+    "fields",
     [
-        pytest.param(lambda s: s.update(client={"analytics": False}), id="analytics off"),
+        pytest.param({"client": {"analytics": False}}, id="analytics off at open"),
+        pytest.param({"noTranscript": True}, id="stopped mid-session"),
     ],
 )
-async def test_nothing_is_stored_when_the_session_may_not(stored, setup):
+async def test_an_opted_out_session_is_not_stored(stored, table, fields):
     s = store_state()
-    setup(s)
     await hear(s, ("user", "private"))
     await os_voice._flush(s)
+    table.meta.client.update_item(
+        TableName=dynamodb.table_name("containers"), Key=os_voice._key(SID),
+        UpdateExpression="SET startedAt = :s, " + ", ".join(f"{'#' + k} = :{k}" for k in fields),
+        ExpressionAttributeNames={"#" + k: k for k in fields},
+        ExpressionAttributeValues={":s": s["startedAt"]} | {":" + k: v for k, v in fields.items()},
+    )  # fmt: skip
+    await os_voice.end_session(SID, "client_closed", 5)
     await settle()
     assert stored == []
 
 
-async def test_flag_off_stores_nothing(stored, monkeypatch):
+@pytest.mark.parametrize("field", ["os_analytics_off", "os_deleted_at"])
+async def test_an_opt_out_after_the_turns_were_saved_but_before_the_end_stores_nothing(stored, table, field):
+    """The turns are saved (the transaction passed), then the person's row flips: only the consistent `allowed()` read
+    in `_store_session` stops the write. Deleting that read makes this fail."""
+    s = store_state()
+    await hear(s, ("user", "private words", 1000))
+    await os_voice._flush(s)
+    assert len(rows(table)) == 1  # saved while they were still allowed
+    table.meta.client.update_item(
+        TableName=dynamodb.table_name("users"), Key={"user_id": "user_a"},
+        UpdateExpression="SET #f = :t", ExpressionAttributeNames={"#f": field}, ExpressionAttributeValues={":t": True},
+    )  # fmt: skip
+    await finish(table, s)
+    assert stored == []
+
+
+async def test_the_staleness_clock_starts_after_the_opt_out_read_and_the_conversion(stored, table, monkeypatch):
+    order, real_allowed, real_to_otlp = [], spark_store.allowed, spark_traces.to_otlp
+
+    async def allowed(user_id):
+        order.append("allowed")
+        return await real_allowed(user_id)
+
+    def to_otlp(turns, steps):
+        order.append("convert")
+        return real_to_otlp(turns, steps)
+
+    async def put(user_id, exports, checked_at):
+        order.append(("put", checked_at))
+
+    monkeypatch.setattr(spark_store, "allowed", allowed)
+    monkeypatch.setattr(spark_traces, "to_otlp", to_otlp)
+    monkeypatch.setattr(spark_store, "put", put)
+    s = store_state()
+    await hear(s, ("user", "hi"))
+    before = time.monotonic()
+    await finish(table, s)
+    assert order[:2] == ["convert", "allowed"] and order[2][0] == "put"
+    assert order[2][1] >= before  # taken after the read, not at the start of the session's end
+
+
+async def test_the_conversion_runs_off_the_event_loop(stored, table, monkeypatch):
+    import threading
+
+    seen = []
+    real = spark_traces.to_otlp
+    monkeypatch.setattr(
+        spark_traces, "to_otlp", lambda t, st: (seen.append(threading.current_thread()), real(t, st))[1]
+    )
+    s = store_state()
+    await hear(s, ("user", "hi"))
+    await finish(table, s)
+    assert seen and all(t is not threading.main_thread() for t in seen)
+
+
+async def test_the_sessions_model_names_the_realtime_span(stored, table):
+    s = store_state()
+    await hear(s, ("user", "hi"))
+    await finish(table, s, model="gpt-live")
+    ((_, exports),) = stored
+    assert spans(exports)[0]["name"] == "realtime_inference gpt-live"
+
+
+async def test_an_account_deletion_close_is_not_stored(stored, table):
+    s = store_state()
+    await hear(s, ("user", "hi"))
+    await finish(table, s, reason="signed_out")
+    assert stored == []
+
+
+async def test_flag_off_stores_nothing(stored, table, monkeypatch):
     monkeypatch.setattr(settings, "SPARK_STORE_ENABLED", False)
     s = store_state()
     await hear(s, ("user", "hi"))
-    await os_voice._flush(s)
-    await settle()
+    await finish(table, s)
     assert stored == []
 
 
-async def test_no_transcript_stores_nothing(stored):
-    s = store_state()
-    await hear(s, ("user", "held"))
-    s["noTranscript"] = True
-    await os_voice._flush(s)
-    await settle()
-    assert stored == []
+async def test_a_failing_store_never_breaks_the_end_of_the_session(stored, table, monkeypatch):
+    seen = []
+    monkeypatch.setattr(os_voice, "put_metric", lambda name, *a, **kw: seen.append(name))
 
-
-async def test_a_turn_the_dynamodb_transaction_refused_is_not_stored(stored, table):
-    table.meta.client.put_item(
-        TableName=dynamodb.table_name("users"), Item={"user_id": "user_a", "os_analytics_off": True}
-    )
-    s = store_state()
-    await hear(s, ("user", "late"))
-    await os_voice._flush(s)
-    await settle()
-    assert stored == [] and rows(table) == []
-
-
-async def test_a_failing_store_never_breaks_the_save(stored, table, monkeypatch):
     async def boom(*args):
         raise RuntimeError("s3 down")
 
     monkeypatch.setattr(spark_store, "put", boom)
     s = store_state()
     await hear(s, ("user", "hi"))
-    await os_voice._flush(s)
-    await settle()
-    assert [r["text"] for r in rows(table)] == ["hi"]
+    await finish(table, s)  # end_session returned True
+    assert seen == ["spark_store.put_failed"] and [r["text"] for r in rows(table)] == ["hi"]
 
 
 class WS:
@@ -419,35 +522,6 @@ async def test_tick_copies_the_current_task(stored, table):
     s = state() | {"trialEndsAt": None}
     assert await os_voice._tick(WS(), s)
     assert s["taskId"] == "dlg_zzzzzzzzzz"
-
-
-async def test_a_turn_is_written_under_the_persons_id_and_a_name_of_its_own(stored, table, monkeypatch):
-    seen = []
-
-    async def put(table_name, user_id, name, batch, checked_at):
-        seen.append((table_name, user_id, name))
-
-    monkeypatch.setattr(spark_store, "put", put)
-    s = store_state()
-    await hear(s, ("user", "hi", 1000))
-    await os_voice._flush(s)
-    await settle()
-    assert seen == [("turns", "user_a", f"{SID}_1000_user")]
-
-
-async def test_a_store_bug_is_not_a_failed_transcript_write(stored, table, monkeypatch):
-    seen = []
-    monkeypatch.setattr(os_voice, "put_metric", lambda name, *a, **kw: seen.append(name))
-
-    def boom(text):
-        raise RuntimeError("scrub bug")
-
-    monkeypatch.setattr(spark_store, "scrub", boom)
-    s = store_state()
-    await hear(s, ("user", "secret words"))
-    await os_voice._flush(s)
-    assert [r["text"] for r in rows(table)] == ["secret words"]  # the DynamoDB save stands
-    assert seen == ["spark_store.put_failed"]
 
 
 async def test_mark_task_sets_it_on_the_persons_active_sessions_only(table):

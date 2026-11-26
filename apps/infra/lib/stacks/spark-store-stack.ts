@@ -10,8 +10,8 @@ export interface SparkStoreStackProps extends cdk.StackProps {
 }
 
 /**
- * Spark data store: one S3 bucket of gzip JSON-lines objects the backend writes at
- * data/<table>/<user_id>/<day>/<name>.json.gz (core/observability/spark_store.py).
+ * Spark data store: one S3 bucket of gzip JSON-lines OpenTelemetry traces the backend writes at
+ * data/traces/<user_id>/<day>/<unique>.jsonl.gz (core/observability/spark_store.py).
  * Storage only: the 90-day expiry is the lifecycle rule below.
  */
 export class SparkStoreStack extends cdk.Stack {

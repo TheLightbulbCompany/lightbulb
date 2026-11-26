@@ -33,7 +33,7 @@ from fastapi.responses import JSONResponse
 
 from core.config import settings
 from core.dynamodb import get_table, is_cancelled, run_in_thread, transact
-from core.observability import spark_events, spark_store
+from core.observability import spark_events, spark_store, spark_traces
 from core.observability.metrics import put_metric
 from core.repositories import container_repo
 
@@ -307,6 +307,8 @@ async def end_session(sid: str, reason: str, seconds: int) -> bool:
             return False
         raise
     logger.info("os voice session %s ended: %s after %ss", sid, reason, seconds)
+    if reason != "signed_out" and settings.SPARK_STORE_ENABLED:  # signed_out: the account is being deleted
+        spawn(_store_session(row))
     client = row.get("client") or {}
     props = {"seconds": seconds, "kind": row.get("kind"), "ended_reason": reason}
     for prop, value in (
@@ -323,6 +325,64 @@ async def end_session(sid: str, reason: str, seconds: int) -> bool:
     # "signed_out" is only `forget`'s close, i.e. the account is being deleted: the event must not outlive the person
     spark_events.server_event(row["userId"], "voice_session_ended", sid, props, personless=reason == "signed_out")
     return True
+
+
+def _session_exports(row: dict, items: list[dict]) -> list[dict]:
+    """The session's saved turns as OTLP trace exports. CPU-bound (scrubbing): run it off the event loop."""
+    client, sid, started = row.get("client") or {}, row["sessionId"], int(row["startedAt"])
+    turns = []
+    for it in items:
+        _, start_ms, role = it["sk"].rsplit("#", 2)
+        turns.append(
+            {
+                "row_id": str(uuid.uuid5(spark_events.NS, f"{sid}:{int(start_ms)}:{role}")),
+                "ts": (started * 1000 + int(start_ms)) * 1000,  # epoch microseconds
+                "user_id": row["userId"],
+                "session_id": sid,
+                "task_id": it.get("taskId"),
+                "role": "person" if role == "user" else "spark",
+                "source": "voice",
+                "text": spark_store.scrub(it["text"])[:8000],
+                "platform": client.get("platform"),
+                "app_version": client.get("appVersion"),
+                "model": row.get("model"),
+            }
+        )
+    return spark_traces.to_otlp(turns, [])
+
+
+async def _store_session(row: dict) -> None:
+    """A session just ended (`end_session` wins that once): write its saved turns as one trace object. The turns are
+    the ones `_save_turn` put in the transcripts table (90-day TTL), so a restart loses nothing but this write, and
+    the session's turns are final: an ended session saves no more. The person's opt-out is read consistently as late
+    as possible, after the turns are read and converted and right before the write, as for `POST /os/log`. Never
+    raises."""
+    try:
+        if row.get("noTranscript") or (row.get("client") or {}).get("analytics") is False:
+            return
+        user_id, sid = row["userId"], row["sessionId"]
+        table, items, start = get_table(TRANSCRIPTS), [], {}
+        while True:
+            page = await run_in_thread(
+                table.query,
+                KeyConditionExpression="user_id = :u AND begins_with(sk, :p)",
+                ExpressionAttributeValues={":u": user_id, ":p": f"{int(row['startedAt'])}#{sid}#"},
+                ConsistentRead=True,
+                **start,
+            )
+            items += page.get("Items", [])
+            if "LastEvaluatedKey" not in page:
+                break
+            start = {"ExclusiveStartKey": page["LastEvaluatedKey"]}
+        if not items:
+            return
+        exports = await run_in_thread(_session_exports, row, items)
+        if not await spark_store.allowed(user_id):  # a consistent read, just before writing
+            return
+        await spark_store.put(user_id, exports, time.monotonic())
+    except Exception as e:  # noqa: BLE001 -- the type only: the text is never logged
+        put_metric("spark_store.put_failed")
+        logger.warning("os voice session %s: store write failed: %s", row.get("sessionId"), type(e).__name__)
 
 
 async def _reap_unconfirmed(sid: str, seconds: int) -> None:
@@ -436,6 +496,8 @@ async def _save_turn(s: dict, role: str, text: str, start_ms: int) -> None:
     sk = f"{int(s['startedAt'])}#{s['sessionId']}#{start_ms:012d}#{role}"
     item = {"user_id": s["userId"], "sk": sk, "role": role}
     item |= {"text": text, "at": at, "sessionId": s["sessionId"], "ttl": at + TRANSCRIPT_TTL_S}
+    if s.get("taskId"):
+        item["taskId"] = s["taskId"]  # the session's trace writer files the turn under its task
     try:
         table = get_table(TRANSCRIPTS)
         active = {
@@ -460,34 +522,6 @@ async def _save_turn(s: dict, role: str, text: str, start_ms: int) -> None:
     except Exception as e:  # noqa: BLE001 -- the type only: the text is never logged
         put_metric("os_voice.transcript.write_failed")
         logger.warning("os voice session %s: transcript write failed: %s", s["sessionId"], type(e).__name__)
-    else:  # saved: the store's copy is separate, so a bug there is not a failed transcript write
-        try:
-            _store_turn(s, role, text, start_ms)
-        except Exception as e:  # noqa: BLE001 -- the type only
-            put_metric("spark_store.put_failed")
-            logger.warning("os voice session %s: store hand-off failed: %s", s["sessionId"], type(e).__name__)
-
-
-def _store_turn(s: dict, role: str, text: str, start_ms: int) -> None:
-    """Also write the turn it just saved to the data store, in the background (it never delays or fails the save).
-    The save's transaction already proved the person has not opted out."""
-    if not (settings.SPARK_STORE_ENABLED and _saves(s)):
-        return
-    client = s.get("client") or {}
-    row = {
-        "row_id": str(uuid.uuid5(spark_events.NS, f"{s['sessionId']}:{start_ms}:{role}")),
-        "ts": (int(s["startedAt"]) * 1000 + start_ms) * 1000,  # epoch microseconds; `put` writes it as a string
-        "user_id": s["userId"],
-        "session_id": s["sessionId"],
-        "task_id": s.get("taskId"),
-        "role": "person" if role == "user" else "spark",
-        "source": "voice",
-        "text": spark_store.scrub(text)[:8000],
-        "platform": client.get("platform"),
-        "app_version": client.get("appVersion"),
-    }
-    checked_at = time.monotonic()  # the save's transaction has just succeeded
-    spawn(spark_store.put("turns", s["userId"], f"{s['sessionId']}_{start_ms}_{role}", [row], checked_at))
 
 
 async def _flush(s: dict, idle: float = 0.0) -> None:

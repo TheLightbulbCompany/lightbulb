@@ -4,7 +4,6 @@ import { SignUp, useAuth } from "@clerk/nextjs";
 import { useSearchParams } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 
-import { capture } from "@/lib/analytics";
 import { useApi } from "@/lib/api";
 
 import { CHANNEL, CODE, SparkGet, useOnPhone } from "./SparkDownload";
@@ -41,16 +40,10 @@ function Invite({ code, channel, ready, download }: { code: string; channel: str
   const onPhone = useOnPhone();
   const [recorded, setRecorded] = useState(false);
   const sent = useRef(false);
-  const started = useRef(false);
   const here = `/os?${new URLSearchParams({ ...(code && { ref: code }), ...(channel && { c: channel }) })}`;
 
   useEffect(() => {
-    if (!isLoaded) return;
-    if (!isSignedIn) {
-      if (!started.current && code) capture("spark_invite_signup_started");
-      started.current = true;
-      return;
-    }
+    if (!isLoaded || !isSignedIn) return;
     // Signing up on this page flips isSignedIn in place, so only the signed-in request is guarded.
     if (sent.current) return;
     sent.current = true;
@@ -58,7 +51,6 @@ function Invite({ code, channel, ready, download }: { code: string; channel: str
     // The channel goes first: the first set-once wins, so a creator code beats "referral".
     (channel ? api.post("/os/channel", { channel }).catch(() => undefined) : Promise.resolve())
       .then(() => (code ? api.post("/os/referral", { code }) : undefined))
-      .then(() => (code ? capture("spark_invite_signup_completed") : undefined))
       .catch(() => undefined)
       .finally(() => setRecorded(true));
   }, [isLoaded, isSignedIn, api, code, channel]);

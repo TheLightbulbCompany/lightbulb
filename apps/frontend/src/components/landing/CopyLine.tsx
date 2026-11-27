@@ -2,28 +2,22 @@
 
 import { useState } from "react";
 
-import { capture } from "@/lib/analytics";
-
 export type CopyLineKind = "curl" | "brew" | "npm" | "agent_line";
 
 /**
- * A command (or the paste-to-your-agent line) with a Copy button. The event
- * carries only where and which kind; never the text.
+ * A command (or the paste-to-your-agent line) with a Copy button.
  */
 export function CopyLine({
   text,
   copy = text,
   kind,
-  surface,
 }: {
   text: string;
   copy?: string;
   kind: CopyLineKind;
-  surface: "hero" | "network";
 }) {
   const [state, setState] = useState<"idle" | "copied" | "failed">("idle");
   const onCopy = async () => {
-    capture("install_line_copied", { surface, kind });
     try {
       await navigator.clipboard.writeText(copy);
       setState("copied");

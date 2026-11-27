@@ -1,8 +1,6 @@
 "use client";
 
-import { useEffect, useState, useSyncExternalStore } from "react";
-
-import { capture } from "@/lib/analytics";
+import { useState, useSyncExternalStore } from "react";
 
 const INSTALL = "curl -fsSL https://github.com/TheLightbulbCompany/cli/releases/latest/download/install.sh | sh";
 
@@ -20,10 +18,6 @@ export function JoinCommand() {
   const valid = t !== null && /^[A-Za-z0-9_-]{1,4096}$/.test(t);
   const invalid = !!t && !valid;
   const ticket = invalid ? null : t;
-
-  useEffect(() => {
-    if (t !== null) capture("join_link_viewed", { valid }); // never the ticket
-  }, [t, valid]);
 
   if (invalid) return <p>This link is not valid. Ask for a new one.</p>;
   if (ticket === null) return null;
@@ -47,7 +41,6 @@ export function JoinCommand() {
         type="button"
         className="ld-mono rounded-lg border border-[var(--midnight-muted)] px-4 py-2 text-sm text-[var(--midnight)]"
         onClick={() => {
-          capture("join_command_copied");
           navigator.clipboard.writeText(command).then(() => setCopied(true)).catch(() => {});
         }}
       >

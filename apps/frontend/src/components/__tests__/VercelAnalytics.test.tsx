@@ -12,7 +12,7 @@ describe("VercelAnalytics", () => {
   it("never sends an invitation's ticket or the approval card it opens", () => {
     render(<VercelAnalytics />);
     const card = encodeURIComponent("/chat?panel=teams-approval-detail&detailId=ap-secret");
-    const sent = props.beforeSend!({ url: `https://thelightbulb.company/sign-up?__clerk_ticket=t&redirect_url=${card}` });
-    expect(sent.url).toBe("https://thelightbulb.company/sign-up");
+    const sent = props.beforeSend!({ url: `https://thelightbulb.company/sign-in?__clerk_ticket=t&redirect_url=${card}` });
+    expect(sent.url).toBe("https://thelightbulb.company/sign-in");
   });
 });

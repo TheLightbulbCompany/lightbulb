@@ -4,7 +4,6 @@ import { SignIn } from "@clerk/nextjs";
 import { useEffect, useState } from "react";
 
 import { Logo } from "@/components/Logo";
-import { AuthSwitchLink } from "@/components/onboarding/AuthSwitchLink";
 import { authFallbackUrl } from "@/lib/domain";
 
 const TASKS = [
@@ -292,12 +291,17 @@ export default function Page() {
               </p>
             </div>
 
-            <SignIn fallbackRedirectUrl={fallback} signUpFallbackRedirectUrl={fallback} />
-
-            <p className="auth-footer">
-              Don&apos;t have an account?{" "}
-              <AuthSwitchLink to="/sign-up">Sign up</AuthSwitchLink>
-            </p>
+            {/* withSignUp: Clerk's sign-in-or-up flow. A person with no account is moved on to sign-up inside
+                this page (/sign-in/create), so there is no /sign-up page and no "Sign up" footer link
+                (clerk.com/docs/nextjs/reference/components/authentication/sign-in). routing and path are
+                explicit so those steps stay under /sign-in. */}
+            <SignIn
+              routing="path"
+              path="/sign-in"
+              withSignUp
+              fallbackRedirectUrl={fallback}
+              signUpFallbackRedirectUrl={fallback}
+            />
           </div>
         </main>
       </div>

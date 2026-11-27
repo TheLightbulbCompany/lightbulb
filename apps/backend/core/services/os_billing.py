@@ -92,8 +92,11 @@ def _users():
 
 
 def status(row: dict, now: int) -> str:
-    """`active` with a live subscription, else `trial` until `os_trial_ends_at`, else `ended`."""
-    if row.get("os_subscription_status") in LIVE:
+    """`active` with a live subscription, else `trial` until `os_trial_ends_at`, else `ended`. A team account
+    (`settings.spark_internal_user_ids`, the accounts the metrics already ignore) is `active` too: the team is never
+    asked to pay (founder, 26 Nov 2026). This one answer is the app's paywall, the 402 on a new voice session and the
+    close of an open one at the trial's end."""
+    if row.get("os_subscription_status") in LIVE or row.get("user_id") in settings.spark_internal_user_ids:
         return "active"
     return "trial" if now < int(row["os_trial_ends_at"]) else "ended"
 

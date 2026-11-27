@@ -82,7 +82,8 @@ Spark's routes are `routers/os.py` and `routers/os_billing.py`, mounted at `/api
   token (`core/services/os_billing.py`) and answer 303 to Stripe.
 
 A Spark account is a few attributes on the person's `users` row (see the `os.py` docstring). It is keyed on the
-person, never on an organisation. Auth is Clerk JWT (`core/auth.py`). DynamoDB items are plain dicts; there is no
+person, never on an organisation. The team's accounts (`SPARK_INTERNAL_USER_IDS` and the platform admins, the same list the
+metrics ignore) are never asked to pay: `os_billing.status` answers `active` for them. Auth is Clerk JWT (`core/auth.py`). DynamoDB items are plain dicts; there is no
 ORM. `core/config.py` holds the settings.
 
 Besides those, the backend has only: the Stripe webhook (`POST /api/v1/billing/webhooks/stripe`, Spark

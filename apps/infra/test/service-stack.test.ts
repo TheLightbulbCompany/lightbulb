@@ -93,6 +93,23 @@ describe("ServiceStack — the Spark backend", () => {
     }
   });
 
+  // Clerk: "explicitly set authorizedParties", the origins allowed to mint session tokens. The Windows app signs in from
+  // its own page, served at <scheme>://renderer, so that origin is one of ours (the Mac's native tokens carry no origin).
+  test.each([
+    ["dev", SERVICE_TEMPLATE_DEV, "spark-dev://renderer", "spark://renderer"],
+    ["prod", SERVICE_TEMPLATE_PROD, "spark://renderer", "spark-dev://renderer"],
+  ] as const)("%s accepts sign-in tokens minted by its own desktop app's origin, and not the other flavour's", (_env, template, ours, theirs) => {
+    const env = backendContainer(template).Environment;
+    const parties: string[] = env.find((e: any) => e.Name === "CLERK_AUTHORIZED_PARTIES").Value.split(",");
+    expect(parties).toContain(ours);
+    expect(parties).not.toContain(theirs);
+  });
+
+  test("production accepts no localhost origin", () => {
+    const env = backendContainer(SERVICE_TEMPLATE_PROD).Environment;
+    expect(env.find((e: any) => e.Name === "CLERK_AUTHORIZED_PARTIES").Value).not.toMatch(/localhost|127\.0\.0\.1/);
+  });
+
   test.each([
     ["dev", SERVICE_TEMPLATE_DEV, "1"],
     ["prod", SERVICE_TEMPLATE_PROD, "1"],

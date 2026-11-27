@@ -1,23 +1,6 @@
-"""Tests for the PostHog Events API admin client.
+"""The PostHog admin client: saved Endpoints for the dashboard (`endpoint`) and person deletion (`delete_person`).
 
-Covers:
-- Stubbed mode when POSTHOG_PROJECT_API_KEY unset (CEO local-dev requirement).
-- Happy path: /events/ results → flattened event dicts, $session_id surfaced.
-- Regression: requests hit /events/ (NOT /persons/) — the old code mistakenly
-  queried /persons/ which never returns events, yielding a perpetually empty
-  Activity tab.
-- distinct_id and limit are forwarded as query params.
-- 404 → missing=True (CEO E5).
-- 403 with "scope" in body → error="insufficient_scope" (Events endpoint
-  requires `query:read` scope on the personal API key).
-- Other 4xx/5xx → error="http_{code}".
-- Timeout → error="timeout".
-- Generic network error → error populated with exception message.
-- session_replay_url helper.
-
-Mocks httpx.AsyncClient directly via unittest.mock — respx 0.20.2 has
-a compat issue with newer httpx where even identical URL strings don't
-match, so we patch the client surface instead.
+httpx.AsyncClient is replaced with a stand-in rather than respx: respx 0.20.2 does not match URLs under newer httpx.
 """
 
 import os
@@ -55,86 +38,146 @@ async def _fake_post_client(response_or_exc):
     yield client
 
 
-@pytest.mark.asyncio
-async def test_hogql_stubbed_without_key(monkeypatch):
-    _apply_posthog_settings(monkeypatch, api_key="")
+class _Scripted:
+    """An httpx.AsyncClient stand-in: answers each request from `script[(method, path after /endpoints/)]` (a list is
+    used up in order) and records what was asked."""
+
+    def __init__(self, script):
+        self.script, self.calls, self.kwargs = script, [], {}
+
+    def __call__(self, **kwargs):
+        self.kwargs = kwargs
+        return self
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def request(self, method, url, json=None):
+        path = url.split("/endpoints/")[1]
+        self.calls.append((method, path, json))
+        answer = self.script[(method, path)]
+        answer = answer.pop(0) if isinstance(answer, list) else answer
+        if isinstance(answer, BaseException):
+            raise answer
+        return answer
+
+
+SQL = "select 1"
+NAME = "spark_prod_installs_32320039"  # stem + "_" + the first 8 hex digits of sha1(SQL)
+ROWS = {
+    "columns": ["week", "n"],
+    "results": [["2026-08-17", 3]],
+    "endpoint_materialized_at": "2026-11-26T16:15:03+00:00",
+}
+
+
+async def _endpoint(monkeypatch, script, **settings):
+    _apply_posthog_settings(monkeypatch, host="https://us.posthog.com", **settings)
     from core.services import posthog_admin
 
-    out = await posthog_admin.hogql("select 1")
-    assert out == {"columns": [], "results": [], "stubbed": True, "error": None}
-
-
-@pytest.mark.asyncio
-async def test_hogql_posts_query_kind_and_parses(monkeypatch):
-    """Regression-proofed against a broken assertion path: a MagicMock's
-    ``.return_value`` set to a real ``@asynccontextmanager`` instance does
-    NOT make ``__aenter__`` itself a mock (it stays the real bound method),
-    so introspecting via ``fake.__aenter__.return_value`` raises
-    AttributeError. Capture the POST call args directly instead, matching
-    this file's existing ``capturing_client`` pattern.
-    """
-    _apply_posthog_settings(monkeypatch, host="https://us.posthog.com")
-    from core.services import posthog_admin
-
-    captured = {}
-    resp = _make_response(200, {"columns": ["week", "n"], "results": [["2026-08-17", 3]]})
-
-    @asynccontextmanager
-    async def capturing_client(*args, **kwargs):
-        client = MagicMock()
-
-        async def post(url, headers=None, json=None, **kw):
-            captured["url"] = url
-            captured["headers"] = headers
-            captured["json"] = json
-            return resp
-
-        client.post = post
-        yield client
-
-    with patch("core.services.posthog_admin.httpx.AsyncClient", new=capturing_client):
-        out = await posthog_admin.hogql("select 1")
-    assert out == {"columns": ["week", "n"], "results": [["2026-08-17", 3]], "stubbed": False, "error": None}
-    assert captured["url"] == "https://us.posthog.com/api/projects/12345/query/"
-    assert captured["json"] == {"query": {"kind": "HogQLQuery", "query": "select 1"}}
-    assert captured["headers"]["Authorization"] == "Bearer phc_xyz"
-
-
-@pytest.mark.asyncio
-async def test_hogql_403_scope(monkeypatch):
-    _apply_posthog_settings(monkeypatch)
-    from core.services import posthog_admin
-
-    resp = _make_response(403, text_body='{"detail":"API key missing required scope"}')
-    with patch("core.services.posthog_admin.httpx.AsyncClient", return_value=_fake_post_client(resp)):
-        out = await posthog_admin.hogql("select 1")
-    assert out["error"] == "insufficient_scope" and out["results"] == []
+    client = _Scripted(script)
+    with patch("core.services.posthog_admin.httpx.AsyncClient", client):
+        return await posthog_admin.endpoint("spark_prod_installs", SQL, timeout_s=7.0), client
 
 
 @pytest.mark.asyncio
-async def test_hogql_timeout(monkeypatch):
-    _apply_posthog_settings(monkeypatch)
-    from core.services import posthog_admin
-
-    with patch(
-        "core.services.posthog_admin.httpx.AsyncClient",
-        return_value=_fake_post_client(httpx.TimeoutException("slow")),
-    ):
-        out = await posthog_admin.hogql("select 1")
-    assert out["error"] == "timeout"
+async def test_endpoint_stubbed_without_key(monkeypatch):
+    out, client = await _endpoint(monkeypatch, {}, api_key="")
+    assert out["stubbed"] is True and out["error"] is None and out["results"] == [] and client.calls == []
 
 
 @pytest.mark.asyncio
-async def test_hogql_invalid_json_response(monkeypatch):
-    _apply_posthog_settings(monkeypatch)
-    from core.services import posthog_admin
+async def test_endpoint_runs_the_saved_query_by_name(monkeypatch):
+    import hashlib
 
+    assert NAME == "spark_prod_installs_" + hashlib.sha1(SQL.encode()).hexdigest()[:8]
+    out, client = await _endpoint(monkeypatch, {("POST", f"{NAME}/run/"): _make_response(200, ROWS)})
+    assert out == {
+        "columns": ["week", "n"],
+        "results": [["2026-08-17", 3]],
+        "as_of": "2026-11-26T16:15:03+00:00",
+        "stubbed": False,
+        "error": None,
+    }
+    assert client.calls == [("POST", f"{NAME}/run/", {})]  # nothing is published or listed when the endpoint exists
+    assert client.kwargs["headers"] == {"Authorization": "Bearer phc_xyz"} and client.kwargs["timeout"] == 7.0
+
+
+@pytest.mark.asyncio
+async def test_endpoint_as_of_is_the_cache_time_when_not_materialized_yet(monkeypatch):
+    body = {"columns": [], "results": [], "last_refresh": "2026-11-26T16:15:20Z"}
+    out, _ = await _endpoint(monkeypatch, {("POST", f"{NAME}/run/"): _make_response(200, body)})
+    assert out["as_of"] == "2026-11-26T16:15:20Z"
+
+
+@pytest.mark.asyncio
+async def test_endpoint_publishes_a_missing_query_and_retires_its_older_versions_first(monkeypatch):
+    """The name carries a hash of the SQL, so a 404 means this query was never published. Older endpoints of the same
+    stem go first: a materialized endpoint is recomputed on a schedule until it is deleted."""
+    listing = {
+        "results": [
+            {"name": "spark_prod_installs_0000aaaa"},  # the query before this one
+            {"name": "spark_prod_installs_weekly_0000bbbb"},  # another query whose stem starts the same
+            {"name": "spark_dev_installs_0000cccc"},  # the dev backend's
+            {"name": "someone_elses"},
+        ]
+    }
+    script = {
+        ("POST", f"{NAME}/run/"): [_make_response(404), _make_response(200, ROWS)],
+        ("GET", ""): _make_response(200, listing),
+        ("DELETE", "spark_prod_installs_0000aaaa/"): _make_response(204),
+        ("POST", ""): _make_response(201, {"name": NAME}),
+    }
+    out, client = await _endpoint(monkeypatch, script)
+    assert out["error"] is None and out["results"] == [["2026-08-17", 3]]
+    assert [c[:2] for c in client.calls] == [
+        ("POST", f"{NAME}/run/"),
+        ("GET", ""),
+        ("DELETE", "spark_prod_installs_0000aaaa/"),
+        ("POST", ""),
+        ("POST", f"{NAME}/run/"),
+    ]
+    created = client.calls[3][2]
+    assert created["name"] == NAME and created["query"] == {"kind": "HogQLQuery", "query": SQL}
+    assert created["is_materialized"] is True and created["data_freshness_seconds"] == 900
+
+
+@pytest.mark.asyncio
+async def test_endpoint_runs_again_when_another_task_published_it_first(monkeypatch):
+    script = {
+        ("POST", f"{NAME}/run/"): [_make_response(404), _make_response(200, ROWS)],
+        ("GET", ""): _make_response(200, {"results": []}),
+        ("POST", ""): _make_response(400, text_body="An endpoint with this name already exists"),
+    }
+    out, _ = await _endpoint(monkeypatch, script)
+    assert out["error"] is None and out["results"] == [["2026-08-17", 3]]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "answer, error",
+    [
+        (_make_response(403, text_body='{"detail":"API key missing required scope"}'), "insufficient_scope"),
+        (_make_response(429, text_body="Too many concurrent requests"), "http_429"),
+        (_make_response(503, text_body="query_capacity"), "http_503"),
+        (httpx.TimeoutException("slow"), "timeout"),
+        (_make_response(200, {"results": [[1]], "hasMore": True}), "truncated"),
+    ],
+)
+async def test_endpoint_failures_are_named_and_carry_no_rows(monkeypatch, answer, error):
+    out, _ = await _endpoint(monkeypatch, {("POST", f"{NAME}/run/"): answer})
+    assert out["error"] == error and out["results"] == [] and out["stubbed"] is False
+
+
+@pytest.mark.asyncio
+async def test_endpoint_invalid_json_response(monkeypatch):
     resp = _make_response(200, {})
     resp.json = MagicMock(side_effect=ValueError("bad json"))
-    with patch("core.services.posthog_admin.httpx.AsyncClient", return_value=_fake_post_client(resp)):
-        out = await posthog_admin.hogql("select 1")
-    assert out["error"] == "invalid_response"
-    assert out["results"] == []
+    out, _ = await _endpoint(monkeypatch, {("POST", f"{NAME}/run/"): resp})
+    assert out["error"] == "invalid_response" and out["results"] == []
 
 
 # --- delete_person -------------------------------------------------------------------------------------------

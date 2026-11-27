@@ -1,4 +1,4 @@
-"""Spark product metrics for the admin console: HogQL over PostHog, cached.
+"""Spark product metrics for the admin console: HogQL run as saved PostHog endpoints, cached.
 
 Events come from the desktop app via POST /os/event (core/observability/spark_events.py) and from
 the server (subscription_*, ...). Every query excludes team accounts (``_internal_filter``) and other
@@ -33,8 +33,10 @@ from core.services.ops.growth import _hogql_filter, _monday, _parse_ts, _utc_dat
 WEEKS = 12
 INSTALL_DAYS = 84  # install scan window (12 weeks); event scans use 90d so day-29 follow-ups fit
 OK_TTL_S, FAIL_TTL_S = 300, 60
-# PostHog runs 3 API queries at once per project and makes the rest wait (posthog.com/docs/api/queries, read
-# 2026-11-26). Sent all together, the waiting ones used up their client timeout in PostHog's line and their sections
+# Each query is a saved PostHog endpoint (posthog_admin.endpoint), recomputed by PostHog every 15 minutes and answered
+# from the stored result. One that is not computed yet (just published, or its computation failed) runs live, and
+# PostHog runs 3 live queries at once per project and makes the rest wait (posthog.com/docs/api/queries, read
+# 2026-11-26): sent all together, the waiting ones used up their client timeout in PostHog's line and their sections
 # showed "couldn't load" although every query finished. So we send 3 at a time and a query's timeout covers only its
 # own run (PostHog caps a run at 10s). BUDGET_S bounds the whole load, under the load balancer's 60s.
 PARALLEL, QUERY_TIMEOUT_S, BUDGET_S = 3, 15.0, 45.0
@@ -640,19 +642,23 @@ async def compute() -> tuple[dict | None, str, list[dict]]:
     queries = build_queries()
     gate, deadline = asyncio.Semaphore(PARALLEL), time.monotonic() + BUDGET_S
 
-    async def run(q: str) -> dict:
+    async def run(n: str, q: str) -> dict:
         async with gate:
             left = deadline - time.monotonic()
             if left <= 0:  # not sent: it could not finish inside the request
-                return {"columns": [], "results": [], "stubbed": False, "error": "timeout"}
-            return await posthog_admin.hogql(q, timeout_s=min(QUERY_TIMEOUT_S, left))
+                return {"columns": [], "results": [], "as_of": None, "stubbed": False, "error": "timeout"}
+            stem = f"spark_{settings.ENVIRONMENT}_{n}"  # dev and prod share one PostHog project
+            return await posthog_admin.endpoint(stem, q, timeout_s=min(QUERY_TIMEOUT_S, left))
 
-    results = await asyncio.gather(*(run(q) for q in queries.values()))
+    results = await asyncio.gather(*(run(n, q) for n, q in queries.items()))
     if all(r["stubbed"] for r in results):
         return None, env.UNAVAILABLE, [{"domain": "posthog", "reason": "not configured"}]
     errors = [{"domain": f"posthog:{n}", "reason": r["error"]} for n, r in zip(queries, results) if r["error"]]
     rows = {n: [] if r["error"] else r["results"] for n, r in zip(queries, results)}
     data = derive(rows, datetime.now(timezone.utc))
+    computed = [_parse_ts(r["as_of"]) for r in results if r.get("as_of")]
+    if computed:  # the page says "Generated <this>": the oldest of PostHog's computations, not the time of this request
+        data["generated_at"] = min(computed).isoformat()
     data["unavailable"] = sorted({k for n, r in zip(queries, results) if r["error"] for k in QUERY_KEYS[n]})
     state = env.PARTIAL if errors else env.OK
     _cache = (time.monotonic() + (FAIL_TTL_S if errors else OK_TTL_S), data, state, errors)

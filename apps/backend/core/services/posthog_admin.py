@@ -1,8 +1,10 @@
-"""PostHog HogQL client for the admin dashboard (``hogql``)."""
+"""PostHog for the admin: the dashboard's saved endpoints (``endpoint``) and person deletion (``delete_person``)."""
 
 import asyncio
 import contextlib
+import hashlib
 import logging
+import re
 
 import httpx
 
@@ -16,49 +18,74 @@ logger = logging.getLogger(__name__)
 _TIMEOUT_S = 5.0
 
 
-async def hogql(query: str, *, timeout_s: float = 15.0) -> dict:
-    """Run one HogQL statement via ``POST /api/projects/{id}/query/``.
+ENDPOINT_FRESH_S = 900  # how often PostHog recomputes a materialized endpoint; 15 minutes is its shortest setting
+_HEX8 = "[0-9a-f]{8}"
 
-    Needs the ``query:read`` scope on the personal ``phx_`` key (verified on
-    the prod key 2026-08-26). PostHog caps execution at 10s and rows at 100
-    by default / 50k with an explicit LIMIT; the ``/query`` bucket is 2,400
-    requests/hour shared across the team, so callers cache.
 
-    Returns ``{columns, results, stubbed, error}``; never raises.
+def _rows(error: str | None = None, *, stubbed: bool = False, **data) -> dict:
+    return {"columns": [], "results": [], "as_of": None, **data, "stubbed": stubbed, "error": error}
+
+
+async def endpoint(stem: str, sql: str, *, timeout_s: float = 15.0) -> dict:
+    """Rows of one saved PostHog endpoint: ``POST /api/projects/{id}/endpoints/{name}/run/``.
+
+    PostHog's guidance (posthog.com/docs/endpoints, read 2026-11-26): code that runs a query repeatedly calls a saved
+    endpoint, not the ad hoc ``/query`` API; a materialized endpoint is recomputed on a schedule (``ENDPOINT_FRESH_S``),
+    answers from the stored result and allows 10 requests at once, where ``/query`` and an endpoint that is not
+    materialized (yet) allow 3 and make the rest wait. Endpoints are in beta.
+
+    The query stays in this repo. The endpoint's name is ``<stem>_<first 8 hex digits of sha1(sql)>``, so "PostHog has
+    this exact query" is "the name exists". On a 404 this deletes the stem's older endpoints (a materialized endpoint is
+    recomputed until it is deleted), publishes the query and runs it; until its first computation finishes PostHog runs
+    it live. Deleting first means a call cut short leaves nothing behind that the next call does not finish. The
+    personal key needs ``endpoint:read`` and ``endpoint:write``.
+
+    Returns ``{columns, results, as_of, stubbed, error}``; never raises. ``as_of`` is when PostHog computed the rows.
     """
-    empty: dict = {"columns": [], "results": []}
     if not settings.POSTHOG_PROJECT_API_KEY or not settings.POSTHOG_PROJECT_ID:
-        return {**empty, "stubbed": True, "error": None}
+        return _rows(stubbed=True)
 
-    url = f"{settings.POSTHOG_HOST}/api/projects/{settings.POSTHOG_PROJECT_ID}/query/"
+    name = f"{stem}_{hashlib.sha1(sql.encode()).hexdigest()[:8]}"
+    base = f"{settings.POSTHOG_HOST}/api/projects/{settings.POSTHOG_PROJECT_ID}/endpoints/"
     headers = {"Authorization": f"Bearer {settings.POSTHOG_PROJECT_API_KEY}"}
-    body = {"query": {"kind": "HogQLQuery", "query": query}}
-
     try:
-        async with httpx.AsyncClient(timeout=timeout_s) as client:
-            response = await client.post(url, headers=headers, json=body)
+        async with httpx.AsyncClient(timeout=timeout_s, headers=headers) as client:
+            response = await client.request("POST", f"{base}{name}/run/", json={})
+            if response.status_code == 404:
+                listing = await client.request("GET", base)
+                published = (listing.json().get("results") or []) if listing.status_code == 200 else []
+                for old in (e["name"] for e in published):
+                    if old != name and re.fullmatch(f"{re.escape(stem)}_{_HEX8}", old):
+                        await client.request("DELETE", f"{base}{old}/")
+                body = {
+                    "name": name,
+                    "query": {"kind": "HogQLQuery", "query": sql},
+                    "is_materialized": True,
+                    "data_freshness_seconds": ENDPOINT_FRESH_S,
+                }
+                await client.request("POST", base, json=body)  # refused when another task published it first
+                response = await client.request("POST", f"{base}{name}/run/", json={})
     except httpx.TimeoutException:
-        return {**empty, "stubbed": False, "error": "timeout"}
+        return _rows("timeout")
     except Exception as e:  # noqa: BLE001
-        logger.warning("posthog_admin.hogql network error: %s", e)
-        return {**empty, "stubbed": False, "error": str(e)}
+        logger.warning("posthog_admin.endpoint error: %s", type(e).__name__)
+        return _rows(type(e).__name__)
 
     if response.status_code == 403 and "scope" in response.text.lower():
-        return {**empty, "stubbed": False, "error": "insufficient_scope"}
+        return _rows("insufficient_scope")
     if response.status_code != 200:
-        return {**empty, "stubbed": False, "error": f"http_{response.status_code}"}
-
+        return _rows(f"http_{response.status_code}")
     try:
         data = response.json()
-    except ValueError as e:
-        logger.warning("posthog_admin.hogql invalid JSON response: %s", e)
-        return {**empty, "stubbed": False, "error": "invalid_response"}
-    return {
-        "columns": list(data.get("columns") or []),
-        "results": list(data.get("results") or []),
-        "stubbed": False,
-        "error": None,
-    }
+    except ValueError:
+        return _rows("invalid_response")
+    if data.get("hasMore"):  # a first page only: wrong numbers are worse than a section that says it could not load
+        return _rows("truncated")
+    return _rows(
+        columns=list(data.get("columns") or []),
+        results=list(data.get("results") or []),
+        as_of=data.get("endpoint_materialized_at") or data.get("last_refresh"),
+    )
 
 
 async def delete_person(user_id: str) -> None:

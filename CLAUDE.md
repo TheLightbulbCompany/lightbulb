@@ -149,6 +149,8 @@ ORDER BY root.traceId, step.startTimeUnixNano;
 
 Events stay in PostHog only; an account deletion also deletes the person and their events there (`posthog_admin.delete_person`, best effort, needs `person:write` on the personal key; a failure counts `posthog.person_delete_failed`). The usage-data switch writes `os_analytics_at` (request arrival, ns) and ignores an older write, so the person's last choice wins; a tie goes to off.
 
+The admin dashboard reads PostHog through **saved endpoints**, not the ad hoc `/query` API (PostHog's guidance for code that runs a query repeatedly; Endpoints are in beta). The 13 queries stay in `core/services/ops/spark_metrics.py`. `posthog_admin.endpoint` runs each as `spark_<env>_<query>_<hash of the SQL>` and, when PostHog has no endpoint of that name, deletes the query's older endpoints and publishes it, materialized and recomputed every 15 minutes (`ENDPOINT_FRESH_S`). So a changed query, or a changed team list, publishes itself on the first dashboard load after the deploy; nothing is edited in PostHog by hand. The page's "Generated" time is when PostHog computed the numbers. The personal key needs `endpoint:read` and `endpoint:write` for this.
+
 The database stack holds four DynamoDB tables, named `lightbulb-{env}-{suffix}`: `users` (the Spark account),
 `containers` (voice-session rows, found through `status-index`), `spark-transcripts` and `webhook-event-dedup` (Stripe
 and Clerk).

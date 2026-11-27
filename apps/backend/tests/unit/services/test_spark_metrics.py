@@ -1,4 +1,4 @@
-"""Spark admin metrics: derive() over canned HogQL rows, compute() with posthog_admin.hogql mocked."""
+"""Spark admin metrics: derive() over canned HogQL rows, compute() with posthog_admin.endpoint mocked."""
 
 import asyncio
 import os
@@ -202,7 +202,7 @@ def test_success_problems_and_brain_unavailable():
 @pytest.mark.asyncio
 async def test_compute_stubbed_when_posthog_unconfigured():
     stub = {"columns": [], "results": [], "stubbed": True, "error": None}
-    with patch("core.services.posthog_admin.hogql", AsyncMock(return_value=stub)):
+    with patch("core.services.posthog_admin.endpoint", AsyncMock(return_value=stub)):
         data, state, errors = await sm.compute()
     assert data is None and state == "unavailable" and errors[0]["reason"] == "not configured"
 
@@ -210,7 +210,7 @@ async def test_compute_stubbed_when_posthog_unconfigured():
 @pytest.mark.asyncio
 async def test_compute_ok_is_cached():
     mock = AsyncMock(return_value=_ok([]))
-    with patch("core.services.posthog_admin.hogql", mock):
+    with patch("core.services.posthog_admin.endpoint", mock):
         data, state, _ = await sm.compute()
         calls = mock.await_count
         await sm.compute()
@@ -219,7 +219,7 @@ async def test_compute_ok_is_cached():
 
 @pytest.mark.asyncio
 async def test_failed_query_degrades_only_its_sections_and_is_cached_briefly():
-    async def fake(q, **_):
+    async def fake(stem, q, **_):
         return (
             {"columns": [], "results": [], "stubbed": False, "error": "timeout"}
             if "spark_download_clicked" in q
@@ -227,7 +227,7 @@ async def test_failed_query_degrades_only_its_sections_and_is_cached_briefly():
         )
 
     mock = AsyncMock(side_effect=fake)
-    with patch("core.services.posthog_admin.hogql", mock):
+    with patch("core.services.posthog_admin.endpoint", mock):
         data, state, errors = await sm.compute()
         calls = mock.await_count
         await sm.compute()
@@ -243,7 +243,7 @@ async def test_compute_runs_three_queries_at_a_time():
     their whole client timeout waiting in line and their sections showed "couldn't load" (seen in prod 2026-11-26)."""
     running = peak = 0
 
-    async def fake(q, **_):
+    async def fake(stem, q, **_):
         nonlocal running, peak
         running += 1
         peak = max(peak, running)
@@ -251,7 +251,7 @@ async def test_compute_runs_three_queries_at_a_time():
         running -= 1
         return _ok([])
 
-    with patch("core.services.posthog_admin.hogql", AsyncMock(side_effect=fake)) as mock:
+    with patch("core.services.posthog_admin.endpoint", AsyncMock(side_effect=fake)) as mock:
         _, state, _ = await sm.compute()
     assert state == "ok" and peak == sm.PARALLEL == 3 and mock.await_count == len(sm.QUERY_KEYS)
 
@@ -259,7 +259,7 @@ async def test_compute_runs_three_queries_at_a_time():
 @pytest.mark.asyncio
 async def test_a_query_that_cannot_start_inside_the_budget_is_a_timeout_and_is_not_sent(monkeypatch):
     monkeypatch.setattr(sm, "BUDGET_S", 0.0)
-    with patch("core.services.posthog_admin.hogql", AsyncMock(return_value=_ok([]))) as mock:
+    with patch("core.services.posthog_admin.endpoint", AsyncMock(return_value=_ok([]))) as mock:
         data, state, errors = await sm.compute()
     assert mock.await_count == 0 and state == "partial"
     assert {e["reason"] for e in errors} == {"timeout"} and len(errors) == len(sm.QUERY_KEYS)
@@ -269,14 +269,35 @@ async def test_a_query_that_cannot_start_inside_the_budget_is_a_timeout_and_is_n
 @pytest.mark.asyncio
 async def test_each_query_gets_the_time_left_in_the_budget_never_more_than_its_own_timeout(monkeypatch):
     monkeypatch.setattr(sm, "BUDGET_S", 4.0)
-    with patch("core.services.posthog_admin.hogql", AsyncMock(return_value=_ok([]))) as mock:
+    with patch("core.services.posthog_admin.endpoint", AsyncMock(return_value=_ok([]))) as mock:
         await sm.compute()
     assert all(0 < c.kwargs["timeout_s"] <= 4.0 for c in mock.await_args_list)
     monkeypatch.setattr(sm, "BUDGET_S", 600.0)
     sm._cache = None
-    with patch("core.services.posthog_admin.hogql", AsyncMock(return_value=_ok([]))) as mock:
+    with patch("core.services.posthog_admin.endpoint", AsyncMock(return_value=_ok([]))) as mock:
         await sm.compute()
     assert {c.kwargs["timeout_s"] for c in mock.await_args_list} == {sm.QUERY_TIMEOUT_S}
+
+
+@pytest.mark.asyncio
+async def test_each_query_is_a_saved_endpoint_named_for_this_environment(monkeypatch):
+    monkeypatch.setattr("core.config.settings.ENVIRONMENT", "prod")
+    with patch("core.services.posthog_admin.endpoint", AsyncMock(return_value=_ok([]))) as mock:
+        await sm.compute()
+    queries = sm.build_queries()
+    assert {c.args for c in mock.await_args_list} == {(f"spark_prod_{n}", q) for n, q in queries.items()}
+
+
+@pytest.mark.asyncio
+async def test_generated_at_is_the_oldest_time_posthog_computed_a_query():
+    times = iter(["2026-11-26T16:15:03+00:00", "2026-11-26T16:00:20Z"])
+
+    async def fake(stem, q, **_):
+        return {**_ok([]), "as_of": next(times, "2026-11-26T16:30:00+00:00")}
+
+    with patch("core.services.posthog_admin.endpoint", AsyncMock(side_effect=fake)):
+        data, _, _ = await sm.compute()
+    assert data["generated_at"] == "2026-11-26T16:00:20+00:00"
 
 
 def test_every_query_has_section_keys():
@@ -478,11 +499,11 @@ def test_setup_no_data_when_onboarding_never_seen():
 async def test_a_failed_new_query_marks_its_section_unavailable(failing):
     names = list(sm.build_queries())
 
-    async def fake(q, **_):
+    async def fake(stem, q, **_):
         bad = sm.build_queries()[failing]
         return {"columns": [], "results": [], "stubbed": False, "error": "boom" if q == bad else None}
 
-    with patch("core.services.posthog_admin.hogql", AsyncMock(side_effect=fake)):
+    with patch("core.services.posthog_admin.endpoint", AsyncMock(side_effect=fake)):
         data, state, errors = await sm.compute()
     assert state == "partial" and errors[0]["domain"] == f"posthog:{failing}" and failing in names
     assert data["unavailable"] == list(sm.QUERY_KEYS[failing])

@@ -34,7 +34,7 @@
 ## Kept routes (do not delete)
 
 - **The CLI / agent network:** `/network`, `/j`, `/docs`, `/install.sh`. Kept, not featured; a footer or nav link is fine.
-- **Legal and account pages** (`/terms`, `/privacy` and the other legal pages, `/sign-in`, `/sign-up`): edit copy only.
+- **Legal and account pages** (`/terms`, `/privacy` and the other legal pages, `/sign-in`): edit copy only.
 
 ## Changelog
 *Newest first.*

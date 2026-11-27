@@ -54,16 +54,16 @@ export default function NetworkPage() {
               source, peer to peer and end-to-end encrypted.
             </p>
             <div className="mt-4">
-              <CopyLine text={`Tell your agent: ${AGENT_LINE}`} copy={AGENT_LINE} kind="agent_line" surface="network" />
+              <CopyLine text={`Tell your agent: ${AGENT_LINE}`} copy={AGENT_LINE} kind="agent_line" />
             </div>
           </div>
 
           <div>
             <h2 className="font-editorial-serif text-2xl text-[var(--midnight)]">Install it yourself</h2>
             <div className="mt-3 space-y-3">
-              <CopyLine text={INSTALL} kind="curl" surface="network" />
-              <CopyLine text={BREW} kind="brew" surface="network" />
-              <CopyLine text={NPM} kind="npm" surface="network" />
+              <CopyLine text={INSTALL} kind="curl" />
+              <CopyLine text={BREW} kind="brew" />
+              <CopyLine text={NPM} kind="npm" />
             </div>
           </div>
 

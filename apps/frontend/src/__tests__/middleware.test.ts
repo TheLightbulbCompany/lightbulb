@@ -135,19 +135,16 @@ describe('decideAdminHostRouting (admin host gate)', () => {
     ).toEqual({ kind: 'passthrough' });
   });
 
-  it('passes through /sign-up on admin hosts', () => {
+  it('does not pass /sign-up through on admin hosts: it is rewritten under /admin, where no page exists (404)', () => {
     expect(
       decideAdminHostRouting('admin.thelightbulb.company', '/sign-up', ADMIN_HOSTS),
-    ).toEqual({ kind: 'passthrough' });
+    ).toEqual({ kind: 'rewrite', to: '/admin/sign-up' });
   });
 
   it('passes through Clerk catchall sub-paths under /sign-in', () => {
     // Clerk renders /sign-in/factor-one, /sign-in/sso-callback, etc.
     expect(
       decideAdminHostRouting('admin.thelightbulb.company', '/sign-in/factor-one', ADMIN_HOSTS),
-    ).toEqual({ kind: 'passthrough' });
-    expect(
-      decideAdminHostRouting('admin.thelightbulb.company', '/sign-up/verify-email-address', ADMIN_HOSTS),
     ).toEqual({ kind: 'passthrough' });
   });
 });

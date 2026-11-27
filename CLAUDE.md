@@ -59,7 +59,7 @@ cd apps/frontend && pnpm test
   backend's `require_platform_admin` admits only the Clerk user ids in `PLATFORM_ADMIN_USER_IDS`.
 - **The network CLI's pages:** `/network`, `/j`, `/docs`, and `/install.sh`, which redirects to the CLI repo's
   latest installer.
-- Legal pages (`/terms`, `/privacy` and the rest), `/support` (a mailto link to `support@thelightbulb.company`; no form, and the backend sends no mail), `/sign-in`, `/sign-up`.
+- Legal pages (`/terms`, `/privacy` and the rest), `/support` (a mailto link to `support@thelightbulb.company`; no form, and the backend sends no mail), `/sign-in` (Clerk's sign-in-or-up flow, so a new person signs up inside it; there is no `/sign-up` page).
 - Marketing facts for Spark: `.agents/product-marketing.md`. Banned copy words:
   `src/content/__tests__/bannedCopy.ts`.
 - Colour: read `src/app/globals.css` before you describe a colour; no colour literals outside the exemptions in

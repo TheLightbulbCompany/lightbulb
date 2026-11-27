@@ -1,183 +1,34 @@
 /**
- * The single PostHog touchpoint for the entire frontend.
+ * The single PostHog touchpoint for the frontend: `import "posthog-js"` appears only here, and every other
+ * file imports from `@/lib/analytics`.
  *
- * Every call into the PostHog SDK (init, identify, reset, capture,
- * pageview, captureException) lives behind a function in this file, and
- * the React tree's ``<Provider>`` is re-exported from here too. The rule
- * is: ``import "posthog-js"`` and ``import "posthog-js/react"`` only ever
- * appear in this module — every other file in ``apps/frontend/src/``
- * imports from ``@/lib/analytics``.
- *
- * Why: the previous shape had ``usePostHog()`` direct in 14 components,
- * which meant "switch analytics provider" or "add a global property to
- * every event" or "stop sending events from a specific page" all
- * required touching every component. The wrapper existed but was
- * bypassed — the seam was hypothetical, not real (per Matt Pocock's
- * ``improve-codebase-architecture`` skill: one adapter is a hypothetical
- * seam, two is a real one). Routing every caller through this module
- * makes the seam load-bearing and gives PostHog one mockable surface
- * for tests.
- *
- * What belongs here:
- *   - User intents (spark_download_clicked)
- *   - User-visible outcomes (spark_invite_signup_completed)
- *   - The React Provider wrapper (``Provider``) for the app's root layout
- *   - identify / reset / pageview / init bookkeeping for PostHogProvider
- *
- * What does NOT belong here:
- *   - RPC-call-level events (backend HTTP activity goes to CloudWatch —
- *     don't shadow it in PostHog)
- *   - PII beyond identify-level fields (specifically: no message content,
- *     no bot tokens, no API key values — capture lengths / types only)
+ * The admin dashboard (apps/backend/core/services/ops/spark_metrics.py) reads exactly these web-originated
+ * things, so they stay: the `spark_download_clicked` event (properties `source`, and `environment` plus the
+ * automatic `$host`, which every query filters on), and the person properties `$initial_utm_source` and
+ * `email`. Nothing else the website sends is read by anything.
  */
 
 import posthog from "posthog-js";
 import { PostHogProvider as PHProvider } from "posthog-js/react";
 
-/**
- * The single PostHog client instance. Re-exported so
- * ``components/PostHogProvider.tsx`` can hand it to ``<Provider>``
- * without importing ``posthog-js`` itself.
- */
+/** The PostHog client, re-exported so `components/PostHogProvider.tsx` can hand it to `<Provider>`. */
 export const client = posthog;
 
-/**
- * The PostHog React provider, re-exported so the app's root layout
- * doesn't need to ``import "posthog-js/react"`` directly.
- */
+/** The PostHog React provider, re-exported for the root layout. */
 export const Provider = PHProvider;
 
-/**
- * The registry of every product event we emit. Adding a new event?
- * Add it here first — TypeScript will flag every call site that needs
- * to be updated.
- *
- * Strict union (rather than ``string``) is the load-bearing piece: it
- * catches typos at compile time and makes "what events do we emit?" a
- * grep-able question with one answer.
- *
- * Grouped roughly by surface for readability; keep alphabetical within
- * each group when adding new entries so diffs stay reviewable.
- */
-export type AnalyticsEvent =
-  | "install_line_copied"
-  | "join_command_copied"
-  | "join_link_viewed"
-  | "landing_viewed"
-  | "signup_started"
-  | "spark_download_clicked"
-  | "spark_invite_signup_completed"
-  | "spark_invite_signup_started"
-  | "support_contact_clicked";
-
-/**
- * Type exposing the ``__loaded`` flag PostHog sets after ``init()``
- * resolves. Declared locally so we don't have to import a private type
- * — the field is part of the public contract (documented at
- * https://posthog.com/docs/libraries/js).
- */
-interface PostHogLoadState {
-  __loaded?: boolean;
-}
+/** Every product event the website sends. */
+export type AnalyticsEvent = "spark_download_clicked";
 
 function isLoaded(): boolean {
-  return (posthog as unknown as PostHogLoadState).__loaded === true;
+  return (posthog as unknown as { __loaded?: boolean }).__loaded === true;
 }
 
-const ATTRIBUTION_STORAGE_KEY = "isol8_attribution_v1";
-const UTM_KEYS = [
-  "utm_source",
-  "utm_medium",
-  "utm_campaign",
-  "utm_term",
-  "utm_content",
-  "gclid",
-  "fbclid",
-  "msclkid",
-  "ttclid",
-  "li_fat_id",
-] as const;
-
-type AttributionValue = string | null;
-type AttributionPayload = Record<string, AttributionValue>;
-
-interface StoredAttribution {
-  first_touch: AttributionPayload;
-  last_touch: AttributionPayload;
-}
-
-function safeNow(): string {
-  return new Date().toISOString();
-}
-
-function emptyTouch(timestamp: string): AttributionPayload {
-  return {
-    timestamp,
-    landing_path: null,
-    referrer: null,
-    referring_domain: null,
-    utm_source: null,
-    utm_medium: null,
-    utm_campaign: null,
-    utm_term: null,
-    utm_content: null,
-    gclid: null,
-    fbclid: null,
-    msclkid: null,
-    ttclid: null,
-    li_fat_id: null,
-  };
-}
-
-function readStoredAttribution(): StoredAttribution | null {
-  if (typeof window === "undefined") return null;
-  try {
-    const raw = window.localStorage.getItem(ATTRIBUTION_STORAGE_KEY);
-    if (!raw) return null;
-    return JSON.parse(raw) as StoredAttribution;
-  } catch {
-    return null;
-  }
-}
-
-function writeStoredAttribution(value: StoredAttribution): void {
-  if (typeof window === "undefined") return;
-  try {
-    window.localStorage.setItem(ATTRIBUTION_STORAGE_KEY, JSON.stringify(value));
-  } catch {
-    // Attribution is helpful, not product-critical. Storage-disabled browsers
-    // should still get a working app and best-effort current-session events.
-  }
-}
-
-function externalReferrer(): { referrer: string | null; domain: string | null } {
-  if (typeof document === "undefined" || !document.referrer) {
-    return { referrer: null, domain: null };
-  }
-  try {
-    const referrer = new URL(document.referrer);
-    if (typeof window !== "undefined" && referrer.host === window.location.host) {
-      return { referrer: null, domain: null };
-    }
-    return { referrer: document.referrer, domain: referrer.hostname };
-  } catch {
-    return { referrer: document.referrer, domain: null };
-  }
-}
-
-// Not the site. Every other path (/, /os, /docs, legal pages) is a marketing route for landing_viewed.
-const APP_ROUTE_PREFIXES = ["/sign-in", "/sign-up", "/admin", "/api"];
-
-/** A page of the website (T23): where a visit lands, as opposed to the signed-in app. */
-export function isMarketingRoute(pathname: string | null | undefined): boolean {
-  if (!pathname) return false;
-  return !APP_ROUTE_PREFIXES.some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`));
-}
-
-// Clerk forwards its sign-in ticket to /sign-up and /sign-in: drop those params
-// anywhere, keep the rest (UTM). redirect_url can carry a private deep link, so it goes too.
+// Clerk forwards its sign-in ticket to /sign-in: drop those params anywhere, keep the rest.
+// redirect_url can carry a private deep link, so it goes too.
 const SECRET_PARAMS = ["__clerk_ticket", "__clerk_status", "redirect_url"];
 
+/** Strips Clerk's ticket params (and a /j fragment) from a URL before it leaves the browser. */
 export function withoutChatQuery(value: string): string {
   try {
     const url = new URL(value, "https://thelightbulb.company");
@@ -193,168 +44,39 @@ export function withoutChatQuery(value: string): string {
   }
 }
 
-function currentTouch(): AttributionPayload {
-  const timestamp = safeNow();
-  const touch = emptyTouch(timestamp);
-  if (typeof window === "undefined") return touch;
-
-  const params = new URLSearchParams(window.location.search);
-  for (const key of UTM_KEYS) {
-    touch[key] = params.get(key);
-  }
-  const ref = externalReferrer();
-  touch.referrer = ref.referrer;
-  touch.referring_domain = ref.domain;
-  touch.landing_path = withoutChatQuery(`${window.location.pathname}${window.location.search}`);
-  return touch;
-}
-
-function hasAttributionSignal(touch: AttributionPayload): boolean {
-  return Boolean(
-    touch.referrer ||
-      UTM_KEYS.some((key) => {
-        const value = touch[key];
-        return typeof value === "string" && value.length > 0;
-      }),
-  );
-}
-
-export function refreshAttribution(): StoredAttribution | null {
-  if (typeof window === "undefined") return null;
-  const previous = readStoredAttribution();
-  const touch = currentTouch();
-
-  if (!previous) {
-    const initial = { first_touch: touch, last_touch: touch };
-    writeStoredAttribution(initial);
-    return initial;
-  }
-
-  if (!hasAttributionSignal(touch)) return previous;
-
-  const next = { ...previous, last_touch: touch };
-  writeStoredAttribution(next);
-  return next;
-}
-
-function attributionProperties(): Record<string, unknown> {
-  const stored = readStoredAttribution();
-  if (!stored) return {};
-
-  const props: Record<string, unknown> = {};
-  for (const [prefix, touch] of [
-    ["first_touch", stored.first_touch],
-    ["last_touch", stored.last_touch],
-  ] as const) {
-    for (const [key, value] of Object.entries(touch)) {
-      if (value != null && value !== "") {
-        props[`${prefix}_${key}`] = value;
-      }
-    }
-  }
-  return props;
-}
-
-/**
- * Bootstrap PostHog. Idempotent at the SDK level (PostHog's own
- * ``init`` is a no-op on second call), but we also short-circuit on
- * SSR so a server render doesn't try to touch ``window``.
- *
- * Called from ``components/PostHogProvider.tsx`` exactly once at module
- * eval. Every other code path calls ``capture`` / ``identify`` /
- * ``reset`` / ``pageview`` / ``captureException`` and lets those guards
- * handle the "PostHog never initialised" case (e.g. when
- * ``NEXT_PUBLIC_POSTHOG_KEY`` is unset locally).
- */
-export function init(
-  apiKey: string,
-  options: Parameters<typeof posthog.init>[1],
-): void {
+/** Start PostHog. A no-op on the server. */
+export function init(apiKey: string, options: Parameters<typeof posthog.init>[1]): void {
   if (typeof window === "undefined") return;
   posthog.init(apiKey, options);
 }
 
-/**
- * Capture a product event. Safe to call from hooks/components that may
- * render during SSR (returns early without touching PostHog) and from
- * environments where ``NEXT_PUBLIC_POSTHOG_KEY`` is unset (returns
- * early because ``init()`` was never called and ``__loaded`` is false).
- */
-export function capture(
-  event: AnalyticsEvent,
-  properties?: Record<string, unknown>,
-  options?: Parameters<typeof posthog.capture>[2],
-): void {
-  if (typeof window === "undefined") return;
-  if (!isLoaded()) return;
-  posthog.capture(event, { ...attributionProperties(), ...properties }, options);
+/** Capture a product event. A no-op on the server and until PostHog has loaded (no key set). */
+export function capture(event: AnalyticsEvent, properties?: Record<string, unknown>): void {
+  if (typeof window === "undefined" || !isLoaded()) return;
+  posthog.capture(event, properties);
 }
 
-/**
- * Register super properties — merged into EVERY subsequent event by
- * PostHog itself. Used for ``signup_flow_id`` and the browser-context
- * pair, which have to ride events emitted from call sites that have no
- * business knowing about either.
- *
- * Note ``reset()`` clears super properties, so anything registered here
- * must be re-registered after a sign-out (see PostHogProvider).
- */
+/** Super properties, merged into every later event. `reset()` clears them, so re-register after it. */
 export function register(properties: Record<string, unknown>): void {
-  if (typeof window === "undefined") return;
-  if (!isLoaded()) return;
+  if (typeof window === "undefined" || !isLoaded()) return;
   posthog.register(properties);
 }
 
-/**
- * Forward an unhandled browser error to PostHog's error tracking. Used
- * by the global error/unhandledrejection forwarders installed in
- * ``components/PostHogProvider.tsx``.
- */
+/** Forward a browser error to PostHog's error tracking. */
 export function captureException(error: unknown, properties?: Record<string, unknown>): void {
-  if (typeof window === "undefined") return;
-  if (!isLoaded()) return;
-  // posthog-js >= 1.190 exposes captureException directly.
+  if (typeof window === "undefined" || !isLoaded()) return;
   if (properties) posthog.captureException(error, properties);
   else posthog.captureException(error);
 }
 
-/**
- * Bind a stable distinctId (currently the Clerk user id) plus an
- * identify-payload of profile fields. Called from
- * ``components/PostHogProvider.tsx`` on the rising edge of
- * ``isSignedIn`` so events captured before identify are merged onto
- * the right person.
- */
-export function identify(
-  distinctId: string,
-  properties?: Record<string, unknown>,
-): void {
-  if (typeof window === "undefined") return;
-  if (!isLoaded()) return;
-  posthog.identify(distinctId, { ...attributionProperties(), ...properties });
+/** Bind the Clerk user id to this browser's PostHog person (this is what carries `$initial_utm_source`). */
+export function identify(distinctId: string, properties?: Record<string, unknown>): void {
+  if (typeof window === "undefined" || !isLoaded()) return;
+  posthog.identify(distinctId, properties);
 }
 
-/**
- * Clear the bound distinctId and reset the local PostHog state. Called
- * from ``components/PostHogProvider.tsx`` on sign-out.
- */
+/** Clear the bound person on sign-out. */
 export function reset(): void {
-  if (typeof window === "undefined") return;
-  if (!isLoaded()) return;
+  if (typeof window === "undefined" || !isLoaded()) return;
   posthog.reset();
-}
-
-/**
- * Capture a manual pageview event. ``capture_pageview`` is disabled in
- * the ``init()`` options so the App-Router page tracking goes through
- * here instead — Next.js ``usePathname()``/``useSearchParams()`` give
- * us the URL without relying on PostHog's broken default
- * pushState-detection in App Router.
- */
-export function pageview(url: string): boolean {
-  if (typeof window === "undefined") return false;
-  refreshAttribution();
-  if (!isLoaded()) return false;
-  posthog.capture("$pageview", { ...attributionProperties(), $current_url: withoutChatQuery(url) });
-  return true;
 }

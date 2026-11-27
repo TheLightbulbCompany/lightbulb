@@ -149,7 +149,7 @@ describe("/os with an invite", () => {
     );
     expect(screen.queryByRole("link", { name: DOWNLOAD })).toBeNull();
     expect(screen.getByRole("link", { name: "Skip, just download" })).toHaveAttribute("href", "/download/spark");
-    expect(capture.mock.calls).toEqual([["spark_invite_signup_started"]]);
+    expect(capture).not.toHaveBeenCalled();
     expect(post).not.toHaveBeenCalled();
   });
 
@@ -168,7 +168,6 @@ describe("/os with an invite", () => {
     expect(screen.getByText(SAME)).toBeInTheDocument();
     expect(post.mock.calls).toEqual([["/os/referral", { code: "abc123XYZ" }]]);
     expect(api.get).not.toHaveBeenCalled();
-    await waitFor(() => expect(capture.mock.calls).toEqual([["spark_invite_signup_completed"]]));
   });
 
   it("signing up on the page records the invite without a reload", async () => {
@@ -220,7 +219,6 @@ describe("/os with a channel code", () => {
       ["/os/channel", { channel: "yt-abc" }],
       ["/os/referral", { code: "abc123XYZ" }],
     ]);
-    await waitFor(() => expect(capture.mock.calls).toEqual([["spark_invite_signup_completed"]]));
   });
 
   it("signed in with a channel only: no referral call", async () => {

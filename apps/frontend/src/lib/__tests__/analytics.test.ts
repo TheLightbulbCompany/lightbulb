@@ -61,7 +61,7 @@ describe("analytics.capture", () => {
     delete globalThis.window;
     try {
       const { capture } = await importAnalytics();
-      capture("landing_viewed", { path: "/" });
+      capture("spark_download_clicked", { source: "nav" });
       expect(mockCapture).not.toHaveBeenCalled();
     } finally {
       globalThis.window = originalWindow;
@@ -71,18 +71,16 @@ describe("analytics.capture", () => {
   it("no-ops when PostHog has not finished loading (__loaded=false)", async () => {
     mockState.__loaded = false;
     const { capture } = await importAnalytics();
-    capture("landing_viewed", { path: "/" });
+    capture("spark_download_clicked", { source: "nav" });
     expect(mockCapture).not.toHaveBeenCalled();
   });
 
   it("forwards to posthog.capture when loaded", async () => {
     mockState.__loaded = true;
     const { capture } = await importAnalytics();
-    capture("spark_download_clicked", { surface: "hero" });
+    capture("spark_download_clicked", { source: "hero" });
     expect(mockCapture).toHaveBeenCalledTimes(1);
-    expect(mockCapture).toHaveBeenCalledWith("spark_download_clicked", {
-      surface: "hero",
-    }, undefined);
+    expect(mockCapture).toHaveBeenCalledWith("spark_download_clicked", { source: "hero" });
   });
 
   it("drops secrets from analytics URLs", async () => {
@@ -91,12 +89,12 @@ describe("analytics.capture", () => {
     // /j is tracked, but its fragment (the ticket) is dropped; the query stays.
     expect(withoutChatQuery("https://x.co/j#ticket")).toBe("https://x.co/j");
     expect(withoutChatQuery("/j?utm_source=hn#ticket")).toBe("/j?utm_source=hn");
-    expect(withoutChatQuery("https://x.co/sign-up?__clerk_ticket=t&__clerk_status=sign_up&utm_source=hn"))
-      .toBe("https://x.co/sign-up?utm_source=hn");
+    expect(withoutChatQuery("https://x.co/sign-in?__clerk_ticket=t&__clerk_status=sign_up&utm_source=hn"))
+      .toBe("https://x.co/sign-in?utm_source=hn");
     expect(withoutChatQuery("/sign-in?__clerk_ticket=t")).toBe("/sign-in");
     const card = encodeURIComponent("/chat?panel=teams-approval-detail&detailId=ap-secret");
-    expect(withoutChatQuery(`https://x.co/sign-up?__clerk_ticket=t&redirect_url=${card}&utm_source=hn`))
-      .toBe("https://x.co/sign-up?utm_source=hn");
+    expect(withoutChatQuery(`https://x.co/sign-in?__clerk_ticket=t&redirect_url=${card}&utm_source=hn`))
+      .toBe("https://x.co/sign-in?utm_source=hn");
     expect(withoutChatQuery(`/sign-in?redirect_url=${card}`)).toBe("/sign-in");
   });
 
@@ -116,43 +114,9 @@ describe("analytics.capture", () => {
     expect(mockCaptureException).not.toHaveBeenCalled();
   });
 
-  it("persists attribution from the current URL and attaches it to events", async () => {
-    window.history.replaceState({}, "", "/?utm_source=hn&utm_campaign=launch");
-    const { capture, refreshAttribution } = await importAnalytics();
-
-    refreshAttribution();
-    capture("spark_download_clicked", { cta_id: "hero_funnel_submit" });
-
-    expect(mockCapture).toHaveBeenCalledWith("spark_download_clicked", {
-      first_touch_timestamp: expect.any(String),
-      first_touch_landing_path: "/?utm_source=hn&utm_campaign=launch",
-      first_touch_utm_source: "hn",
-      first_touch_utm_campaign: "launch",
-      last_touch_timestamp: expect.any(String),
-      last_touch_landing_path: "/?utm_source=hn&utm_campaign=launch",
-      last_touch_utm_source: "hn",
-      last_touch_utm_campaign: "launch",
-      cta_id: "hero_funnel_submit",
-    }, undefined);
-  });
-
-  it("attaches stored attribution on identify", async () => {
-    window.history.replaceState({}, "", "/?utm_source=directory&utm_medium=referral");
-    const { identify, refreshAttribution } = await importAnalytics();
-
-    refreshAttribution();
+  it("identify forwards the person's email and nothing else is added", async () => {
+    const { identify } = await importAnalytics();
     identify("user_123", { email: "user@example.com" });
-
-    expect(mockIdentify).toHaveBeenCalledWith("user_123", {
-      first_touch_timestamp: expect.any(String),
-      first_touch_landing_path: "/?utm_source=directory&utm_medium=referral",
-      first_touch_utm_source: "directory",
-      first_touch_utm_medium: "referral",
-      last_touch_timestamp: expect.any(String),
-      last_touch_landing_path: "/?utm_source=directory&utm_medium=referral",
-      last_touch_utm_source: "directory",
-      last_touch_utm_medium: "referral",
-      email: "user@example.com",
-    });
+    expect(mockIdentify).toHaveBeenCalledWith("user_123", { email: "user@example.com" });
   });
 });

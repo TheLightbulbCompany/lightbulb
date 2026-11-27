@@ -70,7 +70,10 @@ function PostHogInit() {
       api_host: POSTHOG_API_HOST,
       ui_host: POSTHOG_UI_HOST,
       person_profiles: "identified_only",
-      capture_pageview: false,
+      // Page views are the website's traffic record (visits by page and source), sent by posthog-js itself on
+      // load and on each client-side navigation; before_send below scrubs their URLs. This replaces the
+      // hand-rolled $pageview this file used to send.
+      capture_pageview: "history_change",
       // Nothing reads $autocapture or $pageleave. $initial_utm_source needs neither: posthog-js keeps the
       // landing URL's UTM params in its persistence store and sends them on identify
       // (posthog.com/docs/data/anonymous-vs-identified-events).

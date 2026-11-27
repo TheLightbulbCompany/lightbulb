@@ -131,7 +131,7 @@ describe("PostHogProvider", () => {
     expect(opts.api_host).toBe("/ingest");
     expect(opts.ui_host).toBe("https://us.posthog.com");
     expect(opts.person_profiles).toBe("identified_only");
-    expect(opts.capture_pageview).toBe(false);
+    expect(opts.capture_pageview).toBe("history_change"); // the SDK's own page views: on load and on each navigation
     expect(opts.capture_pageleave).toBe(false);
     expect(opts.autocapture).toBe(false);
     // Session replay masking defaults.

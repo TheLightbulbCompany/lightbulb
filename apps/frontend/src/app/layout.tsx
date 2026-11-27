@@ -3,7 +3,6 @@ import { Geist_Mono } from "next/font/google";
 import localFont from "next/font/local";
 import { ClerkProvider } from "@clerk/nextjs";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
-import { DeployRefresh } from "@/components/DeployRefresh";
 import { InAppNavTracker } from "@/components/legal/BackButton";
 import { PostHogProvider } from "@/components/PostHogProvider";
 import { VercelAnalytics } from "@/components/VercelAnalytics";
@@ -85,7 +84,6 @@ export default function RootLayout({
               caught error reaches it (ErrorBoundary.componentDidCatch). */}
           <PostHogProvider>
             <ErrorBoundary>
-              <DeployRefresh />
               <InAppNavTracker />
               {children}
             </ErrorBoundary>

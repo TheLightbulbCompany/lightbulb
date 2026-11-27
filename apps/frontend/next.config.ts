@@ -97,15 +97,11 @@ const nextConfig: NextConfig = {
   poweredByHeader: false,
   reactCompiler: true,
 
-  // The deploy's identity, inlined into the client bundle AND served by
-  // /api/version, so a long-lived tab (or the desktop webview) can tell it is
-  // running an old build — components/DeployRefresh.tsx.
-  env: { NEXT_PUBLIC_BUILD_ID: BUILD_ID ?? "local" },
   // Skew Protection is ON for the Vercel project (12 h max age), but deploy.yml
   // ships `vercel deploy --prebuilt`, where Vercel cannot assign the id at build
   // time: without a custom deploymentId no asset carried `?dpl=` and the
   // protection did nothing (vercel.com/changelog/skew-protection-now-supports-prebuilt-deployments). With it, an old tab's lazy chunks keep resolving
-  // against its own deployment until DeployRefresh reloads it.
+  // against its own deployment.
   deploymentId: BUILD_ID,
 
   // Rewrites barrel imports to direct module paths so one named import doesn't
@@ -178,7 +174,7 @@ const nextConfig: NextConfig = {
       afterFiles: [
         // The browser calls the API same-origin on every host (prod, dev, PR
         // previews); Vercel proxies it to this environment's backend. Only
-        // /api/v1 — the site's own /api/* routes (e.g. /api/version) stay local.
+        // /api/v1 — the site's own /api/* routes stay local.
         { source: "/api/v1/:path*", destination: `${API_ORIGIN}/api/v1/:path*` },
         {
           source: "/ingest/static/:path*",

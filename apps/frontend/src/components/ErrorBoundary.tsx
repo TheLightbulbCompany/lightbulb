@@ -2,7 +2,6 @@
 
 import { Component, ErrorInfo, ReactNode } from "react";
 
-import { isChunkLoadError, reloadForChunkError } from "@/components/DeployRefresh";
 import { captureException } from "@/lib/analytics";
 import { SUPPORT_MAILTO } from "@/lib/domain";
 
@@ -10,6 +9,31 @@ import { SUPPORT_MAILTO } from "@/lib/domain";
 // captureException does nothing until it has. ponytail: one fixed delay, not a queue; an error caught
 // before PostHog loads within this window is still lost.
 export const REPORT_DELAY_MS = 2000;
+
+const CHUNK_RELOAD_KEY = "lightbulb-chunk-reload-at";
+
+/** A lazy chunk from a previous deploy that no longer exists. */
+export function isChunkLoadError(reason: unknown): boolean {
+  if (!reason || typeof reason !== "object") return false;
+  const { name, message } = reason as { name?: unknown; message?: unknown };
+  return name === "ChunkLoadError"
+    || (typeof message === "string" && /Loading (CSS )?chunk \S+ failed|Failed to fetch dynamically imported module|Importing a module script failed/.test(message));
+}
+
+/**
+ * Reload once for a missing chunk. The timestamp stops a loop when the chunk is
+ * missing for some other reason than a deploy.
+ */
+export function reloadForChunkError(): void {
+  try {
+    const last = Number(sessionStorage.getItem(CHUNK_RELOAD_KEY));
+    if (last && Date.now() - last < 60_000) return;
+    sessionStorage.setItem(CHUNK_RELOAD_KEY, String(Date.now()));
+  } catch {
+    // No storage: reload anyway; a broken page is worse than a rare loop.
+  }
+  window.location.reload();
+}
 
 interface Props {
   children: ReactNode;

@@ -1,4 +1,4 @@
-"""Spark product metrics for the admin console: HogQL over PostHog, cached.
+"""Spark product metrics for the admin console: HogQL run as saved PostHog endpoints, cached.
 
 Events come from the desktop app via POST /os/event (core/observability/spark_events.py) and from
 the server (subscription_*, ...). Every query excludes team accounts (``_internal_filter``) and other
@@ -33,6 +33,16 @@ from core.services.ops.growth import _hogql_filter, _monday, _parse_ts, _utc_dat
 WEEKS = 12
 INSTALL_DAYS = 84  # install scan window (12 weeks); event scans use 90d so day-29 follow-ups fit
 OK_TTL_S, FAIL_TTL_S = 300, 60
+# Each query is a saved PostHog endpoint (posthog_admin.endpoint), recomputed by PostHog every 15 minutes and answered
+# from the stored result. One that is not computed yet (just published, or its computation failed) runs live, and
+# PostHog runs 3 live queries at once per project and makes the rest wait (posthog.com/docs/api/queries, read
+# 2026-11-26): sent all together, the waiting ones used up their client timeout in PostHog's line and their sections
+# showed "couldn't load" although every query finished. So we send 3 at a time and a query's timeout covers only its
+# own run (PostHog caps a run at 10s). BUDGET_S bounds the whole load: the API gateway in front of the backend gives up
+# at 30 seconds (api-stack.ts) and then the page gets nothing, so a query still running at the budget is cut off and
+# reported as a timeout, like one that could not start. That happens on the first load after a query changes, while
+# its endpoints run live; the next load, a minute later, reads the stored results.
+PARALLEL, QUERY_TIMEOUT_S, BUDGET_S = 3, 15.0, 25.0
 INSTALL_CAP = 5000
 BUCKETS = (("lt5m", 5), ("lt30m", 30), ("lt2h", 120), ("lt24h", 1440))  # minutes: launch -> first human task
 STEP_ORDER = ("sign_in", "brain", "permissions", "say_hi")
@@ -633,12 +643,30 @@ async def compute() -> tuple[dict | None, str, list[dict]]:
         return _cache[1], _cache[2], _cache[3]
 
     queries = build_queries()
-    results = await asyncio.gather(*(posthog_admin.hogql(q) for q in queries.values()))
+    gate, deadline = asyncio.Semaphore(PARALLEL), time.monotonic() + BUDGET_S
+
+    async def run(n: str, q: str) -> dict:
+        late = {"columns": [], "results": [], "as_of": None, "stubbed": False, "error": "timeout"}
+        async with gate:
+            left = deadline - time.monotonic()
+            if left <= 0:  # not sent: it could not finish inside the request
+                return late
+            stem = f"spark_{settings.ENVIRONMENT}_{n}"  # dev and prod share one PostHog project
+            call = posthog_admin.endpoint(stem, q, timeout_s=min(QUERY_TIMEOUT_S, left))
+            try:  # httpx's timeout is per phase and a publish is several requests: this is the bound on the whole call
+                return await asyncio.wait_for(call, left)
+            except asyncio.TimeoutError:
+                return late
+
+    results = await asyncio.gather(*(run(n, q) for n, q in queries.items()))
     if all(r["stubbed"] for r in results):
         return None, env.UNAVAILABLE, [{"domain": "posthog", "reason": "not configured"}]
     errors = [{"domain": f"posthog:{n}", "reason": r["error"]} for n, r in zip(queries, results) if r["error"]]
     rows = {n: [] if r["error"] else r["results"] for n, r in zip(queries, results)}
     data = derive(rows, datetime.now(timezone.utc))
+    computed = [_parse_ts(r["as_of"]) for r in results if r.get("as_of")]
+    if computed:  # the page says "Generated <this>": the oldest of PostHog's computations, not the time of this request
+        data["generated_at"] = min(computed).isoformat()
     data["unavailable"] = sorted({k for n, r in zip(queries, results) if r["error"] for k in QUERY_KEYS[n]})
     state = env.PARTIAL if errors else env.OK
     _cache = (time.monotonic() + (FAIL_TTL_S if errors else OK_TTL_S), data, state, errors)

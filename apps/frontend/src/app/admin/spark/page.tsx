@@ -8,6 +8,8 @@ import { DoersChart } from "./charts";
 import { Channels, Cohorts, Funnel, Headline, Money, People, Reliability, Setup, Signals, Sources } from "./sections";
 
 export const dynamic = "force-dynamic";
+// The backend may take up to 25 seconds (the first load after a query changes); the API gateway allows 30.
+export const maxDuration = 60;
 
 /** A section whose query failed shows a placeholder; the rest of the page still renders. */
 function Section({ title, keys, off, children }: { title: string; keys: string[]; off: string[]; children: React.ReactNode }) {

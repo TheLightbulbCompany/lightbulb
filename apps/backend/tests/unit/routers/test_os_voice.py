@@ -203,6 +203,21 @@ async def test_create_returns_the_answer_and_sends_the_owned_config(ddb, clock, 
     assert got.status_code == 200 and got.json() == {"status": "active", "endedReason": None}
 
 
+async def test_free_days_up_refuses_a_session_but_never_for_the_team(
+    ddb, users, clock, openai, no_sideband, monkeypatch
+):
+    for who in (A, B):
+        assert (await req("GET", "/os/account", who)).status_code == 200
+    clock[0] += 30 * 86400
+    monkeypatch.setattr(settings, "SPARK_INTERNAL_USER_IDS", "user_a")
+    refused = await create(B)
+    assert refused.status_code == 402 and refused.json()["detail"] == "trial_ended"
+    assert (await create(A)).status_code == 201
+    # and the open session is not closed at the old trial end: there is no trial end for the team
+    assert await os_voice._trial_ends_at("user_a") is None
+    assert await os_voice._trial_ends_at("user_b") == START + 3 * 86400
+
+
 async def test_a_model_off_the_list_is_refused(ddb, clock, no_sideband, openai):
     r = await create(model="gpt-realtime")
     assert (r.status_code, r.json()) == (400, {"detail": "model_not_allowed"})

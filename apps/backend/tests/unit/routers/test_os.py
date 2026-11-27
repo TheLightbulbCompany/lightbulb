@@ -97,6 +97,18 @@ async def test_status_is_ended_after_trial(users, clock):
     assert (await account())["status"] == "ended"
 
 
+@pytest.mark.parametrize("setting", ["SPARK_INTERNAL_USER_IDS", "PLATFORM_ADMIN_USER_IDS"])
+async def test_a_team_account_is_never_asked_to_pay(users, clock, monkeypatch, setting):
+    """The team (the accounts the metrics already ignore: SPARK_INTERNAL_USER_IDS and the platform admins) stays
+    "active" past its free days, with no subscription behind it. Everyone else still ends."""
+    monkeypatch.setattr(settings, setting, "user_a")
+    await account(A), await account(B)
+    clock[0] += 30 * DAY
+    a, b = await account(A), await account(B)
+    assert a["status"] == "active" and b["status"] == "ended"
+    assert a["nextChargeAt"] is None and a["portalUrl"] is None
+
+
 @pytest.mark.parametrize("token", ["oauth", "template"])
 async def test_account_requires_a_human_session(users, clock, token):
     assert (await req("GET", "/os/account", replace(A, token=token))).status_code == 403

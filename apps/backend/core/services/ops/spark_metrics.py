@@ -38,8 +38,11 @@ OK_TTL_S, FAIL_TTL_S = 300, 60
 # PostHog runs 3 live queries at once per project and makes the rest wait (posthog.com/docs/api/queries, read
 # 2026-11-26): sent all together, the waiting ones used up their client timeout in PostHog's line and their sections
 # showed "couldn't load" although every query finished. So we send 3 at a time and a query's timeout covers only its
-# own run (PostHog caps a run at 10s). BUDGET_S bounds the whole load, under the load balancer's 60s.
-PARALLEL, QUERY_TIMEOUT_S, BUDGET_S = 3, 15.0, 45.0
+# own run (PostHog caps a run at 10s). BUDGET_S bounds the whole load: the API gateway in front of the backend gives up
+# at 30 seconds (api-stack.ts) and then the page gets nothing, so a query still running at the budget is cut off and
+# reported as a timeout, like one that could not start. That happens on the first load after a query changes, while
+# its endpoints run live; the next load, a minute later, reads the stored results.
+PARALLEL, QUERY_TIMEOUT_S, BUDGET_S = 3, 15.0, 25.0
 INSTALL_CAP = 5000
 BUCKETS = (("lt5m", 5), ("lt30m", 30), ("lt2h", 120), ("lt24h", 1440))  # minutes: launch -> first human task
 STEP_ORDER = ("sign_in", "brain", "permissions", "say_hi")
@@ -643,12 +646,17 @@ async def compute() -> tuple[dict | None, str, list[dict]]:
     gate, deadline = asyncio.Semaphore(PARALLEL), time.monotonic() + BUDGET_S
 
     async def run(n: str, q: str) -> dict:
+        late = {"columns": [], "results": [], "as_of": None, "stubbed": False, "error": "timeout"}
         async with gate:
             left = deadline - time.monotonic()
             if left <= 0:  # not sent: it could not finish inside the request
-                return {"columns": [], "results": [], "as_of": None, "stubbed": False, "error": "timeout"}
+                return late
             stem = f"spark_{settings.ENVIRONMENT}_{n}"  # dev and prod share one PostHog project
-            return await posthog_admin.endpoint(stem, q, timeout_s=min(QUERY_TIMEOUT_S, left))
+            call = posthog_admin.endpoint(stem, q, timeout_s=min(QUERY_TIMEOUT_S, left))
+            try:  # httpx's timeout is per phase and a publish is several requests: this is the bound on the whole call
+                return await asyncio.wait_for(call, left)
+            except asyncio.TimeoutError:
+                return late
 
     results = await asyncio.gather(*(run(n, q) for n, q in queries.items()))
     if all(r["stubbed"] for r in results):

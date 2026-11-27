@@ -267,6 +267,26 @@ async def test_a_query_that_cannot_start_inside_the_budget_is_a_timeout_and_is_n
 
 
 @pytest.mark.asyncio
+async def test_a_query_still_running_at_the_budget_is_cut_off_as_a_timeout(monkeypatch):
+    """The API gateway gives up at 30 seconds and the page then gets nothing: the load must end inside the budget."""
+    monkeypatch.setattr(sm, "BUDGET_S", 0.05)
+
+    async def fake(stem, q, **_):
+        await asyncio.sleep(5)
+        return _ok([])
+
+    started = asyncio.get_running_loop().time()
+    with patch("core.services.posthog_admin.endpoint", AsyncMock(side_effect=fake)):
+        _, state, errors = await sm.compute()
+    assert asyncio.get_running_loop().time() - started < 1
+    assert state == "partial" and {e["reason"] for e in errors} == {"timeout"} and len(errors) == len(sm.QUERY_KEYS)
+
+
+def test_the_budget_leaves_room_under_the_api_gateway_timeout():
+    assert sm.BUDGET_S <= 25  # apps/infra/lib/stacks/api-stack.ts: timeoutInMillis 30000
+
+
+@pytest.mark.asyncio
 async def test_each_query_gets_the_time_left_in_the_budget_never_more_than_its_own_timeout(monkeypatch):
     monkeypatch.setattr(sm, "BUDGET_S", 4.0)
     with patch("core.services.posthog_admin.endpoint", AsyncMock(return_value=_ok([]))) as mock:

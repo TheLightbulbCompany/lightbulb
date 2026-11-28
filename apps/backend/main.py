@@ -23,6 +23,7 @@ from routers import (
     billing,
     ops,
     os as os_router,
+    os_autocomplete,
     os_billing as os_billing_router,
     webhooks,
 )
@@ -229,6 +230,7 @@ app.openapi = custom_openapi
 # Routes
 app.include_router(os_router.router, prefix="/api/v1/os", tags=["os"])
 app.include_router(os_billing_router.router, prefix="/api/v1/os", tags=["os"])
+app.include_router(os_autocomplete.router, prefix="/api/v1/os", tags=["os"])  # 404 unless SPARK_AUTOCOMPLETE_ENABLED
 # Clerk webhook (user.deleted ends the person's Spark account)
 app.include_router(webhooks.router, prefix="/api/v1/webhooks", tags=["webhooks"])
 # Stripe webhook (Spark subscriptions) at /api/v1/billing/webhooks/stripe

@@ -132,6 +132,17 @@ class Settings(BaseSettings):
     #: Oldest app version allowed to open a voice session, per platform ("X.Y.Z"). Set by hand; empty: no floor.
     SPARK_MIN_VERSION_MAC: str = ""
     SPARK_MIN_VERSION_WINDOWS: str = ""
+    #: Spark autocomplete (POST /os/assist/complete). Off: the route answers 404, as if it did not exist. It spends on
+    #: the company OpenAI key, so CDK turns it on per environment (dev only for now).
+    SPARK_AUTOCOMPLETE_ENABLED: bool = False
+    #: The model behind it (developers.openai.com/api/docs/models/gpt-6-luna).
+    SPARK_AUTOCOMPLETE_MODEL: str = "gpt-6-luna"
+    #: Suggestions one person may ask for per UTC day: a spend ceiling, well above a heavy typer's ~1,500 pauses.
+    SPARK_AUTOCOMPLETE_DAILY_MAX: int = 3000
+    #: Prompt characters one person may send per UTC day, both routes together: the ceiling on input spend, since one
+    #: request at every cap is ~300,000 chars. 30M chars is ~7.5M tokens, about $0.75 a day uncached on gpt-6-luna; a
+    #: heavy typer's ~1,500 pauses of ~8,000 chars is 12M.
+    SPARK_AUTOCOMPLETE_DAILY_CHARS: int = 30_000_000
     # Display dollars for STRIPE_SPARK_PRICE_ID (Spark's monthly price); lockstep with its unit amount.
     SPARK_PRICE_USD: int = 20
     # What a minute of Spark voice costs us (gpt-live-1.1): a calibration value for the margin metric, unverified.

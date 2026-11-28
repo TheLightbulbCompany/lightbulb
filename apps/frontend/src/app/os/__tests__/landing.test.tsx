@@ -23,7 +23,7 @@ const api = vi.hoisted(() => ({ post: vi.fn(async () => ({})), get: vi.fn() }));
 vi.mock("@/lib/api", () => ({ useApi: () => api }));
 
 const DOWNLOAD = "Download for Mac";
-const HERO_PRICE = "Free for 3 days, then $20/month. Renews monthly until you cancel.";
+const HERO_PRICE = "Start for free, then $20/month. Renews monthly until you cancel.";
 
 const stub = (status: number, config: unknown = { priceText: "$20/month", trialDays: 3 }) =>
   vi.stubGlobal(
@@ -67,7 +67,7 @@ describe("/os landing page (dev only)", () => {
       "Spark thinks with a plan you already have.",
       "Where your things go.",
       "Questions.",
-      "Try Spark free for 3 days.",
+      "Try Spark free.",
     ]);
     expect(container.querySelectorAll("details")).toHaveLength(6);
     expect(container.textContent).toContain("Each friend who joins with your link adds a free day.");
@@ -99,7 +99,7 @@ describe("/os landing page (dev only)", () => {
     const { container } = await page();
     expect(screen.getByText(HERO_PRICE)).toBeInTheDocument();
     expect(container.textContent).toContain("Then $20/month.");
-    expect(container.textContent).toContain("For 3 days. Then it's $20/month.");
+    expect(container.textContent).toContain("Free to start. Then it's $20/month.");
   });
 
   it("drops every number when the config fails", async () => {

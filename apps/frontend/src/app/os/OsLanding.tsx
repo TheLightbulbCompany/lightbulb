@@ -10,14 +10,7 @@ import { DownloadBlock, OsInvite, SOON } from "./OsInvite";
 import { SparkGet } from "./SparkDownload";
 import { SparkPlayer } from "./SparkPlayer";
 
-export type SparkPrice = { priceText: string; trialDays: number; trialVoiceMinutes?: number } | null;
-
-// "7 days", or "7 days or 2 hours of talking, whichever comes first" when the backend sends the trial's talking time.
-export function freeFor({ trialDays, trialVoiceMinutes: m }: NonNullable<SparkPrice>): string {
-  if (!m) return `${trialDays} days`;
-  const talk = m % 60 ? `${m} minutes` : `${m / 60} hour${m === 60 ? "" : "s"}`;
-  return `${trialDays} days or ${talk} of talking, whichever comes first`;
-}
+export type SparkPrice = { priceText: string; trialDays: number } | null;
 
 const body = Bricolage_Grotesque({ subsets: ["latin"], variable: "--sp-font", display: "swap" });
 const pixel = Silkscreen({ weight: "400", subsets: ["latin"], variable: "--sp-pixel", display: "swap" });
@@ -73,7 +66,7 @@ const SETUP = [
 // omitted or said without them.
 export function OsLanding({ ready, price }: { ready: boolean; price: SparkPrice }) {
   const faq: [string, string][] = [
-    ["Is Spark free?", price ? `For ${freeFor(price)}. Then it's ${price.priceText}.` : "See the price when you download."],
+    ["Is Spark free?", price ? `Free to start. Then it's ${price.priceText}.` : "See the price when you download."],
     ["What Mac do I need?", "A Mac with Apple silicon (M1 or later), on macOS 14 or later."],
     ["Do I need ChatGPT or Claude?", "Yes, your own account. Free ChatGPT works. Claude needs Pro or higher."],
     ["Can Spark do things without asking?", "It acts on your screen when you ask. Say stop any time and it stops."],
@@ -99,7 +92,7 @@ export function OsLanding({ ready, price }: { ready: boolean; price: SparkPrice 
             <div className="small">
               {price && (
                 <p>
-                  Free for {freeFor(price)}, then {price.priceText}. Renews monthly until you cancel.
+                  Start for free, then {price.priceText}. Renews monthly until you cancel.
                 </p>
               )}
               <p className="legal">
@@ -487,7 +480,7 @@ export function OsLanding({ ready, price }: { ready: boolean; price: SparkPrice 
         <div className="stick">
           <canvas className="sky" id="sky8" aria-hidden="true" />
           <div className="s8in">
-            <h2 id="sp-s8">{price ? `Try Spark free for ${price.trialDays} days.` : "Try Spark."}</h2>
+            <h2 id="sp-s8">{price ? "Try Spark free." : "Try Spark."}</h2>
             <div className="act">
               <span>
                 {ready ? <SparkGet source="os_closing" /> : <span className="soon">{SOON}</span>}

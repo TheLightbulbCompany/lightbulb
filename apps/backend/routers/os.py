@@ -69,7 +69,6 @@ class AccountResponse(BaseModel):
 class ConfigResponse(BaseModel):
     priceText: str
     trialDays: int
-    trialVoiceMinutes: int = os_billing.TRIAL_VOICE_S // 60
     worklogScope: Literal["all", "problem", "off"] = "off"
     minVersion: dict[str, str] = {}  # platform -> "X.Y.Z"; a platform with no valid floor is absent
 

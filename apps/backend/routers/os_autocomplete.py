@@ -207,7 +207,8 @@ async def complete(request: Request, auth: AuthContext = Depends(get_human_sessi
         versions=len(answer.get("option", [])),
         shown=answer["show"],
         reason=answer.get("reason"),
-        source=(answer.get("source") or {}).get("kind"),  # one of the fixed labels in `ac.SOURCES`, or None
+        source=(answer.get("source") or {}).get("kind"),
+        cache_fields=int(comp.cache_fields),  # one of the fixed labels in `ac.SOURCES`, or None
         **ac.context_counts(req),
     )
     return answer

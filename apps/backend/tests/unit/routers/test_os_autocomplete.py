@@ -752,3 +752,61 @@ async def test_cache_writes_are_read_from_the_usage(monkeypatch):
     }
     p, _ = _openai(monkeypatch, httpx.Response(200, json=reply))
     assert (await p.complete("d", "u", 80, "k", 4.0)).cache_write_tokens == 1536
+
+
+_OK = {"choices": [{"message": {"content": "#80 message\n sure."}}], "usage": {"prompt_tokens": 1500}}
+_CACHE_REFUSED = {"error": {"message": "Unrecognized request argument supplied: prompt_cache_options"}}
+
+
+async def test_a_refused_cache_field_is_dropped_and_the_same_request_still_answers(monkeypatch, caplog):
+    p, sent = _openai(
+        monkeypatch,
+        httpx.Response(400, json=_CACHE_REFUSED),
+        httpx.Response(200, json=_OK),
+        httpx.Response(200, json=_OK),
+    )
+    caplog.set_level(logging.WARNING)
+    first = await p.complete("dev", [f"A {SECRET}\n\n", "B\n\n", "C"], 80, "k", 4.0)
+    assert first.text and first.cache_fields is False and p.cache_fields is False
+    assert "prompt_cache_options" in sent[0] and isinstance(sent[0]["messages"][1]["content"], list)
+    for b in sent[1:2]:  # the retry: the same text, one plain string, no cache fields
+        assert "prompt_cache_options" not in b and b["messages"][1]["content"] == f"A {SECRET}\n\nB\n\nC"
+    later = await p.complete("dev", ["A\n\n", "C"], 80, "k", 4.0)  # and for the life of the process
+    assert later.cache_fields is False and "prompt_cache_options" not in sent[2]
+    assert sent[2]["messages"][1]["content"] == "A\n\nC"
+    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1 and "prompt-cache" in warnings[0] and "Zanzibar" not in warnings[0]
+
+
+async def test_a_breakpoint_refusal_is_dropped_too(monkeypatch):
+    refused = {"error": {"message": "Unknown parameter: 'messages[1].content[0].prompt_cache_breakpoint'."}}
+    p, sent = _openai(monkeypatch, httpx.Response(400, json=refused), httpx.Response(200, json=_OK))
+    assert (await p.complete("dev", ["A\n\n", "C"], 80, "k", 4.0)).text
+    assert len(sent) == 2 and sent[1]["messages"][1]["content"] == "A\n\nC"
+
+
+async def test_a_400_about_something_else_is_still_an_error(monkeypatch):
+    other = {"error": {"message": "Invalid value for 'max_completion_tokens'."}}
+    p, sent = _openai(monkeypatch, httpx.Response(400, json=other))
+    with pytest.raises(ac.ProviderError) as e:
+        await p.complete("dev", ["A\n\n", "C"], 80, "k", 4.0)
+    assert str(e.value) == "status_400" and len(sent) == 1 and p.cache_fields is True
+
+
+async def test_the_cache_retry_counts_once_against_the_daily_ceiling(on, monkeypatch, caplog):
+    monkeypatch.setattr(settings, "SPARK_AUTOCOMPLETE_DAILY_MAX", 1)
+    real, sent = _openai(monkeypatch, httpx.Response(400, json=_CACHE_REFUSED), httpx.Response(200, json=_OK))
+    monkeypatch.setattr(ac, "provider", real)
+    caplog.set_level(logging.INFO)
+    r = await post()
+    assert r.status_code == 200 and r.json()["show"] is True and len(sent) == 2
+    assert "cache_fields=0" in next(m.getMessage() for m in caplog.records if "autocomplete complete" in m.getMessage())
+    assert (await post()).status_code == 429  # the one counted request was the one that came back
+
+
+async def test_the_log_line_says_when_the_cache_fields_were_sent(on, monkeypatch, caplog):
+    real, _ = _openai(monkeypatch, httpx.Response(200, json=_OK))
+    monkeypatch.setattr(ac, "provider", real)
+    caplog.set_level(logging.INFO)
+    await post()
+    assert "cache_fields=1" in next(m.getMessage() for m in caplog.records if "autocomplete complete" in m.getMessage())

@@ -12,6 +12,7 @@ unchanged and an over-cap one is cut to the same shape. Fields whose cap Opsis d
 Privacy: nothing here logs or stores text. The caller logs counts, sizes, timings and the model id only."""
 
 import hashlib
+import logging
 import math
 import re
 import uuid
@@ -24,6 +25,8 @@ import httpx
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
 
 from core.config import settings
+
+logger = logging.getLogger(__name__)
 
 MARK = "⟦field⟧"
 
@@ -547,6 +550,7 @@ class Completion:
     cached_tokens: int = 0
     output_tokens: int = 0
     cache_write_tokens: int = 0
+    cache_fields: bool = False  # the request carried the prompt-cache fields
 
 
 class ProviderError(Exception):
@@ -577,6 +581,9 @@ class OpenAIProvider:
         # gpt-6-luna's docs do not say whether it returns logprobs; GPT-6.2's say to omit them. Ask, and stop asking
         # once a request is refused for them (a refused request generates nothing).
         self.logprobs = True
+        # The prompt-cache fields are documented for gpt-5.6 and later but untested on our model: a refusal turns them
+        # off for the life of the process (a restart probes again), and the same request goes again without them.
+        self.cache_fields = True
 
     def configured(self) -> bool:
         return settings.OPENAI_API_KEY.startswith("sk-")  # CDK seeds a random non-sk- value: that is unset
@@ -591,16 +598,23 @@ class OpenAIProvider:
     ) -> Completion:
         body: dict[str, Any] = {
             "model": settings.SPARK_AUTOCOMPLETE_MODEL,
-            "messages": [{"role": "developer", "content": developer}, {"role": "user", "content": _content(user)}],
+            "messages": [
+                {"role": "developer", "content": developer},
+                {"role": "user", "content": None},
+            ],  # set per try, below
             "reasoning_effort": "none",
             "max_completion_tokens": max_tokens,
             "store": False,
             "prompt_cache_key": cache_key,
             "safety_identifier": cache_key,
         }
-        if isinstance(user, list):  # explicit breakpoints only: no implicit write of the whole, never-repeated prompt
-            body["prompt_cache_options"] = {"mode": "explicit"}
-        for _ in range(2):
+        for _ in range(3):  # at most one refusal of logprobs and one of the cache fields
+            cached = isinstance(user, list) and self.cache_fields
+            body["messages"][1]["content"] = _content(user) if cached else _plain(user)
+            if cached:  # explicit breakpoints only: no implicit write of the whole, never-repeated prompt
+                body["prompt_cache_options"] = {"mode": "explicit"}
+            else:
+                body.pop("prompt_cache_options", None)
             if self.logprobs:
                 body["logprobs"] = True
             else:
@@ -618,6 +632,14 @@ class OpenAIProvider:
                 raise ProviderError("transport") from None
             if r.status_code == 400 and self.logprobs and "logprob" in r.text.lower():
                 self.logprobs = False
+                continue
+            if r.status_code == 400 and cached and "prompt_cache" in r.text.lower():
+                self.cache_fields = False
+                logger.warning(
+                    "autocomplete: the provider refused the prompt-cache fields; sending without them until restart "
+                    "model=%s",
+                    settings.SPARK_AUTOCOMPLETE_MODEL,
+                )
                 continue
             if r.status_code != 200:
                 raise ProviderError(f"status_{r.status_code}")
@@ -639,7 +661,12 @@ class OpenAIProvider:
             cached_tokens=int((usage.get("prompt_tokens_details") or {}).get("cached_tokens") or 0),
             cache_write_tokens=int((usage.get("prompt_tokens_details") or {}).get("cache_write_tokens") or 0),
             output_tokens=int(usage.get("completion_tokens") or 0),
+            cache_fields=cached,
         )
+
+
+def _plain(user: str | list[str]) -> str:
+    return user if isinstance(user, str) else "".join(user)
 
 
 def _content(user: str | list[str]) -> str | list[dict]:

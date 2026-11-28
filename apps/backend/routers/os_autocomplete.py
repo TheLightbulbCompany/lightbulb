@@ -163,14 +163,15 @@ def _log(route: str, comp: ac.Completion, size: int, prompt_chars: int, started:
     """The one log line per answered request: counts, sizes, timings and the model id, never text."""
     done = time.monotonic()
     logger.info(
-        "autocomplete %s %s body_bytes=%d prompt_chars=%d in_tokens=%d cached_tokens=%d out_tokens=%d logprobs=%s "
-        "model_ms=%d total_ms=%d model=%s",
+        "autocomplete %s %s body_bytes=%d prompt_chars=%d in_tokens=%d cached_tokens=%d cache_write_tokens=%d "
+        "out_tokens=%d logprobs=%s model_ms=%d total_ms=%d model=%s",
         route,
         " ".join(f"{k}={v}" for k, v in counts.items()),
         size,
         prompt_chars,
         comp.input_tokens,
         comp.cached_tokens,
+        comp.cache_write_tokens,
         comp.output_tokens,
         comp.token_logprobs is not None,
         (done - asked) * 1000,
@@ -202,6 +203,8 @@ async def complete(request: Request, auth: AuthContext = Depends(get_human_sessi
         versions=len(answer.get("option", [])),
         shown=answer["show"],
         reason=answer.get("reason"),
+        source=(answer.get("source") or {}).get("kind"),  # one of the fixed labels in `ac.SOURCES`, or None
+        **ac.context_counts(req),
     )
     return answer
 
@@ -218,5 +221,5 @@ async def reach(request: Request, auth: AuthContext = Depends(get_human_session)
     asked = time.monotonic()
     comp = await _ask(auth.user_id, now, developer, user, ac.REACH)
     queries = ac.reach_queries(comp.text)
-    _log("reach", comp, size, len(developer) + len(user), started, asked, queries=len(queries))
+    _log("reach", comp, size, len(developer) + len(user), started, asked, queries=len(queries), **ac.reach_counts(req))
     return {"queries": queries}

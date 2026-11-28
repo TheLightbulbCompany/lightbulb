@@ -16,6 +16,7 @@ from moto import mock_aws
 
 from core import dynamodb
 from core.config import settings
+from core.services.os_billing import TRIAL_VOICE_S
 from core.voice import os_voice
 from main import app
 from tests.unit.auth.conftest import Tenant, jwks  # noqa: F401
@@ -203,11 +204,22 @@ async def test_create_returns_the_answer_and_sends_the_owned_config(ddb, clock, 
     assert got.status_code == 200 and got.json() == {"status": "active", "endedReason": None}
 
 
+def start_trial(users, *ids: str):
+    """Mark people as having had their first conversation: the trial clock runs."""
+    for uid in ids:
+        users.update_item(
+            Key={"user_id": uid},
+            UpdateExpression="SET os_trial_started_at = :t",
+            ExpressionAttributeValues={":t": START},
+        )
+
+
 async def test_free_days_up_refuses_a_session_but_never_for_the_team(
     ddb, users, clock, openai, no_sideband, monkeypatch
 ):
     for who in (A, B):
         assert (await req("GET", "/os/account", who)).status_code == 200
+    start_trial(users, "user_a", "user_b")
     clock[0] += 30 * 86400
     monkeypatch.setattr(settings, "SPARK_INTERNAL_USER_IDS", "user_a")
     refused = await create(B)
@@ -215,7 +227,98 @@ async def test_free_days_up_refuses_a_session_but_never_for_the_team(
     assert (await create(A)).status_code == 201
     # and the open session is not closed at the old trial end: there is no trial end for the team
     assert await os_voice._trial_ends_at("user_a") is None
-    assert await os_voice._trial_ends_at("user_b") == START + 3 * 86400
+    assert await os_voice._trial_ends_at("user_b") == START + 7 * 86400
+
+
+async def test_the_trial_clock_starts_at_the_first_conversation_and_never_moves(ddb, clock, no_sideband, openai, users):
+    assert (await req("GET", "/os/account")).json()["trialEndsAt"] == START + 7 * 86400
+    clock[0] += 10 * 86400  # signed up ten days ago, never talked: still a full trial, never ended
+    body_ = (await req("GET", "/os/account")).json()
+    assert body_["status"] == "trial" and body_["trialEndsAt"] == clock[0] + 7 * 86400
+    assert (await create()).status_code == 201
+    first = users.get_item(Key={"user_id": "user_a"})["Item"]
+    assert first["os_trial_ends_at"] == clock[0] + 7 * 86400 and first["os_trial_started_at"] == clock[0]
+    clock[0] += 86400
+    assert (await create()).status_code == 201
+    assert users.get_item(Key={"user_id": "user_a"})["Item"]["os_trial_ends_at"] == first["os_trial_ends_at"]
+
+
+async def test_concurrent_first_conversations_agree_on_one_start(ddb, clock, no_sideband, openai, users):
+    from routers import os as os_router
+
+    assert (await req("GET", "/os/account")).status_code == 200
+    row = users.get_item(Key={"user_id": "user_a"})["Item"]
+    got = await asyncio.gather(*[os_router._start_trial("user_a", row, START + i) for i in range(5)])
+    stored = users.get_item(Key={"user_id": "user_a"})["Item"]["os_trial_ends_at"]
+    assert {g["os_trial_ends_at"] for g in got} == {stored}
+
+
+async def test_invite_days_earned_before_the_first_conversation_are_kept(ddb, clock, no_sideband, openai, users):
+    assert (await req("GET", "/os/account", A)).status_code == 200
+    clock[0] += 100
+    assert (await req("GET", "/os/account", B)).status_code == 200
+    assert (await req("POST", "/os/referral", B, {"code": "a"})).json() == {"applied": True}
+    clock[0] += 10 * 86400
+    assert (await req("GET", "/os/account", A)).json()["trialEndsAt"] == clock[0] + 8 * 86400
+    assert (await create(A)).status_code == 201
+    assert users.get_item(Key={"user_id": "user_a"})["Item"]["os_trial_ends_at"] == clock[0] + 8 * 86400
+
+
+async def test_an_account_with_past_voice_use_is_not_moved(ddb, clock, no_sideband, openai, users):
+    assert (await req("GET", "/os/account")).status_code == 200
+    users.update_item(
+        Key={"user_id": "user_a"},
+        UpdateExpression="SET os_voice_seconds = :s",
+        ExpressionAttributeValues={":s": 60},
+    )
+    clock[0] += 10 * 86400
+    assert (await create()).status_code == 402
+    assert users.get_item(Key={"user_id": "user_a"})["Item"]["os_trial_ends_at"] == START + 7 * 86400
+
+
+async def test_the_voice_allowance_is_a_402_trial_ended(ddb, clock, no_sideband, openai, users):
+    assert (await create()).status_code == 201
+    users.update_item(
+        Key={"user_id": "user_a"},
+        UpdateExpression="SET os_voice_seconds = :s",
+        ExpressionAttributeValues={":s": TRIAL_VOICE_S - 1},
+    )
+    assert (await create()).status_code == 201
+    users.update_item(
+        Key={"user_id": "user_a"},
+        UpdateExpression="SET os_voice_seconds = :s",
+        ExpressionAttributeValues={":s": TRIAL_VOICE_S},
+    )
+    r = await create()
+    assert (r.status_code, r.json()) == (402, {"detail": "trial_ended"})
+    assert (await req("GET", "/os/account")).json()["status"] == "ended"
+
+
+async def test_the_voice_allowance_closes_a_live_session(ddb, clock, openai, sockets, users):
+    users.put_item(Item={"user_id": "user_a", "os_voice_seconds": TRIAL_VOICE_S - 30})
+    sid = await opened_session()
+    await until(lambda: sockets)
+    sockets[0].push(usage(29))
+    for _ in range(5):
+        await asyncio.sleep(os_voice.TICK_S)
+    assert {"type": "session.close"} not in sockets[0].sent
+    sockets[0].push(usage(30))
+    await until(lambda: {"type": "session.close"} in sockets[0].sent)
+    sockets[0].push(closed(30))
+    await until(lambda: rec(ddb, sid).get("endedReason"))
+    assert rec(ddb, sid)["endedReason"] == "trial_ended"
+
+
+@pytest.mark.parametrize("exempt", ["team", "paying"])
+async def test_team_and_paying_accounts_have_no_voice_allowance(
+    ddb, clock, no_sideband, openai, users, monkeypatch, exempt
+):
+    if exempt == "team":
+        monkeypatch.setattr(settings, "SPARK_INTERNAL_USER_IDS", "user_a")
+    row = {"user_id": "user_a", "os_voice_seconds": TRIAL_VOICE_S * 5}
+    users.put_item(Item=row | ({"os_subscription_status": "active"} if exempt == "paying" else {}))
+    assert (await create()).status_code == 201
+    assert await os_voice._voice_left("user_a") is None
 
 
 async def test_a_model_off_the_list_is_refused(ddb, clock, no_sideband, openai):
@@ -355,9 +458,10 @@ async def test_invalid_sdp(ddb, clock, no_sideband, openai, sdp):
     assert not openai.called
 
 
-async def test_trial_ended_is_402_and_openai_is_not_called(ddb, clock, no_sideband, openai):
+async def test_trial_ended_is_402_and_openai_is_not_called(ddb, clock, no_sideband, openai, users):
     assert (await req("GET", "/os/account")).status_code == 200
-    clock[0] += 3 * 86400
+    start_trial(users, "user_a")
+    clock[0] += 7 * 86400
     r = await create()
     assert (r.status_code, r.json()) == (402, {"detail": "trial_ended"})
     assert not openai.called
@@ -372,7 +476,7 @@ async def test_a_subscribed_person_passes_the_trial_check(ddb, clock, no_sideban
         UpdateExpression="SET os_subscription_status = :s",
         ExpressionAttributeValues={":s": "active"},
     )
-    clock[0] += 3 * 86400
+    clock[0] += 7 * 86400
     assert (await create()).status_code == 201
     assert await os_voice._trial_ends_at("user_a") is None  # a live session is never closed as trial_ended
 
@@ -380,7 +484,7 @@ async def test_a_subscribed_person_passes_the_trial_check(ddb, clock, no_sideban
 async def test_first_call_creates_the_account_then_proceeds(ddb, clock, no_sideband, openai, users):
     assert (await create()).status_code == 201
     row = users.get_item(Key={"user_id": "user_a"})["Item"]
-    assert row["os_trial_ends_at"] == START + 3 * 86400
+    assert row["os_trial_ends_at"] == START + 7 * 86400
     assert (await req("GET", "/os/account")).json()["status"] == "trial"
 
 
@@ -593,7 +697,7 @@ async def test_usage_is_recorded_and_the_close_counts_once(ddb, clock, openai, s
 async def test_account_ending_mid_session_closes_it(ddb, clock, openai, sockets, users):
     sid = await opened_session()
     await until(lambda: sockets)
-    clock[0] += 3 * 86400
+    clock[0] += 7 * 86400
     await until(lambda: {"type": "session.close"} in sockets[0].sent)
     sockets[0].push(closed(40))
     await until(lambda: rec(ddb, sid).get("endedReason"))
@@ -689,7 +793,7 @@ async def test_a_close_with_no_session_closed_is_reaped_unconfirmed(ddb, clock, 
     sid = await opened_session()
     await until(lambda: sockets)
     sockets[0].push(usage(30))
-    clock[0] += 3 * 86400
+    clock[0] += 7 * 86400
     await until(lambda: {"type": "session.close"} in sockets[0].sent)
     clock[0] += os_voice.CLOSE_WAIT_S + 1  # OpenAI never answers the close
     await until(lambda: metrics)  # emitted after the row is ended

@@ -28,6 +28,19 @@ logger = logging.getLogger(__name__)
 CHECKOUT, PORTAL = "spark_checkout", "spark_portal"
 TOKEN_TTL_S = 15 * 60
 LIVE = ("active", "trialing")
+TRIAL_VOICE_S = (
+    120 * 60
+)  # owner, 2026-11-28: the trial also ends after this much voice, next to `TRIAL_S` in routers/os.py
+# A trial starts at the first conversation; an account with any of these has started it, or never gets one.
+STARTED = ("os_trial_started_at", "os_voice_seconds", "os_deleted_at", "os_subscription_status")
+
+
+def pending(row: dict) -> bool:
+    """True for an account whose trial has not started: no first conversation, no past voice, no subscription,
+    not a deleted-then-recreated account."""
+    return not any(k in row for k in STARTED)
+
+
 # Stripe still holds these open: a new checkout would be a second subscription, so they use the portal.
 # `incomplete` is not here: its first payment never went through and Stripe expires it within a day.
 BILLED = (*LIVE, "past_due", "unpaid", "paused")
@@ -92,13 +105,15 @@ def _users():
 
 
 def status(row: dict, now: int) -> str:
-    """`active` with a live subscription, else `trial` until `os_trial_ends_at`, else `ended`. A team account
+    """`active` with a live subscription, else `trial` until `os_trial_ends_at` or `TRIAL_VOICE_S` of voice, else `ended`. A team account
     (`settings.spark_internal_user_ids`, the accounts the metrics already ignore) is `active` too: the team is never
     asked to pay (founder, 26 Nov 2026). This one answer is the app's paywall, the 402 on a new voice session and the
     close of an open one at the trial's end."""
     if row.get("os_subscription_status") in LIVE or row.get("user_id") in settings.spark_internal_user_ids:
         return "active"
-    return "trial" if now < int(row["os_trial_ends_at"]) else "ended"
+    if now >= int(row["os_trial_ends_at"]) or int(row.get("os_voice_seconds", 0)) >= TRIAL_VOICE_S:
+        return "ended"
+    return "trial"
 
 
 def _link(kind: str, user_id: str, now: int) -> str | None:

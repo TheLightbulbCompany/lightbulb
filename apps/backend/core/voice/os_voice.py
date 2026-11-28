@@ -438,6 +438,19 @@ async def _trial_ends_at(user_id: str) -> int | None:
     return None if ends is None or os_billing.status(row, now()) == "active" else int(ends)
 
 
+async def _voice_left(user_id: str) -> int | None:
+    """Seconds of the trial's voice allowance this person has left before a new session; None for a paying or
+    team account, which is never limited."""
+    from core.services import os_billing
+
+    row = (await run_in_thread(get_table("users").get_item, Key={"user_id": user_id}, ConsistentRead=True)).get(
+        "Item"
+    ) or {}
+    if row.get("os_subscription_status") in os_billing.LIVE or user_id in settings.spark_internal_user_ids:
+        return None
+    return max(os_billing.TRIAL_VOICE_S - int(row.get("os_voice_seconds", 0)), 0)
+
+
 async def _due(s: dict, at: int) -> str | None:
     """Why the backend should close this session now, if it should."""
     if s.get("closeRequested"):  # replaced by a newer session, or client_closed by the app
@@ -446,6 +459,8 @@ async def _due(s: dict, at: int) -> str | None:
         s["trialEndsAt"] = await _trial_ends_at(s["userId"])  # a referral may have extended it
         if s["trialEndsAt"] is not None and at >= s["trialEndsAt"]:
             return "trial_ended"
+    if s.get("voiceLeftS") is not None and int(s["usageSeconds"]) >= s["voiceLeftS"]:
+        return "trial_ended"
     if (s.get("expiresAt") and at >= int(s["expiresAt"])) or at >= int(s["startedAt"]) + MAX_SESSION_S:
         return "expired"
     return None
@@ -602,6 +617,7 @@ async def run_sideband(sid: str) -> None:
         return
     s = await get(sid)
     s["trialEndsAt"] = await _trial_ends_at(s["userId"])
+    s["voiceLeftS"] = await _voice_left(s["userId"])
     connected = False
     try:
         try:

@@ -314,6 +314,22 @@ async def test_the_voice_allowance_closes_a_live_session(ddb, clock, openai, soc
     assert rec(ddb, sid)["endedReason"] == "trial_ended"
 
 
+async def test_subscribing_during_a_session_lifts_its_talking_limit(ddb, clock, openai, sockets, users):
+    users.put_item(Item={"user_id": "user_a", "os_voice_seconds": TRIAL_VOICE_S - 30})
+    sid = await opened_session()
+    await until(lambda: sockets)
+    users.update_item(  # the Stripe webhook lands while they talk
+        Key={"user_id": "user_a"},
+        UpdateExpression="SET os_subscription_status = :a",
+        ExpressionAttributeValues={":a": "active"},
+    )
+    sockets[0].push(usage(60))
+    for _ in range(8):
+        await asyncio.sleep(os_voice.TICK_S)
+    assert {"type": "session.close"} not in sockets[0].sent
+    assert not rec(ddb, sid).get("closeReason")
+
+
 async def test_usage_banked_by_a_replaced_session_counts_within_a_minute(ddb, clock, openai, sockets, users):
     """A session read the allowance before the one it replaced banked its usage: the next read sees it."""
     users.put_item(Item={"user_id": "user_a", "os_voice_seconds": 0})
@@ -564,6 +580,9 @@ async def test_openai_failures_map_and_free_the_slot(
     item = users.get_item(Key={"user_id": "user_a"})["Item"]
     assert "os_voice_active" not in item
     assert "os_trial_started_at" not in item  # no conversation happened: the trial clock has not started
+    from core.services import os_billing
+
+    assert os_billing.pending(item)  # even though the failed session banked 0 seconds
 
 
 async def test_a_failed_record_write_after_openai_answered_is_502(

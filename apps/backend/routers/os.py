@@ -179,8 +179,8 @@ async def _start_trial(user_id: str, row: dict, now: int) -> dict:
                 Key={"user_id": user_id},
                 UpdateExpression="SET os_trial_started_at = :now, os_trial_ends_at = :end",
                 ConditionExpression=" AND ".join(f"attribute_not_exists({k})" for k in os_billing.STARTED)
-                + " AND os_trial_ends_at = :seen",
-                ExpressionAttributeValues={":now": now, ":end": end, ":seen": stored["os_trial_ends_at"]},
+                + " AND (attribute_not_exists(os_voice_seconds) OR os_voice_seconds = :zero) AND os_trial_ends_at = :seen",
+                ExpressionAttributeValues={":now": now, ":end": end, ":seen": stored["os_trial_ends_at"], ":zero": 0},
             )
             row = row | {"os_trial_started_at": now, "os_trial_ends_at": end}
             spark_events.server_event(

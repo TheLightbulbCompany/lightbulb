@@ -31,8 +31,9 @@ LIVE = ("active", "trialing")
 # owner, 2026-11-28: the trial also ends after this much voice (its days are `TRIAL_S` in routers/os.py).
 TRIAL_VOICE_S = 120 * 60
 INVITE_VOICE_S = 20 * 60  # owner, 2026-11-28: each invite day a person has earned adds this much talking time
-# A trial starts at the first conversation; an account with any of these has started it, or never gets one.
-STARTED = ("os_trial_started_at", "os_voice_seconds", "os_deleted_at", "os_subscription_status")
+# A trial starts at the first conversation; an account with any of these, or with voice used, has started it or never
+# gets one. A session that failed to open still banks 0 seconds: that is no conversation.
+STARTED = ("os_trial_started_at", "os_deleted_at", "os_subscription_status")
 
 
 def earned_days(row: dict) -> int:
@@ -57,7 +58,7 @@ def trial_ended_event(row: dict, now: int) -> None:
 def pending(row: dict) -> bool:
     """True for an account whose trial has not started: no first conversation, no past voice, no subscription,
     not a deleted-then-recreated account."""
-    return not any(k in row for k in STARTED)
+    return not any(k in row for k in STARTED) and not int(row.get("os_voice_seconds", 0))
 
 
 # Stripe still holds these open: a new checkout would be a second subscription, so they use the portal.

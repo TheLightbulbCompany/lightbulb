@@ -477,7 +477,9 @@ async def _due(s: dict, at: int) -> str | None:
     if s["trialEndsAt"] is not None and at >= s["trialEndsAt"]:
         s["trialEndsAt"] = await _trial_ends_at(s["userId"])  # a referral may have extended it
         ended = s["trialEndsAt"] is not None and at >= s["trialEndsAt"]
-    if s.get("voiceLeftS") is not None and at >= s.get("voiceReadAt", 0) + VOICE_REREAD_S:
+    over = s.get("voiceLeftS") is not None and int(s["usageSeconds"]) >= s["voiceLeftS"]
+    if s.get("voiceLeftS") is not None and (over or at >= s.get("voiceReadAt", 0) + VOICE_REREAD_S):
+        # re-read at the limit too: the person may have subscribed meanwhile (None: no limit any more)
         s["voiceLeftS"], s["voiceReadAt"] = await _voice_left(s["userId"]), at
     ended = ended or (s.get("voiceLeftS") is not None and int(s["usageSeconds"]) >= s["voiceLeftS"])
     if ended:

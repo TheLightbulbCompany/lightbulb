@@ -44,6 +44,8 @@ OK_TTL_S, FAIL_TTL_S = 300, 60
 # its endpoints run live; the next load, a minute later, reads the stored results.
 PARALLEL, QUERY_TIMEOUT_S, BUDGET_S = 3, 15.0, 25.0
 INSTALL_CAP = 5000
+TRIAL_DAYS, TRIAL_MINUTES = 7, 120  # the trial: ends at whichever comes first (PR #5442 sends `days` on trial_started)
+TRIAL_WINDOW_DAYS = 60
 BUCKETS = (("lt5m", 5), ("lt30m", 30), ("lt2h", 120), ("lt24h", 1440))  # minutes: launch -> first human task
 STEP_ORDER = ("sign_in", "brain", "permissions", "say_hi")
 D7_LABEL = "activated d7 (installs 7d+ old)"
@@ -64,6 +66,8 @@ QUERY_KEYS: dict[str, tuple[str, ...]] = {
     "setup_steps": ("setup",),
     "tasks_unfinished": ("setup",),
     "signals": ("signals",),
+    "trials": ("trials",),
+    "invites": ("invites",),
 }
 
 _SAFE_ID = re.compile(r"^[A-Za-z0-9_\-]+$")
@@ -271,6 +275,64 @@ def build_queries() -> dict[str, str]:
               and (event != 'task_started' or coalesce(toString(properties.source), '') != 'automation')
               and toString(properties.product) = 'spark' and {wa} and timestamp >= now() - interval 30 day
             group by event, k limit 500""",
+        # Trials: one row per person whose `trial_started` (server, once, at the first conversation) is in the last
+        # 60d, newest first. Columns: person, email, trial start, days given, account_created (1970 = not seen),
+        # voice seconds inside [start, start + days], latest subscription_updated.status_to ('' = none),
+        # trial_ended.by ('' = none; server, once, when the end is first enforced), upgrade_clicked after the
+        # start, subscription_started after the start.
+        "trials": f"""
+            select t.person_id, coalesce(p.email, ''), t.started, t.days,
+              minIf(e.timestamp, e.event = 'account_created'),
+              sumIf(toInt(e.properties.seconds), e.event = 'voice_session_ended'
+                    and e.timestamp >= t.started and e.timestamp < t.started + toIntervalDay(t.days)),
+              argMaxIf(toString(e.properties.status_to), e.timestamp, e.event = 'subscription_updated'),
+              argMaxIf(toString(e.properties.by), e.timestamp, e.event = 'trial_ended' and e.timestamp >= t.started),
+              countIf(e.event = 'upgrade_clicked' and e.timestamp >= t.started),
+              countIf(e.event = 'subscription_started' and e.timestamp >= t.started)
+            from (select person_id, min(timestamp) as started,
+                    max(coalesce(toInt(properties.days), {TRIAL_DAYS})) as days
+                  from events where event = 'trial_started' and toString(properties.product) = 'spark' and {wa}
+                    and timestamp >= now() - interval {TRIAL_WINDOW_DAYS} day
+                  group by person_id) as t
+            left join (select person_id, event, timestamp, properties from events
+                       where event in ('account_created', 'voice_session_ended', 'subscription_updated',
+                                       'trial_ended', 'upgrade_clicked', 'subscription_started')
+                         and (event = 'upgrade_clicked' or toString(properties.product) = 'spark') and {w}
+                         and timestamp >= now() - interval 12 month) as e on e.person_id = t.person_id
+            left join (select id, toString(properties.email) as email from persons) as p on p.id = t.person_id
+            group by t.person_id, p.email, t.started, t.days
+            order by t.started desc limit {INSTALL_CAP}""",
+        # Invites, last 60d, rows (kind, referrer user id, referrer email, a, b, c). Kinds: referral_link_copied
+        # (a = copies; one row per referrer) and referral_applied (a = days given, to the referrer or the friend: `to` is not
+        # "capped", older events have no `to` and count; one row per referrer, the event
+        # is on the referrer's person); friend = a person invited (referred_by_applied in the window; the person
+        # carries spark_referrer): a = signed in, b = has a human task, c = has a subscription. Per-friend rows.
+        "invites": f"""
+            select e.event, d.distinct_id, coalesce(p.email, ''),
+              toInt64(if(e.event = 'referral_applied', countIf(e.given_to != 'capped'), count())), toInt64(0), toInt64(0)
+            from (select person_id, event, coalesce(toString(properties.to), '') as given_to from events
+                  where event in ('referral_link_copied', 'referral_applied')
+                  and {wa} and timestamp >= now() - interval {TRIAL_WINDOW_DAYS} day) as e
+            join (select person_id, distinct_id from person_distinct_ids where startsWith(distinct_id, 'user_')) as d
+              on d.person_id = e.person_id
+            left join (select id, toString(properties.email) as email from persons) as p on p.id = e.person_id
+            group by e.event, d.distinct_id, p.email
+            union all
+            select 'friend', f.ref, coalesce(rp.email, ''), toInt64(max(f.acct)),
+              toInt64(countIf({h}) > 0), toInt64(countIf(e.event = 'subscription_started') > 0)
+            from (select x.person_id as person_id, x.acct as acct, q.ref as ref
+                  from (select person_id, if({_account_filter()}, 1, 0) as acct from events
+                        where event = 'referred_by_applied' and {w}
+                          and timestamp >= now() - interval {TRIAL_WINDOW_DAYS} day group by person_id) as x
+                  left join (select id, toString(properties.spark_referrer) as ref from persons) as q
+                    on q.id = x.person_id) as f
+            left join (select person_id, event, timestamp, properties from events
+                       where event in ('task_completed', 'subscription_started') and {wa}
+                         and timestamp >= now() - interval 90 day) as e on e.person_id = f.person_id
+            left join (select person_id, distinct_id from person_distinct_ids) as d on d.distinct_id = f.ref
+            left join (select id, toString(properties.email) as email from persons) as rp on rp.id = d.person_id
+            group by f.person_id, f.ref, rp.email
+            limit 5000""",
     }
 
 
@@ -393,6 +455,106 @@ def _setup(rows: dict[str, list]) -> dict | None:
             if e == "permission_prompted"
         ],
         "unfinished": _kn(int(stuck[0]), int(stuck[1])) if int(stuck[1]) else None,
+    }
+
+
+def _median_p90(xs: list[float]) -> dict | None:
+    xs = sorted(xs)
+    return (
+        {"median": round(statistics.median(xs), 1), "p90": round(xs[math.ceil(0.9 * len(xs)) - 1], 1)} if xs else None
+    )
+
+
+def _trials(rows: list, now: datetime) -> dict | None:
+    """People whose trial started in the last 60 days. Status, first match: paying (latest subscription status
+    active), ended by minutes / days from the server's `trial_ended.by`, else inferred (>= TRIAL_MINUTES of voice inside
+    the window, or the window is over), else running. `inferred` marks a status that has no `trial_ended`.
+    The paywall funnel counts, of everyone who started: trial_ended, upgrade_clicked, subscribed (all after the start).
+    None = no trial_started seen yet."""
+    if not rows:
+        return None
+    people, mins, to_first, counts, paywall = [], [], [], Counter(), [0, 0, 0]
+    for _, email, started, days, created, secs, sub_status, by, clicks, subs in rows:
+        start, used = _parse_ts(started), float(secs or 0) / 60
+        inferred = by not in ("minutes", "days")
+        if sub_status == "active":
+            status = "paying"
+        elif not inferred:
+            status = f"ended-{by}"
+        elif used >= TRIAL_MINUTES:
+            status = "ended-minutes"
+        elif now >= start + timedelta(days=int(days)):
+            status = "ended-days"
+        else:
+            status = "trial"
+        counts[status] += 1
+        paywall[0] += not inferred
+        paywall[1] += int(clicks) > 0
+        paywall[2] += int(subs) > 0 or sub_status == "active"
+        mins.append(used)
+        made = _parse_ts(created)
+        if made and made.year > 2000 and made <= start:
+            to_first.append((start - made).total_seconds() / 3600)
+        if len(people) < 100:
+            people.append(
+                {
+                    "email": email or None,
+                    "started": start.date().isoformat(),
+                    "minutes": round(used, 1),
+                    "status": status,
+                    "inferred": inferred and status.startswith("ended"),
+                }
+            )
+    n = len(rows)
+    return {
+        "started": n,
+        "running": counts["trial"],
+        "ended_minutes": counts["ended-minutes"],
+        "ended_days": counts["ended-days"],
+        "subscribed": _kn(counts["paying"], n),
+        "paywall": {"saw": _kn(paywall[0], n), "clicked": _kn(paywall[1], n), "subscribed": _kn(paywall[2], n)},
+        "minutes": _median_p90(mins),
+        "hours_to_first_conversation": round(statistics.median(to_first), 1) if to_first else None,
+        "people": people,
+        "truncated": n >= INSTALL_CAP,  # the query's row cap: the oldest trials are missing from every figure
+    }
+
+
+def _invites(rows: list) -> dict | None:
+    """Invites over the last 60 days from the `invites` rows. None = nothing seen yet."""
+    if not rows:
+        return None
+    refs: dict[str, dict] = {}
+    friends = [0, 0, 0, 0]  # invited, signed in, with a task, subscribed
+    copied = applied = credited_days = 0
+    for kind, ref, email, a, b, c in rows:
+        r = refs.setdefault(str(ref), {"email": None, "copies": 0, "friends": 0, "tasks": 0, "paying": 0})
+        r["email"] = r["email"] or email or None
+        if kind == "referral_link_copied":
+            copied += 1
+            r["copies"] += int(a)
+        elif kind == "referral_applied":
+            applied += int(a) > 0
+            credited_days += int(a)
+        else:
+            r["friends"] += 1
+            r["tasks"] += int(b)
+            r["paying"] += int(c)
+            for i, x in enumerate((1, a, b, c)):
+                friends[i] += int(x)
+    invited = friends[0]
+    table = sorted(
+        (r for r in refs.values() if r["copies"] or r["friends"]), key=lambda r: (-r["friends"], -r["copies"])
+    )
+    return {
+        "copied": copied,
+        "credited_days": credited_days,
+        "referrers_credited": applied,
+        "invited": invited,
+        "signed_in": _kn(friends[1], invited),
+        "first_task": _kn(friends[2], invited),
+        "subscribed": _kn(friends[3], invited),
+        "referrers": table[:50],
     }
 
 
@@ -629,6 +791,8 @@ def derive(rows: dict[str, list], now: datetime) -> dict:
         ],
         "setup": _setup(rows),
         "signals": _signals(rows["signals"]),
+        "trials": _trials(rows["trials"], now),
+        "invites": _invites(rows["invites"]),
     }
 
 

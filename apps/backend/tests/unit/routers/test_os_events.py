@@ -570,6 +570,7 @@ async def test_referral_captures_both_events(ph, ddb):
     r = await req("POST", "/os/referral", B, {"code": "a"})
     assert r.json() == {"applied": True}
     assert [c["distinct_id"] for c in ph.named("referral_applied")] == ["user_a"]
+    assert ph.named("referral_applied")[0]["properties"]["to"] == "referrer"  # who got the day
     assert [c["distinct_id"] for c in ph.named("referred_by_applied")] == ["user_b"]
     assert ph.named("referred_by_applied")[0]["properties"]["$set_once"] == {
         "spark_channel": "referral",

@@ -5,7 +5,7 @@ import { ErrorBanner } from "@/components/admin/ErrorBanner";
 
 import { type SparkData, getSpark } from "../_lib/api";
 import { DoersChart } from "./charts";
-import { Channels, Cohorts, Funnel, Headline, Money, People, Reliability, Setup, Signals, Sources } from "./sections";
+import { Channels, Cohorts, Funnel, Headline, Invites, Money, People, Reliability, Setup, Signals, Sources, Trials } from "./sections";
 
 export const dynamic = "force-dynamic";
 // The backend may take up to 25 seconds (the first load after a query changes); the API gateway allows 30.
@@ -84,6 +84,14 @@ export default async function AdminSparkPage() {
           <Section title="Money" keys={["money"]} off={off}>
             <Money data={data} />
           </Section>
+          <div className="grid gap-6 xl:grid-cols-2">
+            <Section title="Trials" keys={["trials"]} off={off}>
+              <Trials data={data} />
+            </Section>
+            <Section title="Invites" keys={["invites"]} off={off}>
+              <Invites data={data} />
+            </Section>
+          </div>
           <Section title="Reliability" keys={["success"]} off={off}>
             <Reliability data={data} />
           </Section>

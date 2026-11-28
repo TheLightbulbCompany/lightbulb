@@ -2,7 +2,7 @@ import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
 import type { SparkData } from "../../_lib/api";
-import { Channels, Cohorts, Funnel, Headline, Money, People, Reliability, Setup, Signals, Sources, kn } from "../sections";
+import { Channels, Cohorts, Funnel, Headline, Invites, Money, People, Reliability, Setup, Signals, Sources, Trials, kn } from "../sections";
 
 const DATA: SparkData = {
   generated_at: "2026-11-24T12:00:00Z",
@@ -71,6 +71,28 @@ const DATA: SparkData = {
     versions: [{ version: "1.0", people_7d: 4 }],
     updates: [{ to_version: "1.1", installs_30d: 3 }],
   },
+  trials: {
+    started: 4,
+    truncated: false,
+    running: 1,
+    ended_minutes: 1,
+    ended_days: 1,
+    subscribed: { k: 1, n: 4 },
+    paywall: { saw: { k: 2, n: 4 }, clicked: { k: 1, n: 4 }, subscribed: { k: 1, n: 4 } },
+    minutes: { median: 30.5, p90: 119 },
+    hours_to_first_conversation: 2.5,
+    people: [{ email: "trial@x.co", started: "2026-11-20", minutes: 42.5, status: "ended-days", inferred: true }],
+  },
+  invites: {
+    copied: 6,
+    credited_days: 3,
+    referrers_credited: 2,
+    invited: 5,
+    signed_in: { k: 5, n: 5 },
+    first_task: { k: 3, n: 5 },
+    subscribed: { k: 1, n: 5 },
+    referrers: [{ email: "ref@x.co", copies: 4, friends: 2, tasks: 1, paying: 1 }],
+  },
 };
 
 const EMPTY: SparkData = {
@@ -80,6 +102,8 @@ const EMPTY: SparkData = {
   setup: null,
   time_to_first_task: [],
   signals: { stopped: null, automations: null, features: null, crash: null, versions: null, updates: null },
+  trials: null,
+  invites: null,
 };
 
 describe("spark sections", () => {
@@ -115,6 +139,30 @@ describe("spark sections", () => {
     );
     expect(screen.getAllByText("no data yet")).toHaveLength(4);
     expect(screen.queryByText("Paying users")).toBeNull();
+  });
+
+  it("renders the trials and invites cards, and no data yet when empty", () => {
+    const { unmount } = render(
+      <>
+        <Trials data={DATA} />
+        <Invites data={DATA} />
+      </>,
+    );
+    expect(screen.getByText("trial@x.co")).toBeTruthy();
+    expect(screen.getByText("ended-days (inferred)")).toBeTruthy();
+    expect(screen.getByText("2 / 4 (50%)")).toBeTruthy(); // saw the paywall
+    expect(screen.getAllByText("1 / 4 (25%)").length).toBeGreaterThan(0); // clicked, subscribed
+    expect(screen.getByText(/median 30.5, p90 119/)).toBeTruthy();
+    expect(screen.getByText("ref@x.co")).toBeTruthy();
+    expect(screen.getByText(/did a first task 3 \/ 5 \(60%\)/)).toBeTruthy();
+    unmount();
+    render(
+      <>
+        <Trials data={EMPTY} />
+        <Invites data={EMPTY} />
+      </>,
+    );
+    expect(screen.getAllByText("no data yet")).toHaveLength(2);
   });
 
   it("renders the signals as counts, k / n, and the stop split", () => {

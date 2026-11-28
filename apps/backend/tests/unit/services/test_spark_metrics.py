@@ -71,7 +71,7 @@ def install(
 def _rows(**over):
     names = (
         "doers_weekly doers_7d installs success_weekly success_version success_provider problems downloads"
-        " voice_monthly subs setup_steps tasks_unfinished signals"
+        " voice_monthly subs setup_steps tasks_unfinished signals trials invites"
     )
     return {**{k: [] for k in names.split()}, **over}
 
@@ -103,7 +103,7 @@ def test_installs_are_released_first_launches_and_usage_needs_an_account():
 
 def test_queries_define_human_task_bound_scans_and_count_at_most_thirteen():
     qs = sm.build_queries()
-    assert len(qs) <= 13  # 12 + `signals`
+    assert len(qs) <= 15  # 12 + `signals` + `trials` + `invites`
     for name in ("doers_weekly", "doers_7d", "success_weekly", "success_version"):
         assert "!= 'automation'" in qs[name], name
     assert ">= 2" in qs["doers_weekly"] and "uniq(toDate(toTimeZone(timestamp, 'UTC')))" in qs["doers_weekly"]
@@ -677,3 +677,98 @@ def test_signals_query_unions_exact_totals_with_the_team_filter_and_30_days_in_b
     for half in (first, second):
         assert "timestamp >= now() - interval 30 day" in half and "person_id not in" in half or "1 = 1" in half
         assert "toString(properties.product) = 'spark'" in half
+
+
+# ---- trials and invites -------------------------------------------------------------------------------------
+
+
+def trial(
+    person,
+    started,
+    *,
+    email="",
+    days=7,
+    created="1970-01-01T00:00:00+00:00",
+    secs=0,
+    status="",
+    by="",
+    clicks=0,
+    subs=0,
+):
+    return [person, email, started.isoformat(), days, created, secs, status, by, clicks, subs]
+
+
+def test_trials_status_counts_minutes_and_time_to_first_conversation():
+    d = lambda n: NOW - timedelta(days=n)  # noqa: E731
+    rows = _rows(
+        trials=[
+            trial("a", d(1), email="a@x.co", secs=600, created=d(1.5).isoformat()),  # running, 10 min, 12 h
+            trial("b", d(3), secs=7200),  # 120 min: ended by minutes
+            trial("c", d(9), secs=60),  # 7 days over
+            trial("d", d(5), secs=7300, status="active"),  # paying wins over minutes
+            trial("e", d(2), status="canceled"),  # not paying, running
+            trial("f", d(4), secs=60, by="days", clicks=2),  # the server says days, though minutes are low
+            trial("g", d(2), secs=60, by="minutes", clicks=1, subs=1),  # event wins over inference
+        ]
+    )
+    t = sm.derive(rows, NOW)["trials"]
+    assert (t["started"], t["running"], t["ended_minutes"], t["ended_days"]) == (7, 2, 2, 2)
+    assert t["subscribed"] == {"k": 1, "n": 7}
+    assert t["paywall"] == {
+        "saw": {"k": 2, "n": 7},
+        "clicked": {"k": 2, "n": 7},
+        "subscribed": {"k": 2, "n": 7},  # d is active, g has a subscription_started
+    }
+    assert t["minutes"]["median"] == 1.0
+    assert t["hours_to_first_conversation"] == 12.0
+    assert [p["status"] for p in t["people"]] == [
+        "trial",
+        "ended-minutes",
+        "ended-days",
+        "paying",
+        "trial",
+        "ended-days",
+        "ended-minutes",
+    ]
+    assert [p["inferred"] for p in t["people"]] == [False, True, True, False, False, False, False]
+    assert t["people"][0] == {
+        "email": "a@x.co",
+        "started": "2026-11-23",
+        "minutes": 10.0,
+        "status": "trial",
+        "inferred": False,
+    }
+
+
+def test_trials_and_invites_are_none_until_their_events_exist():
+    d = sm.derive(_rows(), NOW)
+    assert d["trials"] is None and d["invites"] is None
+
+
+def test_invites_totals_and_per_referrer_table():
+    rows = _rows(
+        invites=[
+            ["referral_link_copied", "user_a", "a@x.co", 3, 0, 0],
+            ["referral_link_copied", "user_b", "b@x.co", 1, 0, 0],
+            ["referral_applied", "user_a", "a@x.co", 2, 0, 0],
+            ["referral_applied", "user_b", "b@x.co", 0, 0, 0],  # capped: applied, but nobody got a day
+            ["friend", "user_a", "a@x.co", 1, 1, 1],
+            ["friend", "user_a", "a@x.co", 1, 0, 0],
+            ["friend", "user_c", "", 0, 0, 0],
+        ]
+    )
+    i = sm.derive(rows, NOW)["invites"]
+    assert (i["copied"], i["credited_days"], i["referrers_credited"], i["invited"]) == (2, 2, 1, 3)
+    assert i["signed_in"] == {"k": 2, "n": 3} and i["first_task"] == {"k": 1, "n": 3}
+    assert i["subscribed"] == {"k": 1, "n": 3}
+    assert i["referrers"][0] == {"email": "a@x.co", "copies": 3, "friends": 2, "tasks": 1, "paying": 1}
+    assert [r["email"] for r in i["referrers"]] == ["a@x.co", None, "b@x.co"]
+
+
+def test_trials_and_invites_queries_read_the_new_events_with_the_team_filter():
+    qs = sm.build_queries()
+    assert "'trial_started'" in qs["trials"] and "interval 60 day" in qs["trials"]
+    for e in ("referral_link_copied", "referral_applied", "referred_by_applied", "spark_referrer", "'capped'"):
+        assert e in qs["invites"]
+    assert f"limit {sm.INSTALL_CAP}" in qs["trials"]
+    assert qs["invites"].count("person_id not in") >= 3 or "1 = 1" in qs["invites"]

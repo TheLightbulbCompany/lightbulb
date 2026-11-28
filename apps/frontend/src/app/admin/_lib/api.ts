@@ -133,6 +133,33 @@ export interface SparkData {
     versions: { version: string; people_7d: number }[] | null;
     updates: { to_version: string; installs_30d: number }[] | null;
   };
+  /** Trials started in the last 60 days. null = no trial_started seen yet. */
+  trials: {
+    started: number;
+    truncated: boolean;
+    running: number;
+    ended_minutes: number;
+    ended_days: number;
+    subscribed: Kn;
+    /** Of everyone who started: saw the paywall (trial_ended), clicked Upgrade, subscribed. */
+    paywall: { saw: Kn; clicked: Kn; subscribed: Kn };
+    minutes: { median: number; p90: number } | null;
+    hours_to_first_conversation: number | null;
+    /** inferred = an end worked out from minutes and days, because the server sent no trial_ended. */
+    people: { email: string | null; started: string; minutes: number; status: "trial" | "ended-minutes" | "ended-days" | "paying"; inferred: boolean }[];
+  } | null;
+  /** Last 60 days. null = nothing seen yet. */
+  invites: {
+    /** people who copied their invite link */
+    copied: number;
+    credited_days: number;
+    referrers_credited: number;
+    invited: number;
+    signed_in: Kn;
+    first_task: Kn;
+    subscribed: Kn;
+    referrers: { email: string | null; copies: number; friends: number; tasks: number; paying: number }[];
+  } | null;
 }
 
 export type SparkCount = { key: string; count: number };

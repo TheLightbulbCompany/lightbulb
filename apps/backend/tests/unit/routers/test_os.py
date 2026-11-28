@@ -610,3 +610,31 @@ async def test_the_account_shows_the_trials_talking_time_left(users, clock):
     assert (await account())["trialVoiceLeftS"] == 20 * 60
     clock[0] += 8 * DAY
     assert (await account())["trialVoiceLeftS"] is None
+
+
+async def test_an_invite_day_adds_twenty_minutes_and_gives_back_talking_time_to_one_whose_minutes_ran_out(users, clock):
+    await account(A)
+    set_row("user_a", os_voice_seconds=120 * 60)  # minutes gone, days left
+    assert (await account(A))["status"] == "ended"
+    await account(B)
+    assert await refer(B, "a")
+    a = await account(A)
+    assert a["status"] == "trial" and a["trialVoiceLeftS"] == 20 * 60 and a["trialEndsAt"] == START + 8 * DAY
+
+
+async def test_an_ended_trials_invite_day_comes_with_twenty_minutes_from_now(users, clock):
+    await account(A)
+    set_row("user_a", os_voice_seconds=100 * 60)
+    clock[0] = START + 9 * DAY  # days over, minutes left
+    await account(B)
+    assert await refer(B, "a")
+    a = await account(A)
+    assert a["status"] == "trial" and a["trialEndsAt"] == clock[0] + DAY and a["trialVoiceLeftS"] == 40 * 60
+
+
+def test_the_voice_allowance_counts_days_as_the_trial_extension_does():
+    from core.services import os_billing
+
+    assert os_billing.voice_allowance({}) == 120 * 60
+    assert os_billing.voice_allowance({"os_referrals": 2, "os_invite_bonus_days": 1}) == 180 * 60  # old rows
+    assert os_billing.voice_allowance({"os_referral_days": 3, "os_referrals": 9}) == 180 * 60

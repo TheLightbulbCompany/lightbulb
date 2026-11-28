@@ -30,8 +30,28 @@ TOKEN_TTL_S = 15 * 60
 LIVE = ("active", "trialing")
 # owner, 2026-11-28: the trial also ends after this much voice (its days are `TRIAL_S` in routers/os.py).
 TRIAL_VOICE_S = 120 * 60
+INVITE_VOICE_S = 20 * 60  # owner, 2026-11-28: each invite day a person has earned adds this much talking time
 # A trial starts at the first conversation; an account with any of these has started it, or never gets one.
 STARTED = ("os_trial_started_at", "os_voice_seconds", "os_deleted_at", "os_subscription_status")
+
+
+def earned_days(row: dict) -> int:
+    """The invite days a person has earned: referral days (rows from before them count `os_referrals`) and the bonus day."""
+    return int(row.get("os_referral_days", row.get("os_referrals", 0))) + int(row.get("os_invite_bonus_days", 0))
+
+
+def voice_allowance(row: dict) -> int:
+    return TRIAL_VOICE_S + INVITE_VOICE_S * earned_days(row)
+
+
+def trial_ended_event(row: dict, now: int) -> None:
+    """The paywall moment, once per person (the user id is the event's key): the first time the server enforces the
+    end of a free trial. Never for someone who ever had a subscription, nor for the team."""
+    uid = row["user_id"]
+    if "os_subscription_status" in row or uid in settings.spark_internal_user_ids:
+        return
+    by = "minutes" if int(row.get("os_voice_seconds", 0)) >= voice_allowance(row) else "days"
+    spark_events.server_event(uid, "trial_ended", uid, {"by": by}, row=row, now=now)
 
 
 def pending(row: dict) -> bool:
@@ -92,13 +112,13 @@ def _users():
 
 
 def status(row: dict, now: int) -> str:
-    """`active` with a live subscription, else `trial` until `os_trial_ends_at` or `TRIAL_VOICE_S` of voice, else `ended`. A team account
+    """`active` with a live subscription, else `trial` until `os_trial_ends_at` or its voice allowance, else `ended`. A team account
     (`settings.spark_internal_user_ids`, the accounts the metrics already ignore) is `active` too: the team is never
     asked to pay (founder, 26 Nov 2026). This one answer is the app's paywall, the 402 on a new voice session and the
     close of an open one at the trial's end."""
     if row.get("os_subscription_status") in LIVE or row.get("user_id") in settings.spark_internal_user_ids:
         return "active"
-    if now >= int(row["os_trial_ends_at"]) or int(row.get("os_voice_seconds", 0)) >= TRIAL_VOICE_S:
+    if now >= int(row["os_trial_ends_at"]) or int(row.get("os_voice_seconds", 0)) >= voice_allowance(row):
         return "ended"
     return "trial"
 

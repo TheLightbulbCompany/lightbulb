@@ -160,9 +160,7 @@ async def _account(auth: AuthContext, now: int) -> dict:
 
 
 def _earned_s(row: dict) -> int:
-    return DAY_S * (
-        int(row.get("os_referral_days", row.get("os_referrals", 0))) + int(row.get("os_invite_bonus_days", 0))
-    )
+    return DAY_S * os_billing.earned_days(row)
 
 
 async def _start_trial(user_id: str, row: dict, now: int) -> dict:
@@ -209,7 +207,7 @@ async def get_account(auth: AuthContext = Depends(get_human_session)) -> Account
         email=row.get("email") or "",
         name="",  # the backend stores no name for a person
         status=status,
-        trialVoiceLeftS=max(os_billing.TRIAL_VOICE_S - int(row.get("os_voice_seconds", 0)), 0)
+        trialVoiceLeftS=max(os_billing.voice_allowance(row) - int(row.get("os_voice_seconds", 0)), 0)
         if status == "trial"
         else None,
         trialEndsAt=ends,
@@ -584,6 +582,7 @@ async def create_voice_session(
     at = _now()
     row = await _start_trial(auth.user_id, await _account(auth, at), at)
     if os_billing.status(row, at) == "ended":
+        os_billing.trial_ended_event(row, at)
         raise HTTPException(status_code=402, detail="trial_ended")
     if client.get("analytics") is False:  # a retry of the opt-out the app's event asked for
         os_voice.spawn(os_voice.stop_transcripts(auth.user_id, opt_at))

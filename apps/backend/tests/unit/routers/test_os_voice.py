@@ -21,7 +21,7 @@ from core.voice import os_voice
 from main import app
 from tests.unit.auth.conftest import Tenant, jwks  # noqa: F401
 
-A, B = Tenant("user_a", None), Tenant("user_b", None)
+A, B, C = Tenant("user_a", None), Tenant("user_b", None), Tenant("user_c", None)
 START = 1_800_000_000
 LAN = "192.168.7.23"
 OFFER = (
@@ -1096,3 +1096,66 @@ async def test_only_an_account_deletions_close_sends_the_ended_event_personless(
     else:
         assert distinct_id == "user_a" and "$process_person_profile" not in props
     assert "$set" not in props
+
+
+def trial_events(monkeypatch) -> list:
+    sent = []
+
+    def capture(user_id, event, key, props=None, **k):
+        if event == "trial_ended":
+            sent.append((event, user_id, key, props))
+
+    monkeypatch.setattr("core.observability.spark_events.server_event", capture)
+    return sent
+
+
+async def test_the_402_records_the_paywall_moment_once_per_kind_of_person(
+    ddb, clock, no_sideband, openai, users, monkeypatch
+):
+    sent = trial_events(monkeypatch)
+    users.put_item(Item={"user_id": "user_a", "os_voice_seconds": TRIAL_VOICE_S, "os_trial_started_at": START})
+    assert (await create()).status_code == 402
+    assert sent == [("trial_ended", "user_a", "user_a", {"by": "minutes"})]
+    users.put_item(Item={"user_id": "user_b", "os_trial_started_at": START - 8 * 86400, "os_trial_ends_at": START - 1})
+    assert (await create(B)).status_code == 402
+    assert sent[1] == ("trial_ended", "user_b", "user_b", {"by": "days"})
+    users.put_item(  # earlier subscriber: never
+        Item={"user_id": "user_c", "os_trial_ends_at": START - 1, "os_subscription_status": "canceled"}
+    )
+    assert (await create(C)).status_code == 402
+    assert len(sent) == 2
+
+
+async def test_closing_a_live_session_at_the_allowance_records_the_paywall_moment(
+    ddb, clock, openai, sockets, users, monkeypatch
+):
+    sent = trial_events(monkeypatch)
+    users.put_item(Item={"user_id": "user_a", "os_voice_seconds": TRIAL_VOICE_S - 30})
+    await opened_session()
+    await until(lambda: sockets)
+    sockets[0].push(usage(30))
+    await until(lambda: {"type": "session.close"} in sockets[0].sent)
+    assert [e[:2] + e[3:] for e in sent] == [("trial_ended", "user_a", {"by": "minutes"})]
+
+
+async def test_spark_finishes_its_answer_but_only_for_the_grace_period(ddb, clock, openai, sockets, users):
+    users.put_item(Item={"user_id": "user_a", "os_voice_seconds": TRIAL_VOICE_S - 30})
+    await opened_session()
+    await until(lambda: sockets)
+    speaking = {"type": "session.output_transcript.delta", "delta": "hi"}
+    sockets[0].push(speaking, usage(30))
+    for _ in range(5):
+        sockets[0].push(speaking)
+        await asyncio.sleep(os_voice.TICK_S)
+    assert {"type": "session.close"} not in sockets[0].sent  # past the limit, mid-answer: not cut off
+    clock[0] += os_voice.TRIAL_GRACE_S
+    sockets[0].push(speaking)
+    await until(lambda: {"type": "session.close"} in sockets[0].sent)  # the grace is over
+
+
+async def test_a_silent_spark_is_closed_at_the_first_tick_after_the_limit(ddb, clock, openai, sockets, users):
+    users.put_item(Item={"user_id": "user_a", "os_voice_seconds": TRIAL_VOICE_S - 30})
+    await opened_session()
+    await until(lambda: sockets)
+    sockets[0].push(usage(30))
+    await until(lambda: {"type": "session.close"} in sockets[0].sent)

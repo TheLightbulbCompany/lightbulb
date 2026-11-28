@@ -6,8 +6,8 @@ prompt, scoring) is hidden, so the prompt, the scoring and the source choice her
 
 Caps are applied by cutting, never by refusing: each field is cut the way the Mac cuts it (the end of `before`, the
 start of `after`, the window around the `⟦field⟧` marker for `screen`), so a body the Mac already cut passes through
-unchanged and an over-cap one is cut to the same shape. Fields whose cap Opsis does not set (`reaches_for`,
-`recent_work`) get our own, marked "ours". Unknown keys are ignored; a known key of the wrong type is refused.
+unchanged and an over-cap one is cut to the same shape. Fields or parts whose cap Opsis does not set
+(`reaches_for`'s length, a note's `app_id` and `ago`) get our own, marked "ours". Unknown keys are ignored; a known key of the wrong type is refused.
 
 Privacy: nothing here logs or stores text. The caller logs counts, sizes, timings and the model id only."""
 
@@ -604,9 +604,10 @@ def _source(kind: str | None, req: CompleteRequest) -> dict | None:
     if not kind:
         return None
     if kind == "work":
-        apps = {w.app_id for w in req.recent_work if isinstance(w, RecentWork)}
-        if len(apps) == 1 and None not in apps and all(isinstance(w, RecentWork) for w in req.recent_work):
-            return {"kind": "work", "apps": [apps.pop()]}
+        shown = [w for w in req.recent_work if (w.text if isinstance(w, RecentWork) else w).strip()]  # as in the prompt
+        apps = {w.app_id if isinstance(w, RecentWork) else None for w in shown}
+        if len(apps) == 1 and (app := apps.pop()):
+            return {"kind": "work", "apps": [app]}
     return {"kind": kind}
 
 

@@ -510,6 +510,9 @@ async def test_recent_work_is_in_the_prompt_with_app_title_and_ago(on):
         ([{"app_id": "docs.example.com", "text": "a"}, {"app_id": "com.apple.Notes", "text": "b"}], {"kind": "work"}),
         ([{"text": "a"}], {"kind": "work"}),
         (["a bare note"], {"kind": "work"}),
+        ([{"app_id": "A", "text": "real"}, {"app_id": "B", "text": ""}], {"kind": "work", "apps": ["A"]}),
+        ([{"app_id": "A", "text": ""}], {"kind": "work"}),  # no note reached the prompt
+        ([{"app_id": "", "text": "a"}], {"kind": "work"}),
     ],
 )
 async def test_a_note_can_be_the_source(on, notes, source):

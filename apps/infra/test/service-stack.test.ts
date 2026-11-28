@@ -105,6 +105,16 @@ describe("ServiceStack — the Spark backend", () => {
     expect(parties).not.toContain(theirs);
   });
 
+  // Production rejects a token minted by an origin off the list (Clerk's documented check); dev only logs, because
+  // Vercel preview deployments sign in from per-PR origins that no fixed list can name.
+  test.each([
+    ["dev", SERVICE_TEMPLATE_DEV, "audit"],
+    ["prod", SERVICE_TEMPLATE_PROD, "enforce"],
+  ] as const)("%s checks the sign-in token's origin in %s mode", (_env, template, mode) => {
+    const env = backendContainer(template).Environment;
+    expect(env.find((e: any) => e.Name === "CLERK_AZP_MODE").Value).toBe(mode);
+  });
+
   test("production accepts no localhost origin", () => {
     const env = backendContainer(SERVICE_TEMPLATE_PROD).Environment;
     expect(env.find((e: any) => e.Name === "CLERK_AUTHORIZED_PARTIES").Value).not.toMatch(/localhost|127\.0\.0\.1/);

@@ -101,6 +101,9 @@ Re-runnable ops tools in `apps/backend/scripts/`:
 
 - `spark_store_check.py`: write, read back, parse as OTLP and delete a throwaway person's objects on dev (run by a person with dev credentials, not CI).
 - `spark_transcripts.py`: print recent saved transcripts, with each person shown as a hash. Read-only.
+- `autocomplete_quality.py` and `autocomplete_cache_check.py`: paid model checks of the autocomplete prompt on public
+  text (quality at equal coverage; prompt caching over 5 pauses, before and after). Run by a person with a key, with a
+  spend cap; never CI.
 
 ## The infrastructure (`apps/infra`)
 

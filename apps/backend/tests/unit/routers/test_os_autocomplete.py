@@ -32,7 +32,16 @@ class Fake:
         return True
 
     async def complete(self, developer, user, max_tokens, cache_key, timeout_s):
-        self.calls.append({"developer": developer, "user": user, "max_tokens": max_tokens, "cache_key": cache_key})
+        parts = [user] if isinstance(user, str) else user
+        self.calls.append(
+            {
+                "developer": developer,
+                "user": "".join(parts),
+                "parts": parts,
+                "max_tokens": max_tokens,
+                "cache_key": cache_key,
+            }
+        )
         return ac.Completion(self.text, self.logprobs, 1200, 1000, 12)
 
 
@@ -403,14 +412,15 @@ async def test_the_prompt_uses_every_context_field_stable_parts_first(on):
         "MIND-1",
         "WORK-1",
         "FLOW-1",
-        "MEMORY-1",
-        "REACH-1",
         "writing to: Sam",
         "field label: Message",
         "⟦field⟧",
+        "MEMORY-1",
+        "REACH-1",
         "CLIP-1",
         "<last_is_mine>\nfalse",
         "DECLINED-1",
+        "<ages>\nV1: written 30 s ago\nW1: visited 40 s ago\n</ages>",
         "<local_time>",
         "Thanks for the note. ⟦cursor⟧AFTER-1",
     ]
@@ -418,7 +428,72 @@ async def test_the_prompt_uses_every_context_field_stable_parts_first(on):
     assert at == sorted(at)
     assert user.endswith("</draft>")
     assert "CURRENT-VISIT" not in user  # the current visit is <screen> already
+    assert "[V1, Slack]\nVOICE-1" in user and "[W1 · Calendar, stayed 12 s]\nFLOW-1" in user
+    parts = on.calls[0]["parts"]
+    assert len(parts) == 5 and parts[-1].startswith("<reaches_for>")  # person, windows, this window, memory, now
     assert on.calls[0]["cache_key"] == ac.cache_key("user_a") and "user_a" not in on.calls[0]["cache_key"]
+
+
+def _pause(i: int) -> dict:
+    """The same place, i pauses later: the draft has grown and every relative age has ticked."""
+    return BODY | {
+        "before": "Thanks for the note, " + "and more " * i,
+        "voice": [{"text": "VOICE", "app": "Slack", "ago_s": 30 + 3 * i}],
+        "style": ["see you there soon"],
+        "mind": [{"text": "MIND", "day": "today"}],
+        "recent_flow": [
+            {
+                "title": "Calendar",
+                "text": "FLOW",
+                "ago_s": 40 + 3 * i,
+                "stay_s": 12,
+                "earlier": [{"text": "E", "ago_s": 90 + 3 * i}],
+            }
+        ],
+        "memory": [{"text": "MEMORY", "title": "Notes"}],
+        "clipboard": {"text": "CLIP", "ago_s": 5 + 3 * i},
+        "utc_offset_min": 60,
+    }
+
+
+async def test_only_the_last_part_changes_between_pauses_in_one_place(on):
+    """A pause whose only changes are the draft and the clock gives the same text up to the last breakpoint."""
+    for i in range(5):
+        await post(body=_pause(i))
+    cached = {tuple(c["parts"][:-1]) for c in on.calls}
+    assert len(cached) == 1 and len(on.calls[0]["parts"]) == 5
+    assert len({c["parts"][-1] for c in on.calls}) == 5
+    for c in on.calls:
+        assert " ago" not in "".join(c["parts"][:-1])  # nothing that ticks before a breakpoint
+
+
+async def test_a_memory_change_keeps_the_person_window_and_screen_parts(on):
+    await post(body=_pause(0))
+    await post(body=_pause(1) | {"memory": [{"text": "OTHER MEMORY"}]})
+    a, b = (c["parts"] for c in on.calls)
+    assert a[:3] == b[:3] and a[3] != b[3]
+
+
+async def test_the_parts_join_to_text_with_blank_lines_between(on):
+    await post(body=_pause(0))
+    parts = on.calls[0]["parts"]
+    assert all(p.endswith(">\n\n") for p in parts[:-1])
+    assert "\n\n\n" not in "".join(parts)
+
+
+async def test_openai_gets_explicit_breakpoints_on_every_part_but_the_last(monkeypatch):
+    ok = {"choices": [{"message": {"content": "#0"}}], "usage": {}}
+    p, sent = _openai(monkeypatch, httpx.Response(200, json=ok), httpx.Response(200, json=ok))
+    await p.complete("dev", ["A\n\n", "B\n\n", "C"], 80, "k", 4.0)
+    body = sent[0]
+    assert body["prompt_cache_options"] == {"mode": "explicit"}
+    assert body["messages"][1]["content"] == [
+        {"type": "text", "text": "A\n\n", "prompt_cache_breakpoint": {"mode": "explicit"}},
+        {"type": "text", "text": "B\n\n", "prompt_cache_breakpoint": {"mode": "explicit"}},
+        {"type": "text", "text": "C"},
+    ]
+    await p.complete("dev", "reach prompt", 48, "k", 3.0)  # reach: one plain string, the default (implicit) mode
+    assert sent[1]["messages"][1]["content"] == "reach prompt" and "prompt_cache_options" not in sent[1]
 
 
 async def test_the_labelled_tree_replaces_the_plain_window_text_and_the_form_stays(on):
@@ -677,3 +752,61 @@ async def test_cache_writes_are_read_from_the_usage(monkeypatch):
     }
     p, _ = _openai(monkeypatch, httpx.Response(200, json=reply))
     assert (await p.complete("d", "u", 80, "k", 4.0)).cache_write_tokens == 1536
+
+
+_OK = {"choices": [{"message": {"content": "#80 message\n sure."}}], "usage": {"prompt_tokens": 1500}}
+_CACHE_REFUSED = {"error": {"message": "Unrecognized request argument supplied: prompt_cache_options"}}
+
+
+async def test_a_refused_cache_field_is_dropped_and_the_same_request_still_answers(monkeypatch, caplog):
+    p, sent = _openai(
+        monkeypatch,
+        httpx.Response(400, json=_CACHE_REFUSED),
+        httpx.Response(200, json=_OK),
+        httpx.Response(200, json=_OK),
+    )
+    caplog.set_level(logging.WARNING)
+    first = await p.complete("dev", [f"A {SECRET}\n\n", "B\n\n", "C"], 80, "k", 4.0)
+    assert first.text and first.cache_fields is False and p.cache_fields is False
+    assert "prompt_cache_options" in sent[0] and isinstance(sent[0]["messages"][1]["content"], list)
+    for b in sent[1:2]:  # the retry: the same text, one plain string, no cache fields
+        assert "prompt_cache_options" not in b and b["messages"][1]["content"] == f"A {SECRET}\n\nB\n\nC"
+    later = await p.complete("dev", ["A\n\n", "C"], 80, "k", 4.0)  # and for the life of the process
+    assert later.cache_fields is False and "prompt_cache_options" not in sent[2]
+    assert sent[2]["messages"][1]["content"] == "A\n\nC"
+    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1 and "prompt-cache" in warnings[0] and "Zanzibar" not in warnings[0]
+
+
+async def test_a_breakpoint_refusal_is_dropped_too(monkeypatch):
+    refused = {"error": {"message": "Unknown parameter: 'messages[1].content[0].prompt_cache_breakpoint'."}}
+    p, sent = _openai(monkeypatch, httpx.Response(400, json=refused), httpx.Response(200, json=_OK))
+    assert (await p.complete("dev", ["A\n\n", "C"], 80, "k", 4.0)).text
+    assert len(sent) == 2 and sent[1]["messages"][1]["content"] == "A\n\nC"
+
+
+async def test_a_400_about_something_else_is_still_an_error(monkeypatch):
+    other = {"error": {"message": "Invalid value for 'max_completion_tokens'."}}
+    p, sent = _openai(monkeypatch, httpx.Response(400, json=other))
+    with pytest.raises(ac.ProviderError) as e:
+        await p.complete("dev", ["A\n\n", "C"], 80, "k", 4.0)
+    assert str(e.value) == "status_400" and len(sent) == 1 and p.cache_fields is True
+
+
+async def test_the_cache_retry_counts_once_against_the_daily_ceiling(on, monkeypatch, caplog):
+    monkeypatch.setattr(settings, "SPARK_AUTOCOMPLETE_DAILY_MAX", 1)
+    real, sent = _openai(monkeypatch, httpx.Response(400, json=_CACHE_REFUSED), httpx.Response(200, json=_OK))
+    monkeypatch.setattr(ac, "provider", real)
+    caplog.set_level(logging.INFO)
+    r = await post()
+    assert r.status_code == 200 and r.json()["show"] is True and len(sent) == 2
+    assert "cache_fields=0" in next(m.getMessage() for m in caplog.records if "autocomplete complete" in m.getMessage())
+    assert (await post()).status_code == 429  # the one counted request was the one that came back
+
+
+async def test_the_log_line_says_when_the_cache_fields_were_sent(on, monkeypatch, caplog):
+    real, _ = _openai(monkeypatch, httpx.Response(200, json=_OK))
+    monkeypatch.setattr(ac, "provider", real)
+    caplog.set_level(logging.INFO)
+    await post()
+    assert "cache_fields=1" in next(m.getMessage() for m in caplog.records if "autocomplete complete" in m.getMessage())

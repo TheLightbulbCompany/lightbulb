@@ -314,6 +314,27 @@ async def test_the_voice_allowance_closes_a_live_session(ddb, clock, openai, soc
     assert rec(ddb, sid)["endedReason"] == "trial_ended"
 
 
+async def test_usage_banked_by_a_replaced_session_counts_within_a_minute(ddb, clock, openai, sockets, users):
+    """A session read the allowance before the one it replaced banked its usage: the next read sees it."""
+    users.put_item(Item={"user_id": "user_a", "os_voice_seconds": 0})
+    sid = await opened_session()
+    await until(lambda: sockets)
+    users.update_item(  # the replaced session closes and banks its usage
+        Key={"user_id": "user_a"},
+        UpdateExpression="SET os_voice_seconds = :s",
+        ExpressionAttributeValues={":s": TRIAL_VOICE_S - 10},
+    )
+    sockets[0].push(usage(10))
+    for _ in range(5):
+        await asyncio.sleep(os_voice.TICK_S)
+    assert {"type": "session.close"} not in sockets[0].sent  # still the allowance read at the start
+    clock[0] += os_voice.VOICE_REREAD_S
+    await until(lambda: {"type": "session.close"} in sockets[0].sent)
+    sockets[0].push(closed(10))
+    await until(lambda: rec(ddb, sid).get("endedReason"))
+    assert rec(ddb, sid)["endedReason"] == "trial_ended"
+
+
 @pytest.mark.parametrize("exempt", ["team", "paying"])
 async def test_team_and_paying_accounts_have_no_voice_allowance(
     ddb, clock, no_sideband, openai, users, monkeypatch, exempt
@@ -540,7 +561,9 @@ async def test_openai_failures_map_and_free_the_slot(
     r = await create()
     assert r.status_code == status
     assert r.json() == {"detail": detail} | ({"retryAfterS": retry} if retry else {})
-    assert "os_voice_active" not in users.get_item(Key={"user_id": "user_a"})["Item"]
+    item = users.get_item(Key={"user_id": "user_a"})["Item"]
+    assert "os_voice_active" not in item
+    assert "os_trial_started_at" not in item  # no conversation happened: the trial clock has not started
 
 
 async def test_a_failed_record_write_after_openai_answered_is_502(

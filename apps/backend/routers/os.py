@@ -580,7 +580,7 @@ async def create_voice_session(
     if not live_configured():
         raise HTTPException(status_code=503, detail="voice_unavailable")
     at = _now()
-    row = await _start_trial(auth.user_id, await _account(auth, at), at)
+    row = await _account(auth, at)  # a trial not started yet shows as running: no 402
     if os_billing.status(row, at) == "ended":
         os_billing.trial_ended_event(row, at)
         raise HTTPException(status_code=402, detail="trial_ended")
@@ -588,7 +588,10 @@ async def create_voice_session(
         os_voice.spawn(os_voice.stop_transcripts(auth.user_id, opt_at))
     elif client.get("analytics") is True:
         os_voice.spawn(os_voice.clear_opt_out(auth.user_id, opt_at))
-    return await os_voice.open_session(auth.user_id, kind, client, model, config, sdp)
+    opened = await os_voice.open_session(auth.user_id, kind, client, model, config, sdp)
+    if isinstance(opened, dict):  # the first conversation starts the trial only once its session has opened
+        await _start_trial(auth.user_id, row, at)
+    return opened
 
 
 @router.get("/voice-session/{session_id}", response_model=VoiceSessionStatus, operation_id="os_voice_session_status")

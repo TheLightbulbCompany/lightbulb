@@ -65,6 +65,9 @@ MAX_SESSION_S = 2 * 3600  # unmeasured: OpenAI documents no WebRTC length (2 h i
 TRANSCRIPTS = "spark-transcripts"
 TRANSCRIPT_TTL_S = 90 * 86400
 TRIAL_GRACE_S = 120  # at most this long after the trial's limit, Spark is let finish an answer in progress
+# The trial's talking time left is read again this often: a session this one replaced banks its usage only once it
+# has closed, and an invite can add minutes meanwhile.
+VOICE_REREAD_S = 60
 TURN_PAUSE_S = 3.0  # GPT-Live sends no end-of-turn event: a side silent this long has finished its turn
 _ROLES = {"session.input_transcript.delta": "user", "session.output_transcript.delta": "spark"}
 TASK_ID = f"{os.getenv('HOSTNAME') or 'local'}-{uuid.uuid4().hex[:8]}"
@@ -429,14 +432,15 @@ async def _release(sid: str) -> None:
 
 async def _trial_ends_at(user_id: str) -> int | None:
     """The person's trial end, read consistently: it decides whether to close a live session. None (no row,
-    no trial attribute, or a live Spark subscription) is never an ended trial."""
+    no trial attribute, a live Spark subscription, or a trial not started yet: the first conversation starts it once
+    its session opened) is never an ended trial."""
     from core.services import os_billing
 
     row = (await run_in_thread(get_table("users").get_item, Key={"user_id": user_id}, ConsistentRead=True)).get(
         "Item"
     ) or {}
     ends = row.get("os_trial_ends_at")
-    return None if ends is None or os_billing.status(row, now()) == "active" else int(ends)
+    return None if ends is None or os_billing.pending(row) or os_billing.status(row, now()) == "active" else int(ends)
 
 
 async def _voice_left(user_id: str) -> int | None:
@@ -473,6 +477,8 @@ async def _due(s: dict, at: int) -> str | None:
     if s["trialEndsAt"] is not None and at >= s["trialEndsAt"]:
         s["trialEndsAt"] = await _trial_ends_at(s["userId"])  # a referral may have extended it
         ended = s["trialEndsAt"] is not None and at >= s["trialEndsAt"]
+    if s.get("voiceLeftS") is not None and at >= s.get("voiceReadAt", 0) + VOICE_REREAD_S:
+        s["voiceLeftS"], s["voiceReadAt"] = await _voice_left(s["userId"]), at
     ended = ended or (s.get("voiceLeftS") is not None and int(s["usageSeconds"]) >= s["voiceLeftS"])
     if ended:
         # Let Spark finish its answer: wait while it is speaking, for at most TRIAL_GRACE_S after the limit.
@@ -642,7 +648,7 @@ async def run_sideband(sid: str) -> None:
         return
     s = await get(sid)
     s["trialEndsAt"] = await _trial_ends_at(s["userId"])
-    s["voiceLeftS"] = await _voice_left(s["userId"])
+    s["voiceLeftS"], s["voiceReadAt"] = await _voice_left(s["userId"]), now()
     connected = False
     try:
         try:

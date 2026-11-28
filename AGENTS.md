@@ -78,6 +78,10 @@ Spark's routes are `routers/os.py` and `routers/os_billing.py`, mounted at `/api
   (`core/voice/os_voice.py`). The Mac's audio goes straight to OpenAI. The backend holds a sideband that meters and
   ends the session and, when `SPARK_TRANSCRIPTS_ENABLED` is set, saves the text transcript (never audio), kept 90
   days by TTL.
+- `POST /assist/complete` and `POST /assist/reach`: autocomplete (`routers/os_autocomplete.py`,
+  `core/services/autocomplete.py`). One model call each on the company OpenAI key; no text is logged or stored. Both
+  answer 404 unless `SPARK_AUTOCOMPLETE_ENABLED` (CDK: on in dev and prod; "0" is the kill switch), and share per-person daily ceilings
+  (`SPARK_AUTOCOMPLETE_DAILY_MAX` requests, `SPARK_AUTOCOMPLETE_DAILY_CHARS` prompt characters). Using it starts the trial. Streaming would need the CloudFront path in `docs/spark-autocomplete-streaming.md`.
 - `GET /checkout` and `GET /portal`: Spark's billing links. They take no Clerk session; they carry a short-lived
   token (`core/services/os_billing.py`) and answer 303 to Stripe.
 

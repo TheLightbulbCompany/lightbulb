@@ -261,6 +261,10 @@ export class ServiceStack extends cdk.Stack {
       // keep everything Spark does with voice and brain, for analysis). "problem" would keep text only
       // for failed or cancelled tasks. Apps see "off" while SPARK_STORE_ENABLED is off.
       SPARK_WORKLOG_SCOPE: "all",
+      // Spark autocomplete (POST /os/assist/complete and /os/assist/reach). It spends on the company OpenAI key per
+      // typing pause, within per-person daily ceilings. On in dev and prod since Spark 2.1.27, which ships the Mac
+      // side. "0" is the kill switch: both routes then answer 404, as if they did not exist, and the app stays quiet.
+      SPARK_AUTOCOMPLETE_ENABLED: "1",
       // Oldest Spark version allowed to open a voice session, per platform ("X.Y.Z"). Raised by hand;
       // empty means no floor, and is the kill switch.
       SPARK_MIN_VERSION_MAC: "",

@@ -31,7 +31,7 @@ const SAME = "Open Spark and sign in with the same Apple, Google or email.";
 const INVITED = "You've been invited to Spark. Create your account, then download.";
 
 const CONFIG = { priceText: "$20/month", trialDays: 3 };
-const LINE = "Free for 3 days, then $20/month. Renews monthly until you cancel.";
+const LINE = "Start for free, then $20/month. Renews monthly until you cancel.";
 
 // The installer check (GitHub answers a published release asset with a 302) and GET /os/config
 // (`config` null: the backend is down).
@@ -111,7 +111,7 @@ describe("/os price line and legal links", () => {
     s.query = query;
     s.signedIn = signedIn;
     await page();
-    expect(await screen.findByText("Free for 5 days, then $25/month. Renews monthly until you cancel.")).toBeInTheDocument();
+    expect(await screen.findByText("Start for free, then $25/month. Renews monthly until you cancel.")).toBeInTheDocument();
     legal();
   });
 

@@ -66,7 +66,7 @@ const SETUP = [
 // omitted or said without them.
 export function OsLanding({ ready, price }: { ready: boolean; price: SparkPrice }) {
   const faq: [string, string][] = [
-    ["Is Spark free?", price ? `For ${price.trialDays} days. Then it's ${price.priceText}.` : "See the price when you download."],
+    ["Is Spark free?", price ? `Free to start. Then it's ${price.priceText}.` : "See the price when you download."],
     ["What Mac do I need?", "A Mac with Apple silicon (M1 or later), on macOS 14 or later."],
     ["Do I need ChatGPT or Claude?", "Yes, your own account. Free ChatGPT works. Claude needs Pro or higher."],
     ["Can Spark do things without asking?", "It acts on your screen when you ask. Say stop any time and it stops."],
@@ -92,7 +92,7 @@ export function OsLanding({ ready, price }: { ready: boolean; price: SparkPrice 
             <div className="small">
               {price && (
                 <p>
-                  Free for {price.trialDays} days, then {price.priceText}. Renews monthly until you cancel.
+                  Start for free, then {price.priceText}. Renews monthly until you cancel.
                 </p>
               )}
               <p className="legal">
@@ -480,7 +480,7 @@ export function OsLanding({ ready, price }: { ready: boolean; price: SparkPrice 
         <div className="stick">
           <canvas className="sky" id="sky8" aria-hidden="true" />
           <div className="s8in">
-            <h2 id="sp-s8">{price ? `Try Spark free for ${price.trialDays} days.` : "Try Spark."}</h2>
+            <h2 id="sp-s8">{price ? "Try Spark free." : "Try Spark."}</h2>
             <div className="act">
               <span>
                 {ready ? <SparkGet source="os_closing" /> : <span className="soon">{SOON}</span>}

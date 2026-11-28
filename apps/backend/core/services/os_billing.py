@@ -28,14 +28,46 @@ logger = logging.getLogger(__name__)
 CHECKOUT, PORTAL = "spark_checkout", "spark_portal"
 TOKEN_TTL_S = 15 * 60
 LIVE = ("active", "trialing")
+# owner, 2026-11-28: the trial also ends after this much voice (its days are `TRIAL_S` in routers/os.py).
+TRIAL_VOICE_S = 120 * 60
+INVITE_VOICE_S = 20 * 60  # owner, 2026-11-28: each invite day a person has earned adds this much talking time
+# A trial starts at the first conversation; an account with any of these, or with voice used, has started it or never
+# gets one. A session that failed to open still banks 0 seconds: that is no conversation.
+STARTED = ("os_trial_started_at", "os_deleted_at", "os_subscription_status")
+
+
+def earned_days(row: dict) -> int:
+    """The invite days a person has earned: referral days (rows from before them count `os_referrals`) and the bonus day."""
+    return int(row.get("os_referral_days", row.get("os_referrals", 0))) + int(row.get("os_invite_bonus_days", 0))
+
+
+def voice_allowance(row: dict) -> int:
+    return TRIAL_VOICE_S + INVITE_VOICE_S * earned_days(row)
+
+
+def trial_ended_event(row: dict, now: int) -> None:
+    """The paywall moment, once per person (the user id is the event's key): the first time the server enforces the
+    end of a free trial. Never for someone who ever had a subscription, nor for the team."""
+    uid = row["user_id"]
+    if "os_subscription_status" in row or uid in settings.spark_internal_user_ids:
+        return
+    by = "minutes" if int(row.get("os_voice_seconds", 0)) >= voice_allowance(row) else "days"
+    spark_events.server_event(uid, "trial_ended", uid, {"by": by}, row=row, now=now)
+
+
+def pending(row: dict) -> bool:
+    """True for an account whose trial has not started: no first conversation, no past voice, no subscription,
+    not a deleted-then-recreated account."""
+    return not any(k in row for k in STARTED) and not int(row.get("os_voice_seconds", 0))
+
+
 # Stripe still holds these open: a new checkout would be a second subscription, so they use the portal.
 # `incomplete` is not here: its first payment never went through and Stripe expires it within a day.
 BILLED = (*LIVE, "past_due", "unpaid", "paused")
 CHECKOUT_TTL_S = 1800  # Stripe's minimum Checkout Session lifetime
 
 
-_CHECKOUT_BODY_VERSION = 9  # bump whenever the Checkout Session body changes (Stripe rejects a changed body)
-_STRIPE_MIN_TRIAL_S = 49 * 3600  # Stripe's 48-hour trial minimum, plus slack
+_CHECKOUT_BODY_VERSION = 10  # bump whenever the Checkout Session body changes (Stripe rejects a changed body)
 
 
 class BillingServiceError(Exception):
@@ -47,17 +79,6 @@ def _checkout_idempotency_key(flow: str, owner_id: str, extra: str | None = None
     bucket = int(time.time() // 300)
     suffix = f":{extra}" if extra is not None else ""
     return f"{flow}:v{_CHECKOUT_BODY_VERSION}:{owner_id}{suffix}:{bucket}"
-
-
-def _checkout_trial_end(account: dict, now_s: int) -> int | None:
-    """The Stripe trial ends where the free trial does, stretched to Stripe's 48-hour minimum near the end;
-    an ended trial is billed at once. ``now_s`` is the checkout bucket start, so retries send an identical body."""
-    if account.get("subscription_status") != "trial_local":
-        return None
-    end = int(account["trial_end"])
-    if end <= now_s:
-        return None
-    return max(end, now_s + _STRIPE_MIN_TRIAL_S)
 
 
 def _retrieve_checkout_session(session_id: str):
@@ -92,13 +113,15 @@ def _users():
 
 
 def status(row: dict, now: int) -> str:
-    """`active` with a live subscription, else `trial` until `os_trial_ends_at`, else `ended`. A team account
+    """`active` with a live subscription, else `trial` until `os_trial_ends_at` or its voice allowance, else `ended`. A team account
     (`settings.spark_internal_user_ids`, the accounts the metrics already ignore) is `active` too: the team is never
     asked to pay (founder, 26 Nov 2026). This one answer is the app's paywall, the 402 on a new voice session and the
     close of an open one at the trial's end."""
     if row.get("os_subscription_status") in LIVE or row.get("user_id") in settings.spark_internal_user_ids:
         return "active"
-    return "trial" if now < int(row["os_trial_ends_at"]) else "ended"
+    if now >= int(row["os_trial_ends_at"]) or int(row.get("os_voice_seconds", 0)) >= voice_allowance(row):
+        return "ended"
+    return "trial"
 
 
 def _link(kind: str, user_id: str, now: int) -> str | None:
@@ -207,11 +230,8 @@ async def checkout(user_id: str) -> str:
         return answer
     now = _now()
     bucket = now - now % 300
-    # The workspace rule: the Stripe trial ends where the free trial does, stretched to Stripe's 48-hour floor
-    # near the end (never charged early); an ended trial is charged now. The bucket start keeps retries identical.
-    trial_end = _checkout_trial_end(
-        {"subscription_status": "trial_local", "trial_end": int(row["os_trial_ends_at"])}, bucket
-    )
+    # owner, 2026-11-28: subscribing charges at once, during the free trial too (no Stripe trial). A Stripe trial
+    # would make the account `trialing`, which the trial's voice allowance never limits.
     metadata = {"product": "spark", "user_id": user_id}
     params = dict(
         mode="subscription",
@@ -219,14 +239,14 @@ async def checkout(user_id: str) -> str:
         line_items=[{"price": settings.STRIPE_SPARK_PRICE_ID, "quantity": 1}],
         allow_promotion_codes=False,
         client_reference_id=user_id,
-        subscription_data={"metadata": metadata} | ({"trial_end": trial_end} if trial_end else {}),
+        subscription_data={"metadata": metadata},
         success_url=page("success"),
         cancel_url=page("cancelled"),
         expires_at=bucket + 300 + CHECKOUT_TTL_S,  # 30 to 35 minutes out, identical within the bucket
         api_key=settings.STRIPE_SECRET_KEY,
     )
     # The earlier session is in the key: after expiring it, a retry in this bucket must get a new one.
-    key = _checkout_idempotency_key("spark", user_id, f"{trial_end}:{pending_id}")
+    key = _checkout_idempotency_key("spark", user_id, f"{pending_id}")
     try:
         session = await run_in_thread(
             stripe.checkout.Session.create,

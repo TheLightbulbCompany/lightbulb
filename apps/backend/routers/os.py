@@ -36,7 +36,8 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 DAY_S = 86400
-TRIAL_S = 3 * DAY_S
+# owner, 2026-11-28: from the first conversation (`_start_trial`); the voice allowance is `os_billing.TRIAL_VOICE_S`.
+TRIAL_S = 7 * DAY_S
 REFERRAL_WINDOW_S = 14 * DAY_S
 MAX_FREE_DAYS = 30  # owner, 2026-11-22: the trial and every invite day a person is given, together
 _VERSION = re.compile(r"\d+\.\d+\.\d+")
@@ -62,6 +63,7 @@ class AccountResponse(BaseModel):
     trialDays: int
     inviteBonusDays: int = 0
     nextChargeAt: int | None = None
+    trialVoiceLeftS: int | None = None  # the trial's talking time left; only while `status` is "trial"
 
 
 class ConfigResponse(BaseModel):
@@ -112,7 +114,7 @@ _DEFAULTS = {":trial": "os_trial_ends_at", ":now": "os_created_at", ":created": 
 
 
 async def _account(auth: AuthContext, now: int) -> dict:
-    """The person's users row, creating their Spark account (trial ending three days from now) in the same
+    """The person's users row, creating their Spark account (a trial that starts at their first conversation) in the same
     single write every read makes: `if_not_exists` makes concurrent first reads agree, and a later read never
     moves the trial. The write returns the row as it was, so exactly one call sees no `os_created_at`: that
     call created the account."""
@@ -152,6 +154,43 @@ async def _account(auth: AuthContext, now: int) -> dict:
                 row["os_invite_bonus_days"] = 1
         except Exception:  # noqa: BLE001  a credit never fails the account read
             logger.warning("os referral credit not written for %s", auth.user_id, exc_info=True)
+    if os_billing.pending(row):  # not started: a full trial plus the invite days earned so far, as the start will give
+        row["os_trial_ends_at"] = now + TRIAL_S + _earned_s(row)
+    return row
+
+
+def _earned_s(row: dict) -> int:
+    return DAY_S * os_billing.earned_days(row)
+
+
+async def _start_trial(user_id: str, row: dict, now: int) -> dict:
+    """Start the trial clock at the first conversation: the end becomes now + the trial + the invite days earned.
+    The write is conditional on the account still being unstarted and on the stored end the days were counted from
+    (a referral credit moves it), so concurrent first conversations agree and a later one never moves it; a lost
+    race reads the winner's row. An account that checked out before talking is not moved."""
+    for _ in range(3):
+        if not os_billing.pending(row):
+            return row
+        stored = (await run_in_thread(_table().get_item, Key={"user_id": user_id}, ConsistentRead=True))["Item"]
+        end = now + TRIAL_S + _earned_s(stored)
+        try:
+            await run_in_thread(
+                _table().update_item,
+                Key={"user_id": user_id},
+                UpdateExpression="SET os_trial_started_at = :now, os_trial_ends_at = :end",
+                ConditionExpression=" AND ".join(f"attribute_not_exists({k})" for k in os_billing.STARTED)
+                + " AND (attribute_not_exists(os_voice_seconds) OR os_voice_seconds = :zero) AND os_trial_ends_at = :seen",
+                ExpressionAttributeValues={":now": now, ":end": end, ":seen": stored["os_trial_ends_at"], ":zero": 0},
+            )
+            row = row | {"os_trial_started_at": now, "os_trial_ends_at": end}
+            spark_events.server_event(
+                user_id, "trial_started", user_id, {"days": (end - now) // DAY_S}, row=row, now=now
+            )
+            return row
+        except ClientError as e:
+            if e.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
+                raise
+            row = (await run_in_thread(_table().get_item, Key={"user_id": user_id}, ConsistentRead=True))["Item"]
     return row
 
 
@@ -162,11 +201,15 @@ async def get_account(auth: AuthContext = Depends(get_human_session)) -> Account
     row = await _account(auth, now)
     ends, referrals = int(row["os_trial_ends_at"]), int(row.get("os_referrals", 0))
     checkout_url, portal_url = os_billing.links(row, auth.user_id, now)
+    status = os_billing.status(row, now)
     return AccountResponse(
         accountId=auth.user_id,
         email=row.get("email") or "",
         name="",  # the backend stores no name for a person
-        status=os_billing.status(row, now),
+        status=status,
+        trialVoiceLeftS=max(os_billing.voice_allowance(row) - int(row.get("os_voice_seconds", 0)), 0)
+        if status == "trial"
+        else None,
         trialEndsAt=ends,
         referralUrl=f"{settings.FRONTEND_URL.rstrip('/')}/os?ref={auth.user_id.removeprefix('user_')}",
         referralDaysEarned=int(row.get("os_referral_days", referrals)),
@@ -538,13 +581,18 @@ async def create_voice_session(
     if not live_configured():
         raise HTTPException(status_code=503, detail="voice_unavailable")
     at = _now()
-    if os_billing.status(await _account(auth, at), at) == "ended":
+    row = await _account(auth, at)  # a trial not started yet shows as running: no 402
+    if os_billing.status(row, at) == "ended":
+        os_billing.trial_ended_event(row, at)
         raise HTTPException(status_code=402, detail="trial_ended")
     if client.get("analytics") is False:  # a retry of the opt-out the app's event asked for
         os_voice.spawn(os_voice.stop_transcripts(auth.user_id, opt_at))
     elif client.get("analytics") is True:
         os_voice.spawn(os_voice.clear_opt_out(auth.user_id, opt_at))
-    return await os_voice.open_session(auth.user_id, kind, client, model, config, sdp)
+    opened = await os_voice.open_session(auth.user_id, kind, client, model, config, sdp)
+    if isinstance(opened, dict):  # the first conversation starts the trial only once its session has opened
+        await _start_trial(auth.user_id, row, at)
+    return opened
 
 
 @router.get("/voice-session/{session_id}", response_model=VoiceSessionStatus, operation_id="os_voice_session_status")

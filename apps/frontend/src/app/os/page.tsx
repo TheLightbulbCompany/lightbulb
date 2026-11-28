@@ -43,7 +43,7 @@ function ShortPage({ ready, price }: { ready: boolean; price: SparkPrice }) {
         </Suspense>
         {price && (
           <p className="mt-6 text-sm text-[var(--lb-ink-soft)]">
-            Free for {price.trialDays} days, then {price.priceText}. Renews monthly until you cancel.
+            Start for free, then {price.priceText}. Renews monthly until you cancel.
           </p>
         )}
         <p className="mt-2 flex gap-4 text-sm text-[var(--lb-ink-soft)]">

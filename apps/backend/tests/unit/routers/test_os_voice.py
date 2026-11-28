@@ -16,11 +16,12 @@ from moto import mock_aws
 
 from core import dynamodb
 from core.config import settings
+from core.services.os_billing import TRIAL_VOICE_S
 from core.voice import os_voice
 from main import app
 from tests.unit.auth.conftest import Tenant, jwks  # noqa: F401
 
-A, B = Tenant("user_a", None), Tenant("user_b", None)
+A, B, C = Tenant("user_a", None), Tenant("user_b", None), Tenant("user_c", None)
 START = 1_800_000_000
 LAN = "192.168.7.23"
 OFFER = (
@@ -203,11 +204,22 @@ async def test_create_returns_the_answer_and_sends_the_owned_config(ddb, clock, 
     assert got.status_code == 200 and got.json() == {"status": "active", "endedReason": None}
 
 
+def start_trial(users, *ids: str):
+    """Mark people as having had their first conversation: the trial clock runs."""
+    for uid in ids:
+        users.update_item(
+            Key={"user_id": uid},
+            UpdateExpression="SET os_trial_started_at = :t",
+            ExpressionAttributeValues={":t": START},
+        )
+
+
 async def test_free_days_up_refuses_a_session_but_never_for_the_team(
     ddb, users, clock, openai, no_sideband, monkeypatch
 ):
     for who in (A, B):
         assert (await req("GET", "/os/account", who)).status_code == 200
+    start_trial(users, "user_a", "user_b")
     clock[0] += 30 * 86400
     monkeypatch.setattr(settings, "SPARK_INTERNAL_USER_IDS", "user_a")
     refused = await create(B)
@@ -215,7 +227,140 @@ async def test_free_days_up_refuses_a_session_but_never_for_the_team(
     assert (await create(A)).status_code == 201
     # and the open session is not closed at the old trial end: there is no trial end for the team
     assert await os_voice._trial_ends_at("user_a") is None
-    assert await os_voice._trial_ends_at("user_b") == START + 3 * 86400
+    assert await os_voice._trial_ends_at("user_b") == START + 7 * 86400
+
+
+async def test_the_trial_clock_starts_at_the_first_conversation_and_never_moves(
+    ddb, clock, no_sideband, openai, users, monkeypatch
+):
+    sent = []
+    monkeypatch.setattr("routers.os.spark_events.server_event", lambda *a, **k: sent.append(a[1:4]))
+    assert (await req("GET", "/os/account")).json()["trialEndsAt"] == START + 7 * 86400
+    clock[0] += 10 * 86400  # signed up ten days ago, never talked: still a full trial, never ended
+    body_ = (await req("GET", "/os/account")).json()
+    assert body_["status"] == "trial" and body_["trialEndsAt"] == clock[0] + 7 * 86400
+    assert (await create()).status_code == 201
+    first = users.get_item(Key={"user_id": "user_a"})["Item"]
+    assert first["os_trial_ends_at"] == clock[0] + 7 * 86400 and first["os_trial_started_at"] == clock[0]
+    clock[0] += 86400
+    assert (await create()).status_code == 201
+    assert users.get_item(Key={"user_id": "user_a"})["Item"]["os_trial_ends_at"] == first["os_trial_ends_at"]
+    assert [e for e in sent if e[0] == "trial_started"] == [("trial_started", "user_a", {"days": 7})]  # once
+
+
+async def test_concurrent_first_conversations_agree_on_one_start(ddb, clock, no_sideband, openai, users):
+    from routers import os as os_router
+
+    assert (await req("GET", "/os/account")).status_code == 200
+    row = users.get_item(Key={"user_id": "user_a"})["Item"]
+    got = await asyncio.gather(*[os_router._start_trial("user_a", row, START + i) for i in range(5)])
+    stored = users.get_item(Key={"user_id": "user_a"})["Item"]["os_trial_ends_at"]
+    assert {g["os_trial_ends_at"] for g in got} == {stored}
+
+
+async def test_invite_days_earned_before_the_first_conversation_are_kept(ddb, clock, no_sideband, openai, users):
+    assert (await req("GET", "/os/account", A)).status_code == 200
+    clock[0] += 100
+    assert (await req("GET", "/os/account", B)).status_code == 200
+    assert (await req("POST", "/os/referral", B, {"code": "a"})).json() == {"applied": True}
+    clock[0] += 10 * 86400
+    assert (await req("GET", "/os/account", A)).json()["trialEndsAt"] == clock[0] + 8 * 86400
+    assert (await create(A)).status_code == 201
+    assert users.get_item(Key={"user_id": "user_a"})["Item"]["os_trial_ends_at"] == clock[0] + 8 * 86400
+
+
+async def test_an_account_with_past_voice_use_is_not_moved(ddb, clock, no_sideband, openai, users):
+    assert (await req("GET", "/os/account")).status_code == 200
+    users.update_item(
+        Key={"user_id": "user_a"},
+        UpdateExpression="SET os_voice_seconds = :s",
+        ExpressionAttributeValues={":s": 60},
+    )
+    clock[0] += 10 * 86400
+    assert (await create()).status_code == 402
+    assert users.get_item(Key={"user_id": "user_a"})["Item"]["os_trial_ends_at"] == START + 7 * 86400
+
+
+async def test_the_voice_allowance_is_a_402_trial_ended(ddb, clock, no_sideband, openai, users):
+    assert (await create()).status_code == 201
+    users.update_item(
+        Key={"user_id": "user_a"},
+        UpdateExpression="SET os_voice_seconds = :s",
+        ExpressionAttributeValues={":s": TRIAL_VOICE_S - 1},
+    )
+    assert (await create()).status_code == 201
+    users.update_item(
+        Key={"user_id": "user_a"},
+        UpdateExpression="SET os_voice_seconds = :s",
+        ExpressionAttributeValues={":s": TRIAL_VOICE_S},
+    )
+    r = await create()
+    assert (r.status_code, r.json()) == (402, {"detail": "trial_ended"})
+    assert (await req("GET", "/os/account")).json()["status"] == "ended"
+
+
+async def test_the_voice_allowance_closes_a_live_session(ddb, clock, openai, sockets, users):
+    users.put_item(Item={"user_id": "user_a", "os_voice_seconds": TRIAL_VOICE_S - 30})
+    sid = await opened_session()
+    await until(lambda: sockets)
+    sockets[0].push(usage(29))
+    for _ in range(5):
+        await asyncio.sleep(os_voice.TICK_S)
+    assert {"type": "session.close"} not in sockets[0].sent
+    sockets[0].push(usage(30))
+    await until(lambda: {"type": "session.close"} in sockets[0].sent)
+    sockets[0].push(closed(30))
+    await until(lambda: rec(ddb, sid).get("endedReason"))
+    assert rec(ddb, sid)["endedReason"] == "trial_ended"
+
+
+async def test_subscribing_during_a_session_lifts_its_talking_limit(ddb, clock, openai, sockets, users):
+    users.put_item(Item={"user_id": "user_a", "os_voice_seconds": TRIAL_VOICE_S - 30})
+    sid = await opened_session()
+    await until(lambda: sockets)
+    users.update_item(  # the Stripe webhook lands while they talk
+        Key={"user_id": "user_a"},
+        UpdateExpression="SET os_subscription_status = :a",
+        ExpressionAttributeValues={":a": "active"},
+    )
+    sockets[0].push(usage(60))
+    for _ in range(8):
+        await asyncio.sleep(os_voice.TICK_S)
+    assert {"type": "session.close"} not in sockets[0].sent
+    assert not rec(ddb, sid).get("closeReason")
+
+
+async def test_usage_banked_by_a_replaced_session_counts_within_a_minute(ddb, clock, openai, sockets, users):
+    """A session read the allowance before the one it replaced banked its usage: the next read sees it."""
+    users.put_item(Item={"user_id": "user_a", "os_voice_seconds": 0})
+    sid = await opened_session()
+    await until(lambda: sockets)
+    users.update_item(  # the replaced session closes and banks its usage
+        Key={"user_id": "user_a"},
+        UpdateExpression="SET os_voice_seconds = :s",
+        ExpressionAttributeValues={":s": TRIAL_VOICE_S - 10},
+    )
+    sockets[0].push(usage(10))
+    for _ in range(5):
+        await asyncio.sleep(os_voice.TICK_S)
+    assert {"type": "session.close"} not in sockets[0].sent  # still the allowance read at the start
+    clock[0] += os_voice.VOICE_REREAD_S
+    await until(lambda: {"type": "session.close"} in sockets[0].sent)
+    sockets[0].push(closed(10))
+    await until(lambda: rec(ddb, sid).get("endedReason"))
+    assert rec(ddb, sid)["endedReason"] == "trial_ended"
+
+
+@pytest.mark.parametrize("exempt", ["team", "paying"])
+async def test_team_and_paying_accounts_have_no_voice_allowance(
+    ddb, clock, no_sideband, openai, users, monkeypatch, exempt
+):
+    if exempt == "team":
+        monkeypatch.setattr(settings, "SPARK_INTERNAL_USER_IDS", "user_a")
+    row = {"user_id": "user_a", "os_voice_seconds": TRIAL_VOICE_S * 5}
+    users.put_item(Item=row | ({"os_subscription_status": "active"} if exempt == "paying" else {}))
+    assert (await create()).status_code == 201
+    assert await os_voice._voice_left("user_a") is None
 
 
 async def test_a_model_off_the_list_is_refused(ddb, clock, no_sideband, openai):
@@ -355,9 +500,10 @@ async def test_invalid_sdp(ddb, clock, no_sideband, openai, sdp):
     assert not openai.called
 
 
-async def test_trial_ended_is_402_and_openai_is_not_called(ddb, clock, no_sideband, openai):
+async def test_trial_ended_is_402_and_openai_is_not_called(ddb, clock, no_sideband, openai, users):
     assert (await req("GET", "/os/account")).status_code == 200
-    clock[0] += 3 * 86400
+    start_trial(users, "user_a")
+    clock[0] += 7 * 86400
     r = await create()
     assert (r.status_code, r.json()) == (402, {"detail": "trial_ended"})
     assert not openai.called
@@ -372,7 +518,7 @@ async def test_a_subscribed_person_passes_the_trial_check(ddb, clock, no_sideban
         UpdateExpression="SET os_subscription_status = :s",
         ExpressionAttributeValues={":s": "active"},
     )
-    clock[0] += 3 * 86400
+    clock[0] += 7 * 86400
     assert (await create()).status_code == 201
     assert await os_voice._trial_ends_at("user_a") is None  # a live session is never closed as trial_ended
 
@@ -380,7 +526,7 @@ async def test_a_subscribed_person_passes_the_trial_check(ddb, clock, no_sideban
 async def test_first_call_creates_the_account_then_proceeds(ddb, clock, no_sideband, openai, users):
     assert (await create()).status_code == 201
     row = users.get_item(Key={"user_id": "user_a"})["Item"]
-    assert row["os_trial_ends_at"] == START + 3 * 86400
+    assert row["os_trial_ends_at"] == START + 7 * 86400
     assert (await req("GET", "/os/account")).json()["status"] == "trial"
 
 
@@ -431,7 +577,12 @@ async def test_openai_failures_map_and_free_the_slot(
     r = await create()
     assert r.status_code == status
     assert r.json() == {"detail": detail} | ({"retryAfterS": retry} if retry else {})
-    assert "os_voice_active" not in users.get_item(Key={"user_id": "user_a"})["Item"]
+    item = users.get_item(Key={"user_id": "user_a"})["Item"]
+    assert "os_voice_active" not in item
+    assert "os_trial_started_at" not in item  # no conversation happened: the trial clock has not started
+    from core.services import os_billing
+
+    assert os_billing.pending(item)  # even though the failed session banked 0 seconds
 
 
 async def test_a_failed_record_write_after_openai_answered_is_502(
@@ -593,7 +744,7 @@ async def test_usage_is_recorded_and_the_close_counts_once(ddb, clock, openai, s
 async def test_account_ending_mid_session_closes_it(ddb, clock, openai, sockets, users):
     sid = await opened_session()
     await until(lambda: sockets)
-    clock[0] += 3 * 86400
+    clock[0] += 7 * 86400
     await until(lambda: {"type": "session.close"} in sockets[0].sent)
     sockets[0].push(closed(40))
     await until(lambda: rec(ddb, sid).get("endedReason"))
@@ -689,7 +840,7 @@ async def test_a_close_with_no_session_closed_is_reaped_unconfirmed(ddb, clock, 
     sid = await opened_session()
     await until(lambda: sockets)
     sockets[0].push(usage(30))
-    clock[0] += 3 * 86400
+    clock[0] += 7 * 86400
     await until(lambda: {"type": "session.close"} in sockets[0].sent)
     clock[0] += os_voice.CLOSE_WAIT_S + 1  # OpenAI never answers the close
     await until(lambda: metrics)  # emitted after the row is ended
@@ -987,3 +1138,66 @@ async def test_only_an_account_deletions_close_sends_the_ended_event_personless(
     else:
         assert distinct_id == "user_a" and "$process_person_profile" not in props
     assert "$set" not in props
+
+
+def trial_events(monkeypatch) -> list:
+    sent = []
+
+    def capture(user_id, event, key, props=None, **k):
+        if event == "trial_ended":
+            sent.append((event, user_id, key, props))
+
+    monkeypatch.setattr("core.observability.spark_events.server_event", capture)
+    return sent
+
+
+async def test_the_402_records_the_paywall_moment_once_per_kind_of_person(
+    ddb, clock, no_sideband, openai, users, monkeypatch
+):
+    sent = trial_events(monkeypatch)
+    users.put_item(Item={"user_id": "user_a", "os_voice_seconds": TRIAL_VOICE_S, "os_trial_started_at": START})
+    assert (await create()).status_code == 402
+    assert sent == [("trial_ended", "user_a", "user_a", {"by": "minutes"})]
+    users.put_item(Item={"user_id": "user_b", "os_trial_started_at": START - 8 * 86400, "os_trial_ends_at": START - 1})
+    assert (await create(B)).status_code == 402
+    assert sent[1] == ("trial_ended", "user_b", "user_b", {"by": "days"})
+    users.put_item(  # earlier subscriber: never
+        Item={"user_id": "user_c", "os_trial_ends_at": START - 1, "os_subscription_status": "canceled"}
+    )
+    assert (await create(C)).status_code == 402
+    assert len(sent) == 2
+
+
+async def test_closing_a_live_session_at_the_allowance_records_the_paywall_moment(
+    ddb, clock, openai, sockets, users, monkeypatch
+):
+    sent = trial_events(monkeypatch)
+    users.put_item(Item={"user_id": "user_a", "os_voice_seconds": TRIAL_VOICE_S - 30})
+    await opened_session()
+    await until(lambda: sockets)
+    sockets[0].push(usage(30))
+    await until(lambda: {"type": "session.close"} in sockets[0].sent)
+    assert [e[:2] + e[3:] for e in sent] == [("trial_ended", "user_a", {"by": "minutes"})]
+
+
+async def test_spark_finishes_its_answer_but_only_for_the_grace_period(ddb, clock, openai, sockets, users):
+    users.put_item(Item={"user_id": "user_a", "os_voice_seconds": TRIAL_VOICE_S - 30})
+    await opened_session()
+    await until(lambda: sockets)
+    speaking = {"type": "session.output_transcript.delta", "delta": "hi"}
+    sockets[0].push(speaking, usage(30))
+    for _ in range(5):
+        sockets[0].push(speaking)
+        await asyncio.sleep(os_voice.TICK_S)
+    assert {"type": "session.close"} not in sockets[0].sent  # past the limit, mid-answer: not cut off
+    clock[0] += os_voice.TRIAL_GRACE_S
+    sockets[0].push(speaking)
+    await until(lambda: {"type": "session.close"} in sockets[0].sent)  # the grace is over
+
+
+async def test_a_silent_spark_is_closed_at_the_first_tick_after_the_limit(ddb, clock, openai, sockets, users):
+    users.put_item(Item={"user_id": "user_a", "os_voice_seconds": TRIAL_VOICE_S - 30})
+    await opened_session()
+    await until(lambda: sockets)
+    sockets[0].push(usage(30))
+    await until(lambda: {"type": "session.close"} in sockets[0].sent)

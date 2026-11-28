@@ -2,7 +2,7 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import OsPage from "../page";
@@ -145,6 +145,8 @@ describe("/os with an invite", () => {
         routing: "hash",
         forceRedirectUrl: "/os?ref=abc123XYZ",
         signInForceRedirectUrl: "/os?ref=abc123XYZ",
+        // The card's "Sign in" link: the /sign-in page, which comes back here after signing in.
+        signInUrl: "/sign-in?redirect_url=%2Fos%3Fref%3Dabc123XYZ",
       }),
     );
     expect(screen.queryByRole("link", { name: DOWNLOAD })).toBeNull();
@@ -201,7 +203,9 @@ describe("/os with a channel code", () => {
     s.query = "c=yt-abc";
     await page();
     expect(screen.getByTestId("clerk-sign-up")).toBeInTheDocument();
-    expect(signUpProps).toHaveBeenCalledWith(expect.objectContaining({ forceRedirectUrl: "/os?c=yt-abc" }));
+    expect(signUpProps).toHaveBeenCalledWith(
+      expect.objectContaining({ forceRedirectUrl: "/os?c=yt-abc", signInUrl: "/sign-in?redirect_url=%2Fos%3Fc%3Dyt-abc" }),
+    );
     expect(screen.getByText("Get Spark")).toBeInTheDocument();
     expect(screen.getByText("Create your account, then download.")).toBeInTheDocument();
     expect(screen.queryByText(/invited/)).toBeNull();

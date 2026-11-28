@@ -63,11 +63,13 @@ class AccountResponse(BaseModel):
     trialDays: int
     inviteBonusDays: int = 0
     nextChargeAt: int | None = None
+    trialVoiceLeftS: int | None = None  # the trial's talking time left; only while `status` is "trial"
 
 
 class ConfigResponse(BaseModel):
     priceText: str
     trialDays: int
+    trialVoiceMinutes: int = os_billing.TRIAL_VOICE_S // 60
     worklogScope: Literal["all", "problem", "off"] = "off"
     minVersion: dict[str, str] = {}  # platform -> "X.Y.Z"; a platform with no valid floor is absent
 
@@ -183,7 +185,11 @@ async def _start_trial(user_id: str, row: dict, now: int) -> dict:
                 + " AND os_trial_ends_at = :seen",
                 ExpressionAttributeValues={":now": now, ":end": end, ":seen": stored["os_trial_ends_at"]},
             )
-            return row | {"os_trial_started_at": now, "os_trial_ends_at": end}
+            row = row | {"os_trial_started_at": now, "os_trial_ends_at": end}
+            spark_events.server_event(
+                user_id, "trial_started", user_id, {"days": (end - now) // DAY_S}, row=row, now=now
+            )
+            return row
         except ClientError as e:
             if e.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
                 raise
@@ -198,11 +204,15 @@ async def get_account(auth: AuthContext = Depends(get_human_session)) -> Account
     row = await _account(auth, now)
     ends, referrals = int(row["os_trial_ends_at"]), int(row.get("os_referrals", 0))
     checkout_url, portal_url = os_billing.links(row, auth.user_id, now)
+    status = os_billing.status(row, now)
     return AccountResponse(
         accountId=auth.user_id,
         email=row.get("email") or "",
         name="",  # the backend stores no name for a person
-        status=os_billing.status(row, now),
+        status=status,
+        trialVoiceLeftS=max(os_billing.TRIAL_VOICE_S - int(row.get("os_voice_seconds", 0)), 0)
+        if status == "trial"
+        else None,
         trialEndsAt=ends,
         referralUrl=f"{settings.FRONTEND_URL.rstrip('/')}/os?ref={auth.user_id.removeprefix('user_')}",
         referralDaysEarned=int(row.get("os_referral_days", referrals)),

@@ -10,7 +10,14 @@ import { DownloadBlock, OsInvite, SOON } from "./OsInvite";
 import { SparkGet } from "./SparkDownload";
 import { SparkPlayer } from "./SparkPlayer";
 
-export type SparkPrice = { priceText: string; trialDays: number } | null;
+export type SparkPrice = { priceText: string; trialDays: number; trialVoiceMinutes?: number } | null;
+
+// "7 days", or "7 days or 2 hours of talking, whichever comes first" when the backend sends the trial's talking time.
+export function freeFor({ trialDays, trialVoiceMinutes: m }: NonNullable<SparkPrice>): string {
+  if (!m) return `${trialDays} days`;
+  const talk = m % 60 ? `${m} minutes` : `${m / 60} hour${m === 60 ? "" : "s"}`;
+  return `${trialDays} days or ${talk} of talking, whichever comes first`;
+}
 
 const body = Bricolage_Grotesque({ subsets: ["latin"], variable: "--sp-font", display: "swap" });
 const pixel = Silkscreen({ weight: "400", subsets: ["latin"], variable: "--sp-pixel", display: "swap" });
@@ -66,7 +73,7 @@ const SETUP = [
 // omitted or said without them.
 export function OsLanding({ ready, price }: { ready: boolean; price: SparkPrice }) {
   const faq: [string, string][] = [
-    ["Is Spark free?", price ? `For ${price.trialDays} days. Then it's ${price.priceText}.` : "See the price when you download."],
+    ["Is Spark free?", price ? `For ${freeFor(price)}. Then it's ${price.priceText}.` : "See the price when you download."],
     ["What Mac do I need?", "A Mac with Apple silicon (M1 or later), on macOS 14 or later."],
     ["Do I need ChatGPT or Claude?", "Yes, your own account. Free ChatGPT works. Claude needs Pro or higher."],
     ["Can Spark do things without asking?", "It acts on your screen when you ask. Say stop any time and it stops."],
@@ -92,7 +99,7 @@ export function OsLanding({ ready, price }: { ready: boolean; price: SparkPrice 
             <div className="small">
               {price && (
                 <p>
-                  Free for {price.trialDays} days, then {price.priceText}. Renews monthly until you cancel.
+                  Free for {freeFor(price)}, then {price.priceText}. Renews monthly until you cancel.
                 </p>
               )}
               <p className="legal">

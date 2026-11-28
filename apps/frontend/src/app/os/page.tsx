@@ -7,7 +7,7 @@ import { apiOrigin } from "@/lib/apiOrigin";
 import { pageMetadata } from "@/lib/seo";
 
 import { DownloadBlock, OsInvite } from "./OsInvite";
-import { OsLanding, type SparkPrice } from "./OsLanding";
+import { freeFor, OsLanding, type SparkPrice } from "./OsLanding";
 
 // ponytail: the landing page is live everywhere; SPARK_SHORT_PAGE=1 brings the short page back. Delete the
 // switch and the short page once the founder has settled the design.
@@ -43,7 +43,7 @@ function ShortPage({ ready, price }: { ready: boolean; price: SparkPrice }) {
         </Suspense>
         {price && (
           <p className="mt-6 text-sm text-[var(--lb-ink-soft)]">
-            Free for {price.trialDays} days, then {price.priceText}. Renews monthly until you cancel.
+            Free for {freeFor(price)}, then {price.priceText}. Renews monthly until you cancel.
           </p>
         )}
         <p className="mt-2 flex gap-4 text-sm text-[var(--lb-ink-soft)]">
@@ -88,7 +88,11 @@ async function sparkPrice(): Promise<SparkPrice> {
     if (!r.ok) return null;
     const c = await r.json();
     return typeof c?.priceText === "string" && Number.isInteger(c?.trialDays) && c.trialDays > 0
-      ? { priceText: c.priceText, trialDays: c.trialDays }
+      ? {
+          priceText: c.priceText,
+          trialDays: c.trialDays,
+          ...(Number.isInteger(c.trialVoiceMinutes) && c.trialVoiceMinutes > 0 && { trialVoiceMinutes: c.trialVoiceMinutes }),
+        }
       : null;
   } catch {
     return null;

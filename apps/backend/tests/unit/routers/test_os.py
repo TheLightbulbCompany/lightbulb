@@ -83,6 +83,7 @@ async def test_first_account_read_starts_a_seven_day_trial(users, clock):
         "trialDays": 7,
         "inviteBonusDays": 0,
         "nextChargeAt": None,
+        "trialVoiceLeftS": 120 * 60,
     }
 
 
@@ -568,23 +569,15 @@ async def test_account_delete_completes_when_the_posthog_delete_fails(users, clo
     assert gone == ["user_a"] * 2 and called == [{"distinct_ids": ["user_a"], "delete_events": True}] * 2
 
 
-@pytest.mark.parametrize("voice_s, charged_now", [(0, False), (120 * 60, True)])
-async def test_checkout_after_the_trial_voice_is_used_up_charges_at_once(
-    users, clock, monkeypatch, voice_s, charged_now
-):
-    """Days left but the trial's voice used up: the trial is over, so checkout starts billing now (no Stripe trial,
-    which would otherwise give unlimited voice until the days ran out)."""
+async def test_subscribing_during_the_trial_charges_at_once(users, clock, monkeypatch):
+    """owner, 2026-11-28: no Stripe trial, even with free days and talking time left. A `trialing` subscription
+    would never be limited by the trial's voice allowance."""
     import stripe
 
     from core.services import os_billing
 
     users.put_item(
-        Item={
-            "user_id": "user_a",
-            "os_trial_ends_at": START + 5 * DAY,
-            "os_voice_seconds": voice_s,
-            "os_created_at": START,
-        }
+        Item={"user_id": "user_a", "os_trial_ends_at": START + 5 * DAY, "os_voice_seconds": 60, "os_created_at": START}
     )
     sent = {}
 
@@ -603,4 +596,17 @@ async def test_checkout_after_the_trial_voice_is_used_up_charges_at_once(
         stripe.checkout.Session, "create", lambda **kw: sent.update(kw) or {"id": "cs_test", "url": "https://pay"}
     )
     await os_billing.checkout("user_a")
-    assert ("trial_end" in sent["subscription_data"]) is not charged_now
+    assert sent["subscription_data"] == {"metadata": {"product": "spark", "user_id": "user_a"}}
+
+
+async def test_the_account_shows_the_trials_talking_time_left(users, clock):
+    """While the trial runs; none once it has ended."""
+    assert (await account())["trialVoiceLeftS"] == 120 * 60
+    users.update_item(
+        Key={"user_id": "user_a"},
+        UpdateExpression="SET os_voice_seconds = :s",
+        ExpressionAttributeValues={":s": 100 * 60},
+    )
+    assert (await account())["trialVoiceLeftS"] == 20 * 60
+    clock[0] += 8 * DAY
+    assert (await account())["trialVoiceLeftS"] is None

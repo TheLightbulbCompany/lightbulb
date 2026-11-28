@@ -115,6 +115,16 @@ describe("/os price line and legal links", () => {
     legal();
   });
 
+  it("the trial's talking time, when the config has it", async () => {
+    installer(302, { priceText: "$20/month", trialDays: 7, trialVoiceMinutes: 120 });
+    await page();
+    expect(
+      await screen.findByText(
+        "Free for 7 days or 2 hours of talking, whichever comes first, then $20/month. Renews monthly until you cancel.",
+      ),
+    ).toBeInTheDocument();
+  });
+
   it.each([null, { priceText: 20 }, { trialDays: 3 }])("config %j unusable: no line, links still shown", async (config) => {
     installer(302, config);
     s.query = "";

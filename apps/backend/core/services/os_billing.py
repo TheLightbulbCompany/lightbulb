@@ -46,8 +46,7 @@ BILLED = (*LIVE, "past_due", "unpaid", "paused")
 CHECKOUT_TTL_S = 1800  # Stripe's minimum Checkout Session lifetime
 
 
-_CHECKOUT_BODY_VERSION = 9  # bump whenever the Checkout Session body changes (Stripe rejects a changed body)
-_STRIPE_MIN_TRIAL_S = 49 * 3600  # Stripe's 48-hour trial minimum, plus slack
+_CHECKOUT_BODY_VERSION = 10  # bump whenever the Checkout Session body changes (Stripe rejects a changed body)
 
 
 class BillingServiceError(Exception):
@@ -59,17 +58,6 @@ def _checkout_idempotency_key(flow: str, owner_id: str, extra: str | None = None
     bucket = int(time.time() // 300)
     suffix = f":{extra}" if extra is not None else ""
     return f"{flow}:v{_CHECKOUT_BODY_VERSION}:{owner_id}{suffix}:{bucket}"
-
-
-def _checkout_trial_end(account: dict, now_s: int) -> int | None:
-    """The Stripe trial ends where the free trial does, stretched to Stripe's 48-hour minimum near the end;
-    an ended trial is billed at once. ``now_s`` is the checkout bucket start, so retries send an identical body."""
-    if account.get("subscription_status") != "trial_local":
-        return None
-    end = int(account["trial_end"])
-    if end <= now_s:
-        return None
-    return max(end, now_s + _STRIPE_MIN_TRIAL_S)
 
 
 def _retrieve_checkout_session(session_id: str):
@@ -221,16 +209,8 @@ async def checkout(user_id: str) -> str:
         return answer
     now = _now()
     bucket = now - now % 300
-    # The workspace rule: the Stripe trial ends where the free trial does, stretched to Stripe's 48-hour floor
-    # near the end (never charged early); an ended trial, its days or its voice used up, is charged now. The bucket
-    # start keeps retries identical.
-    trial_end = (
-        None
-        if int(row.get("os_voice_seconds", 0)) >= TRIAL_VOICE_S
-        else _checkout_trial_end(
-            {"subscription_status": "trial_local", "trial_end": int(row["os_trial_ends_at"])}, bucket
-        )
-    )
+    # owner, 2026-11-28: subscribing charges at once, during the free trial too (no Stripe trial). A Stripe trial
+    # would make the account `trialing`, which the trial's voice allowance never limits.
     metadata = {"product": "spark", "user_id": user_id}
     params = dict(
         mode="subscription",
@@ -238,14 +218,14 @@ async def checkout(user_id: str) -> str:
         line_items=[{"price": settings.STRIPE_SPARK_PRICE_ID, "quantity": 1}],
         allow_promotion_codes=False,
         client_reference_id=user_id,
-        subscription_data={"metadata": metadata} | ({"trial_end": trial_end} if trial_end else {}),
+        subscription_data={"metadata": metadata},
         success_url=page("success"),
         cancel_url=page("cancelled"),
         expires_at=bucket + 300 + CHECKOUT_TTL_S,  # 30 to 35 minutes out, identical within the bucket
         api_key=settings.STRIPE_SECRET_KEY,
     )
     # The earlier session is in the key: after expiring it, a retry in this bucket must get a new one.
-    key = _checkout_idempotency_key("spark", user_id, f"{trial_end}:{pending_id}")
+    key = _checkout_idempotency_key("spark", user_id, f"{pending_id}")
     try:
         session = await run_in_thread(
             stripe.checkout.Session.create,

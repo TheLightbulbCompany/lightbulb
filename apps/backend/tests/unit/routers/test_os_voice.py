@@ -230,7 +230,11 @@ async def test_free_days_up_refuses_a_session_but_never_for_the_team(
     assert await os_voice._trial_ends_at("user_b") == START + 7 * 86400
 
 
-async def test_the_trial_clock_starts_at_the_first_conversation_and_never_moves(ddb, clock, no_sideband, openai, users):
+async def test_the_trial_clock_starts_at_the_first_conversation_and_never_moves(
+    ddb, clock, no_sideband, openai, users, monkeypatch
+):
+    sent = []
+    monkeypatch.setattr("routers.os.spark_events.server_event", lambda *a, **k: sent.append(a[1:4]))
     assert (await req("GET", "/os/account")).json()["trialEndsAt"] == START + 7 * 86400
     clock[0] += 10 * 86400  # signed up ten days ago, never talked: still a full trial, never ended
     body_ = (await req("GET", "/os/account")).json()
@@ -241,6 +245,7 @@ async def test_the_trial_clock_starts_at_the_first_conversation_and_never_moves(
     clock[0] += 86400
     assert (await create()).status_code == 201
     assert users.get_item(Key={"user_id": "user_a"})["Item"]["os_trial_ends_at"] == first["os_trial_ends_at"]
+    assert [e for e in sent if e[0] == "trial_started"] == [("trial_started", "user_a", {"days": 7})]  # once
 
 
 async def test_concurrent_first_conversations_agree_on_one_start(ddb, clock, no_sideband, openai, users):

@@ -129,10 +129,10 @@ describe("ServiceStack — the Spark backend", () => {
     expect(env.map((e: any) => e.Name)).not.toContain("SPARK_STORE_DELETES");
   });
 
-  // The autocomplete routes spend on the company key at every typing pause: on in dev, off (404) in production.
+  // The autocomplete routes are on in dev and production; "0" is the kill switch (both routes answer 404).
   test.each([
     ["dev", SERVICE_TEMPLATE_DEV, "1"],
-    ["prod", SERVICE_TEMPLATE_PROD, "0"],
+    ["prod", SERVICE_TEMPLATE_PROD, "1"],
   ] as const)("%s backend sets SPARK_AUTOCOMPLETE_ENABLED=%s", (_env, template, value) => {
     expect(backendContainer(template).Environment).toContainEqual({ Name: "SPARK_AUTOCOMPLETE_ENABLED", Value: value });
   });

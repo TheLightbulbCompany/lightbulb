@@ -12,7 +12,7 @@ vi.mock("../sections", () => {
     return C;
   };
   return Object.fromEntries(
-    ["Channels", "Cohorts", "Funnel", "Headline", "Money", "People", "Reliability", "Setup", "Signals", "Sources"].map((n) => [n, stub(n)]),
+    ["Channels", "Cohorts", "Funnel", "Headline", "Invites", "Money", "People", "Reliability", "Setup", "Signals", "Sources", "Trials"].map((n) => [n, stub(n)]),
   );
 });
 

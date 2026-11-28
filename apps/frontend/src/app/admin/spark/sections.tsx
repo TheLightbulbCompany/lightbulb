@@ -294,3 +294,60 @@ export function Signals({ data }: { data: SparkData }) {
     </div>
   );
 }
+
+export function Trials({ data }: { data: SparkData }) {
+  const t = data.trials;
+  return (
+    <Card title="Trials (started in the last 60 days)">
+      {t ? (
+        <div className="space-y-4">
+          <div className="grid grid-cols-2 gap-4 md:grid-cols-5">
+            <MetricStat label="Started" value={t.started} />
+            <MetricStat label="Still running" value={t.running} />
+            <MetricStat label="Used all minutes" value={t.ended_minutes} hint="ended by the voice limit" />
+            <MetricStat label="Ran out of days" value={t.ended_days} hint="ended by the 7 days" />
+            <MetricStat label="Subscribed" value={kn(t.subscribed)} />
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Voice minutes in the trial: {t.minutes ? `median ${t.minutes.median}, p90 ${t.minutes.p90}` : "—"}. Account to first
+            conversation, median: {t.hours_to_first_conversation === null ? "—" : `${t.hours_to_first_conversation} h`}. A person
+            counts once, as paying, else minutes, else days, else running.
+          </p>
+          <Table
+            head={["Email", "Started", "Minutes", "Status"]}
+            rows={t.people.map((p) => [p.email ?? "—", p.started, p.minutes, p.status])}
+          />
+        </div>
+      ) : (
+        NO_DATA
+      )}
+    </Card>
+  );
+}
+
+export function Invites({ data }: { data: SparkData }) {
+  const i = data.invites;
+  return (
+    <Card title="Invites (last 60 days)">
+      {i ? (
+        <div className="space-y-4">
+          <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
+            <MetricStat label="Copied their link" value={i.copied} hint="people" />
+            <MetricStat label="Credited a day" value={i.credited_days} hint={`${i.referrers_credited} referrers`} />
+            <MetricStat label="Invited people" value={i.invited} />
+            <MetricStat label="Invited, subscribed" value={kn(i.subscribed)} />
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Invited people who signed in {kn(i.signed_in)}; did a first task {kn(i.first_task)}.
+          </p>
+          <Table
+            head={["Referrer", "Links copied", "Friends signed up", "Friends with a task", "Friends paying"]}
+            rows={i.referrers.map((r) => [r.email ?? "—", r.copies, r.friends, r.tasks, r.paying])}
+          />
+        </div>
+      ) : (
+        NO_DATA
+      )}
+    </Card>
+  );
+}

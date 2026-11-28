@@ -6,8 +6,8 @@ prompt, scoring) is hidden, so the prompt, the scoring and the source choice her
 
 Caps are applied by cutting, never by refusing: each field is cut the way the Mac cuts it (the end of `before`, the
 start of `after`, the window around the `⟦field⟧` marker for `screen`), so a body the Mac already cut passes through
-unchanged and an over-cap one is cut to the same shape. Fields whose cap Opsis does not set (`reaches_for`,
-`recent_work`) get our own, marked "ours". Unknown keys are ignored; a known key of the wrong type is refused.
+unchanged and an over-cap one is cut to the same shape. Fields or parts whose cap Opsis does not set
+(`reaches_for`'s length, a note's `app_id` and `ago`) get our own, marked "ours". Unknown keys are ignored; a known key of the wrong type is refused.
 
 Privacy: nothing here logs or stores text. The caller logs counts, sizes, timings and the model id only."""
 
@@ -149,7 +149,13 @@ class ClientInfo(_In):
 
 
 class RecentWork(_In):
-    text: Text(_head(1_000)) = ""  # ours: what a note holds is unknown (teardown 9.12 row 17)
+    """A note of what the person looked at in the last 45 minutes, from the Mac's own captures (teardown 9.15.1).
+    The Mac sends notes only while the person has not been moving between windows, in place of the window trail."""
+
+    app_id: Text(_head(200)) | None = None  # a URL host or an app id; 200 is ours
+    title: Text(_head(90)) | None = None
+    ago: Text(_head(40)) | None = None  # "12m ago"; 40 is ours
+    text: Text(_head(420)) = ""
 
 
 MEMORY_TOTAL = 40_000 + 3 * 16_000  # 40,000 chars, plus the top 3 expanded to their whole capture
@@ -176,7 +182,7 @@ class CompleteRequest(_In):
     memory: Items(MemoryItem, 16) = []
     local_memory: Items(MemoryItem, 16) = []
     mind: Items(MindItem, 40) = []
-    recent_work: Items(RecentWork | Text(_head(1_000)), 20) = []  # ours: 20 × 1,000
+    recent_work: Items(RecentWork | Text(_head(420)), 4) = []  # ≤ 4 notes (9.15.1); a bare string is a note's text
     recent_flow: Items(FlowEntry, 50) = []  # no count in Opsis; the pools bound it. Ours: 50
     style: Items(Text(_fit(400)), 8) = []  # the person's own recent messages in this app (teardown 9.14.4)
     voice: Items(Voice, 3) = []
@@ -253,7 +259,7 @@ _FORMAT = """Output format, exactly:
 - P is 0-100: how likely the person is to write exactly this.
 - SOURCE is where its content comes from: `message` (their own draft), `thread` (the conversation they are in), \
 `screen` (elsewhere on screen), `clipboard`, `mind` (their top-of-mind notes), `memory` (their earlier work), \
-`flow` (a window they visited just before).
+`flow` (a window they visited just before), `work` (something they looked at in the last 45 minutes).
 - Most likely version first. Versions must differ in wording or meaning.
 - To stay quiet, output only `#0`."""
 
@@ -340,7 +346,13 @@ def messages(req: CompleteRequest, kind: Kind, now: datetime | None = None) -> t
         f"[{', '.join(x for x in (v.app, _ago(v.ago_s)) if x)}]\n{v.text}" for v in req.voice if v.text.strip()
     )
     mind = "\n".join(f"- ({m.day}) {m.text}" if m.day else f"- {m.text}" for m in req.mind if m.text.strip())
-    work = "\n".join(f"- {w.text if isinstance(w, RecentWork) else w}" for w in req.recent_work)
+    notes = [w if isinstance(w, RecentWork) else RecentWork(text=w) for w in req.recent_work]
+    work = "\n---\n".join(
+        (f"[{' · '.join(x for x in (n.app_id, n.title, n.ago) if x)}]\n" if n.app_id or n.title or n.ago else "")
+        + n.text
+        for n in notes
+        if n.text.strip()
+    )
     memory = "\n---\n".join(
         f"[{' · '.join(str(x) for x in (m.app_id, m.title, m.captured_at) if x)}]\n{m.text}"
         for m in (*req.memory, *req.local_memory)
@@ -396,7 +408,7 @@ def messages(req: CompleteRequest, kind: Kind, now: datetime | None = None) -> t
         _tag("voice", voice),
         _tag("their_messages_here", "\n---\n".join(t for t in req.style if t.strip())),
         _tag("top_of_mind", mind),
-        _tag("recent_work", work),
+        _tag("looked_at_in_the_last_45_minutes", work),
         _tag("recent_windows", flow),
         _tag("memory", memory),
         _tag("reaches_for", "\n".join(f"- {r}" for r in req.reaches_for)),
@@ -582,7 +594,21 @@ def cache_key(user_id: str) -> str:
 # --- reading the reply --------------------------------------------------------------------------------------
 
 _HEADER = re.compile(r"^#(\d{1,3})(?:[ \t]+([a-z_]+))?[ \t]*\r?$", re.M)
-SOURCES = frozenset({"message", "thread", "screen", "clipboard", "mind", "memory", "flow"})
+SOURCES = frozenset({"message", "thread", "screen", "clipboard", "mind", "memory", "flow", "work"})
+
+
+def _source(kind: str | None, req: CompleteRequest) -> dict | None:
+    """The reply's `{kind, apps?}`. Opsis's front end labels a kind it doesn't name "Earlier work", or, with `apps`,
+    the first app's name. A note names its app only when every note comes from the same one: the model says that a
+    note was the source, not which."""
+    if not kind:
+        return None
+    if kind == "work":
+        shown = [w for w in req.recent_work if (w.text if isinstance(w, RecentWork) else w).strip()]  # as in the prompt
+        apps = {w.app_id if isinstance(w, RecentWork) else None for w in shown}
+        if len(apps) == 1 and (app := apps.pop()):
+            return {"kind": "work", "apps": [app]}
+    return {"kind": kind}
 
 
 @dataclass
@@ -680,7 +706,7 @@ def reply(req: CompleteRequest, kind: Kind, comp: Completion) -> dict:
     # "How often" decides whether grey text appears unasked; Tab Tab was asked for, so only the model's quiet holds
     if kind.name == "cont" and sure < bar:
         return quiet("below_bar", sure)
-    sources = [{"kind": v.source} if v.source else None for _, v in keep]
+    sources = [_source(v.source, req) for _, v in keep]
     insert = first[0]
     return {
         "show": True,

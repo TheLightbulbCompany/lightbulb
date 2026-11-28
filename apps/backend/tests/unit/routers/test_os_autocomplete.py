@@ -473,6 +473,51 @@ async def test_eager_leans_the_bar_by_at_most_a_tenth(on, eager, shown):
     assert (await post(body=body)).json()["show"] is shown
 
 
+def test_recent_work_notes_take_the_915_shape_and_the_old_ones():
+    req = ac.CompleteRequest.model_validate(
+        {
+            "recent_work": [
+                {"app_id": "docs.example.com", "title": "t" * 120, "ago": "12m ago", "text": "x" * 500},
+                "a bare note",
+                {"text": "a text-only note"},
+                {"app_id": "com.apple.Notes", "text": "n"},
+                {"app_id": "five", "text": "dropped"},
+            ]
+        }
+    )
+    first = req.recent_work[0]
+    assert len(req.recent_work) == 4
+    assert (first.app_id, len(first.title), first.ago, len(first.text)) == ("docs.example.com", 90, "12m ago", 420)
+    assert req.recent_work[1] == "a bare note" and req.recent_work[2].text == "a text-only note"
+
+
+async def test_recent_work_is_in_the_prompt_with_app_title_and_ago(on):
+    note = {"app_id": "docs.example.com", "title": "Q3 plan", "ago": "12m ago", "text": "WORK-NOTE budget is 40k"}
+    await post(body=BODY | {"recent_work": [note, "BARE-NOTE"]})
+    user = on.calls[0]["user"]
+    assert "<looked_at_in_the_last_45_minutes>\n[docs.example.com · Q3 plan · 12m ago]\nWORK-NOTE" in user
+    assert "---\nBARE-NOTE\n</looked_at_in_the_last_45_minutes>" in user
+    assert "`work` (something they looked at in the last 45 minutes)" in on.calls[0]["developer"]
+
+
+@pytest.mark.parametrize(
+    "notes,source",
+    [
+        (
+            [{"app_id": "docs.example.com", "text": "a"}, {"app_id": "docs.example.com", "text": "b"}],
+            {"kind": "work", "apps": ["docs.example.com"]},
+        ),
+        ([{"app_id": "docs.example.com", "text": "a"}, {"app_id": "com.apple.Notes", "text": "b"}], {"kind": "work"}),
+        ([{"text": "a"}], {"kind": "work"}),
+        (["a bare note"], {"kind": "work"}),
+    ],
+)
+async def test_a_note_can_be_the_source(on, notes, source):
+    on.text = "#80 work\n Sure, the budget is 40k."
+    a = (await post(body=BODY | {"recent_work": notes})).json()
+    assert a["source"] == source and a["option_sources"] == [source]
+
+
 async def test_a_provider_failure_is_502(on, monkeypatch):
     async def fail(*a, **k):
         raise ac.ProviderError("timeout")

@@ -311,11 +311,19 @@ export function Trials({ data }: { data: SparkData }) {
           <p className="text-xs text-muted-foreground">
             Voice minutes in the trial: {t.minutes ? `median ${t.minutes.median}, p90 ${t.minutes.p90}` : "—"}. Account to first
             conversation, median: {t.hours_to_first_conversation === null ? "—" : `${t.hours_to_first_conversation} h`}. A person
-            counts once, as paying, else minutes, else days, else running.
+            counts once, as paying, else how the server ended the trial, else inferred from minutes and days, else running.
           </p>
           <Table
+            head={["Paywall, of people who started", "People"]}
+            rows={[
+              ["Saw it (trial ended)", kn(t.paywall.saw)],
+              ["Clicked Upgrade", kn(t.paywall.clicked)],
+              ["Subscribed", kn(t.paywall.subscribed)],
+            ]}
+          />
+          <Table
             head={["Email", "Started", "Minutes", "Status"]}
-            rows={t.people.map((p) => [p.email ?? "—", p.started, p.minutes, p.status])}
+            rows={t.people.map((p) => [p.email ?? "—", p.started, p.minutes, p.inferred ? `${p.status} (inferred)` : p.status])}
           />
         </div>
       ) : (

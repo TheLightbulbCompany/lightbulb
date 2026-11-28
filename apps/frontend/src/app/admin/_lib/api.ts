@@ -140,9 +140,12 @@ export interface SparkData {
     ended_minutes: number;
     ended_days: number;
     subscribed: Kn;
+    /** Of everyone who started: saw the paywall (trial_ended), clicked Upgrade, subscribed. */
+    paywall: { saw: Kn; clicked: Kn; subscribed: Kn };
     minutes: { median: number; p90: number } | null;
     hours_to_first_conversation: number | null;
-    people: { email: string | null; started: string; minutes: number; status: "trial" | "ended-minutes" | "ended-days" | "paying" }[];
+    /** inferred = an end worked out from minutes and days, because the server sent no trial_ended. */
+    people: { email: string | null; started: string; minutes: number; status: "trial" | "ended-minutes" | "ended-days" | "paying"; inferred: boolean }[];
   } | null;
   /** Last 60 days. null = nothing seen yet. */
   invites: {

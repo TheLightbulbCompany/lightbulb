@@ -682,8 +682,20 @@ def test_signals_query_unions_exact_totals_with_the_team_filter_and_30_days_in_b
 # ---- trials and invites -------------------------------------------------------------------------------------
 
 
-def trial(person, started, *, email="", days=7, created="1970-01-01T00:00:00+00:00", secs=0, status=""):
-    return [person, email, started.isoformat(), days, created, secs, status]
+def trial(
+    person,
+    started,
+    *,
+    email="",
+    days=7,
+    created="1970-01-01T00:00:00+00:00",
+    secs=0,
+    status="",
+    by="",
+    clicks=0,
+    subs=0,
+):
+    return [person, email, started.isoformat(), days, created, secs, status, by, clicks, subs]
 
 
 def test_trials_status_counts_minutes_and_time_to_first_conversation():
@@ -695,15 +707,37 @@ def test_trials_status_counts_minutes_and_time_to_first_conversation():
             trial("c", d(9), secs=60),  # 7 days over
             trial("d", d(5), secs=7300, status="active"),  # paying wins over minutes
             trial("e", d(2), status="canceled"),  # not paying, running
+            trial("f", d(4), secs=60, by="days", clicks=2),  # the server says days, though minutes are low
+            trial("g", d(2), secs=60, by="minutes", clicks=1, subs=1),  # event wins over inference
         ]
     )
     t = sm.derive(rows, NOW)["trials"]
-    assert (t["started"], t["running"], t["ended_minutes"], t["ended_days"]) == (5, 2, 1, 1)
-    assert t["subscribed"] == {"k": 1, "n": 5}
-    assert t["minutes"] == {"median": 10.0, "p90": 121.7}
+    assert (t["started"], t["running"], t["ended_minutes"], t["ended_days"]) == (7, 2, 2, 2)
+    assert t["subscribed"] == {"k": 1, "n": 7}
+    assert t["paywall"] == {
+        "saw": {"k": 2, "n": 7},
+        "clicked": {"k": 2, "n": 7},
+        "subscribed": {"k": 2, "n": 7},  # d is active, g has a subscription_started
+    }
+    assert t["minutes"]["median"] == 1.0
     assert t["hours_to_first_conversation"] == 12.0
-    assert [p["status"] for p in t["people"]] == ["trial", "ended-minutes", "ended-days", "paying", "trial"]
-    assert t["people"][0] == {"email": "a@x.co", "started": "2026-11-23", "minutes": 10.0, "status": "trial"}
+    assert [p["status"] for p in t["people"]] == [
+        "trial",
+        "ended-minutes",
+        "ended-days",
+        "paying",
+        "trial",
+        "ended-days",
+        "ended-minutes",
+    ]
+    assert [p["inferred"] for p in t["people"]] == [False, True, True, False, False, False, False]
+    assert t["people"][0] == {
+        "email": "a@x.co",
+        "started": "2026-11-23",
+        "minutes": 10.0,
+        "status": "trial",
+        "inferred": False,
+    }
 
 
 def test_trials_and_invites_are_none_until_their_events_exist():

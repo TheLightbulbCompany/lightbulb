@@ -77,9 +77,10 @@ const DATA: SparkData = {
     ended_minutes: 1,
     ended_days: 1,
     subscribed: { k: 1, n: 4 },
+    paywall: { saw: { k: 2, n: 4 }, clicked: { k: 1, n: 4 }, subscribed: { k: 1, n: 4 } },
     minutes: { median: 30.5, p90: 119 },
     hours_to_first_conversation: 2.5,
-    people: [{ email: "trial@x.co", started: "2026-11-20", minutes: 42.5, status: "ended-days" }],
+    people: [{ email: "trial@x.co", started: "2026-11-20", minutes: 42.5, status: "ended-days", inferred: true }],
   },
   invites: {
     copied: 6,
@@ -147,8 +148,9 @@ describe("spark sections", () => {
       </>,
     );
     expect(screen.getByText("trial@x.co")).toBeTruthy();
-    expect(screen.getByText("ended-days")).toBeTruthy();
-    expect(screen.getByText("1 / 4 (25%)")).toBeTruthy(); // trials subscribed
+    expect(screen.getByText("ended-days (inferred)")).toBeTruthy();
+    expect(screen.getByText("2 / 4 (50%)")).toBeTruthy(); // saw the paywall
+    expect(screen.getAllByText("1 / 4 (25%)").length).toBeGreaterThan(0); // clicked, subscribed
     expect(screen.getByText(/median 30.5, p90 119/)).toBeTruthy();
     expect(screen.getByText("ref@x.co")).toBeTruthy();
     expect(screen.getByText(/did a first task 3 \/ 5 \(60%\)/)).toBeTruthy();

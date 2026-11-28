@@ -277,21 +277,27 @@ def build_queries() -> dict[str, str]:
             group by event, k limit 500""",
         # Trials: one row per person whose `trial_started` (server, once, at the first conversation) is in the last
         # 60d, newest first. Columns: person, email, trial start, days given, account_created (1970 = not seen),
-        # voice seconds inside [start, start + days], latest subscription_updated.status_to ('' = none).
+        # voice seconds inside [start, start + days], latest subscription_updated.status_to ('' = none),
+        # trial_ended.by ('' = none; server, once, when the end is first enforced), upgrade_clicked after the
+        # start, subscription_started after the start.
         "trials": f"""
             select t.person_id, coalesce(p.email, ''), t.started, t.days,
               minIf(e.timestamp, e.event = 'account_created'),
               sumIf(toInt(e.properties.seconds), e.event = 'voice_session_ended'
                     and e.timestamp >= t.started and e.timestamp < t.started + toIntervalDay(t.days)),
-              argMaxIf(toString(e.properties.status_to), e.timestamp, e.event = 'subscription_updated')
+              argMaxIf(toString(e.properties.status_to), e.timestamp, e.event = 'subscription_updated'),
+              argMaxIf(toString(e.properties.by), e.timestamp, e.event = 'trial_ended' and e.timestamp >= t.started),
+              countIf(e.event = 'upgrade_clicked' and e.timestamp >= t.started),
+              countIf(e.event = 'subscription_started' and e.timestamp >= t.started)
             from (select person_id, min(timestamp) as started,
                     max(coalesce(toInt(properties.days), {TRIAL_DAYS})) as days
                   from events where event = 'trial_started' and toString(properties.product) = 'spark' and {wa}
                     and timestamp >= now() - interval {TRIAL_WINDOW_DAYS} day
                   group by person_id) as t
             left join (select person_id, event, timestamp, properties from events
-                       where event in ('account_created', 'voice_session_ended', 'subscription_updated')
-                         and toString(properties.product) = 'spark' and {w}
+                       where event in ('account_created', 'voice_session_ended', 'subscription_updated',
+                                       'trial_ended', 'upgrade_clicked', 'subscription_started')
+                         and (event = 'upgrade_clicked' or toString(properties.product) = 'spark') and {w}
                          and timestamp >= now() - interval 12 month) as e on e.person_id = t.person_id
             left join (select id, toString(properties.email) as email from persons) as p on p.id = t.person_id
             group by t.person_id, p.email, t.started, t.days
@@ -458,23 +464,30 @@ def _median_p90(xs: list[float]) -> dict | None:
 
 def _trials(rows: list, now: datetime) -> dict | None:
     """People whose trial started in the last 60 days. Status, first match: paying (latest subscription status
-    active), ended by minutes (>= TRIAL_MINUTES of voice inside the trial window), ended by days (the window is over),
-    else running. None = no trial_started seen yet."""
+    active), ended by minutes / days from the server's `trial_ended.by`, else inferred (>= TRIAL_MINUTES of voice inside
+    the window, or the window is over), else running. `inferred` marks a status that has no `trial_ended`.
+    The paywall funnel counts, of everyone who started: trial_ended, upgrade_clicked, subscribed (all after the start).
+    None = no trial_started seen yet."""
     if not rows:
         return None
-    people, mins, to_first, counts = [], [], [], Counter()
-    for _, email, started, days, created, secs, sub_status in rows:
+    people, mins, to_first, counts, paywall = [], [], [], Counter(), [0, 0, 0]
+    for _, email, started, days, created, secs, sub_status, by, clicks, subs in rows:
         start, used = _parse_ts(started), float(secs or 0) / 60
-        status = (
-            "paying"
-            if sub_status == "active"
-            else "ended-minutes"
-            if used >= TRIAL_MINUTES
-            else "ended-days"
-            if now >= start + timedelta(days=int(days))
-            else "trial"
-        )
+        inferred = by not in ("minutes", "days")
+        if sub_status == "active":
+            status = "paying"
+        elif not inferred:
+            status = f"ended-{by}"
+        elif used >= TRIAL_MINUTES:
+            status = "ended-minutes"
+        elif now >= start + timedelta(days=int(days)):
+            status = "ended-days"
+        else:
+            status = "trial"
         counts[status] += 1
+        paywall[0] += not inferred
+        paywall[1] += int(clicks) > 0
+        paywall[2] += int(subs) > 0 or sub_status == "active"
         mins.append(used)
         made = _parse_ts(created)
         if made and made.year > 2000 and made <= start:
@@ -486,6 +499,7 @@ def _trials(rows: list, now: datetime) -> dict | None:
                     "started": start.date().isoformat(),
                     "minutes": round(used, 1),
                     "status": status,
+                    "inferred": inferred and status.startswith("ended"),
                 }
             )
     n = len(rows)
@@ -495,6 +509,7 @@ def _trials(rows: list, now: datetime) -> dict | None:
         "ended_minutes": counts["ended-minutes"],
         "ended_days": counts["ended-days"],
         "subscribed": _kn(counts["paying"], n),
+        "paywall": {"saw": _kn(paywall[0], n), "clicked": _kn(paywall[1], n), "subscribed": _kn(paywall[2], n)},
         "minutes": _median_p90(mins),
         "hours_to_first_conversation": round(statistics.median(to_first), 1) if to_first else None,
         "people": people,

@@ -413,6 +413,54 @@ def messages(req: CompleteRequest, kind: Kind, now: datetime | None = None) -> t
     return developer, "\n\n".join(p for p in parts if p)
 
 
+def context_counts(req: CompleteRequest) -> dict[str, int | str]:
+    """How much of each part of the request reached the prompt, as counts and character sizes only, for the log line.
+    Mirrors `messages`' choices (the tree over the plain window, the current visit skipped). Never any text."""
+    plain, form = split_form(req.screen or "")
+    tree = bool(req.screen_structured and req.screen_structured.strip())
+    flow = [f for f in req.recent_flow if not f.now and (f.structured or f.text).strip()]
+    c = req.conversation
+    return {
+        "mem_n": sum(1 for m in req.memory if m.text.strip()),
+        "mem_c": sum(len(m.text) for m in req.memory),
+        "lmem_n": sum(1 for m in req.local_memory if m.text.strip()),
+        "lmem_c": sum(len(m.text) for m in req.local_memory),
+        "flow_n": len(flow),
+        "flow_c": sum(len(f.structured or f.text) + sum(len(e.text) for e in f.earlier) for f in flow),
+        "screen_c": len(req.screen_structured) if tree else len(plain),
+        "tree": int(tree),
+        "form_c": len(form),
+        "voice_n": sum(1 for v in req.voice if v.text.strip()),
+        "voice_c": sum(len(v.text) for v in req.voice),
+        "style_n": sum(1 for t in req.style if t.strip()),
+        "style_c": sum(len(t) for t in req.style),
+        "mind_n": sum(1 for m in req.mind if m.text.strip()),
+        "work_n": len(req.recent_work),
+        "reach_n": len(req.reaches_for),
+        "clip": int(bool(req.clipboard and req.clipboard.text.strip())),
+        "clip_c": len(req.clipboard.text) if req.clipboard else 0,
+        "conv": int(c is not None),
+        "conv_header_c": len(c.header or "") if c else 0,
+        "conv_recipients_n": len(c.recipients) if c else 0,
+        "before_c": len(req.before or ""),
+        "after_c": len(req.after or ""),
+        "declined": int(bool(req.declined)),
+    }
+
+
+def reach_counts(req: "ReachRequest") -> dict[str, int]:
+    """As `context_counts`, for a reach request."""
+    return {
+        "near_c": len(req.near or ""),
+        "before_c": len(req.before or ""),
+        "after_c": len(req.after or ""),
+        "app": int(bool(req.app_id)),
+        "title": int(bool(req.window_title)),
+        "label": int(bool(req.field_label)),
+        "recipient": int(bool(req.recipient)),
+    }
+
+
 # --- what the sentence reaches for (POST /os/assist/reach) -------------------------------------------------
 # Opsis's Mac asks its server for search phrases, runs them against its local memory as extra search legs, and sends
 # them back as `reaches_for` (teardown 9.12 row 13). The request keys and caps are Opsis's; the prompt is ours.
@@ -480,6 +528,7 @@ class Completion:
     input_tokens: int = 0
     cached_tokens: int = 0
     output_tokens: int = 0
+    cache_write_tokens: int = 0
 
 
 class ProviderError(Exception):
@@ -568,6 +617,7 @@ class OpenAIProvider:
             else None,
             input_tokens=int(usage.get("prompt_tokens") or 0),
             cached_tokens=int((usage.get("prompt_tokens_details") or {}).get("cached_tokens") or 0),
+            cache_write_tokens=int((usage.get("prompt_tokens_details") or {}).get("cache_write_tokens") or 0),
             output_tokens=int(usage.get("completion_tokens") or 0),
         )
 

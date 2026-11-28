@@ -603,3 +603,77 @@ async def test_openai_errors_carry_only_a_code(monkeypatch, status):
     with pytest.raises(ac.ProviderError) as e:
         await p.complete("d", "u", 80, "k", 4.0)
     assert str(e.value) == f"status_{status}"
+
+
+# --- what each request carried, in the log line --------------------------------------------------------------
+
+
+def _line(caplog, route: str) -> dict[str, str]:
+    lines = [r.getMessage() for r in caplog.records if r.getMessage().startswith(f"autocomplete {route} ")]
+    assert len(lines) == 1, lines
+    return dict(kv.split("=", 1) for kv in lines[0].split()[2:])
+
+
+async def test_the_complete_line_counts_every_part_and_logs_no_text(on, caplog):
+    caplog.set_level(logging.INFO)
+    on.text = f"#80 memory\n {SECRET} sure."
+    body = BODY | {
+        "screen": "PLAIN window ⟦field⟧\n\nTo: Sam\nSubject: Hi",
+        "screen_structured": f"‹list›\n[Them:]\n{SECRET}\n‹/›\n⟦field⟧",
+        "memory": [{"text": "m" * 100}, {"text": "n" * 50}],
+        "local_memory": [{"text": "l" * 7}],
+        "recent_flow": [
+            {"text": "f" * 30, "earlier": [{"text": "e" * 5}]},
+            {"structured": "s" * 20, "text": "ignored"},
+            {"text": "current", "now": True},
+        ],
+        "voice": [{"text": "v" * 11}],
+        "style": ["one two three", "four five six"],
+        "mind": [{"text": "x"}],
+        "recent_work": ["w"],
+        "reaches_for": ["a", "b"],
+        "clipboard": {"text": "c" * 9, "ago_s": 3},
+        "after": "a" * 4,
+        "declined": "no",
+    }
+    await post(body=body)
+    got = _line(caplog, "complete")
+    tree = len(body["screen_structured"])
+    want = {
+        "kind": "cont", "shown": "True", "source": "memory",
+        "mem_n": "2", "mem_c": "150", "lmem_n": "1", "lmem_c": "7",
+        "flow_n": "2", "flow_c": "55", "screen_c": str(tree), "tree": "1", "form_c": str(len("To: Sam\nSubject: Hi")),
+        "voice_n": "1", "voice_c": "11", "style_n": "2", "style_c": "26", "mind_n": "1", "work_n": "1",
+        "reach_n": "2", "clip": "1", "clip_c": "9", "conv": "1", "conv_header_c": "3", "conv_recipients_n": "1",
+        "before_c": str(len(BODY["before"])), "after_c": "4", "declined": "1", "cache_write_tokens": "0",
+    }  # fmt: skip
+    assert {k: got[k] for k in want} == want
+    logged = "\n".join(r.getMessage() for r in caplog.records)
+    for word in ("Zanzibar", "PLAIN", "Sam", "Tuesday", "ignored"):
+        assert word not in logged
+
+
+async def test_a_quiet_answer_logs_no_source_and_the_plain_screen_size(on, caplog):
+    caplog.set_level(logging.INFO)
+    on.text = "#0"
+    await post(body={"before": "Hi ", "screen": "window ⟦field⟧"})
+    got = _line(caplog, "complete")
+    assert (got["source"], got["tree"], got["screen_c"], got["conv"], got["clip"]) == ("None", "0", "14", "0", "0")
+
+
+async def test_the_reach_line_counts_its_parts(on, caplog):
+    caplog.set_level(logging.INFO)
+    on.text = "flight time"
+    await post("/os/assist/reach", REACH)
+    got = _line(caplog, "reach")
+    assert (got["queries"], got["near_c"], got["before_c"], got["after_c"]) == ("1", str(len(REACH["near"])), "12", "0")
+    assert (got["app"], got["title"], got["label"], got["recipient"]) == ("1", "1", "1", "1")
+
+
+async def test_cache_writes_are_read_from_the_usage(monkeypatch):
+    reply = {
+        "choices": [{"message": {"content": "#80 message\n ok"}}],
+        "usage": {"prompt_tokens": 2000, "prompt_tokens_details": {"cached_tokens": 0, "cache_write_tokens": 1536}},
+    }
+    p, _ = _openai(monkeypatch, httpx.Response(200, json=reply))
+    assert (await p.complete("d", "u", 80, "k", 4.0)).cache_write_tokens == 1536

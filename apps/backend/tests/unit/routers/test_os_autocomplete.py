@@ -371,13 +371,25 @@ async def test_the_prompt_uses_every_context_field_stable_parts_first(on):
     body = BODY | {
         "window_title": "Chat — Sam",
         "field": {"label": "Message"},
-        "style": "chat",
+        "style": ["STYLE-1 see you there", "ok sounds good"],
         "voice": [{"text": "VOICE-1", "app": "Slack", "ago_s": 30}],
         "mind": [{"text": "MIND-1", "day": "today"}],
         "recent_work": ["WORK-1"],
         "memory": [{"text": "MEMORY-1", "title": "Notes"}],
         "reaches_for": ["REACH-1"],
-        "recent_flow": [{"title": "Calendar", "text": "FLOW-1", "ago_s": 40, "stay_s": 12}],
+        "recent_flow": [
+            {
+                "title": "Calendar",
+                "text": "FLOW-1",
+                "ago_s": 40,
+                "stay_s": 12,
+                "now": False,
+                "view": "1f-2",
+                "pane": "a",
+            },
+            {"title": "Chat", "text": "CURRENT-VISIT", "now": True},
+        ],
+        "eager": 0.5,
         "clipboard": {"text": "CLIP-1", "ago_s": 5, "from": "Safari"},
         "declined": "DECLINED-1",
         "after": "AFTER-1",
@@ -387,12 +399,13 @@ async def test_the_prompt_uses_every_context_field_stable_parts_first(on):
     user = on.calls[0]["user"]
     order = [
         "VOICE-1",
+        "STYLE-1",
         "MIND-1",
         "WORK-1",
         "FLOW-1",
         "MEMORY-1",
         "REACH-1",
-        "recipients: Sam",
+        "writing to: Sam",
         "field label: Message",
         "⟦field⟧",
         "CLIP-1",
@@ -404,13 +417,60 @@ async def test_the_prompt_uses_every_context_field_stable_parts_first(on):
     at = [user.index(x) for x in order]
     assert at == sorted(at)
     assert user.endswith("</draft>")
+    assert "CURRENT-VISIT" not in user  # the current visit is <screen> already
     assert on.calls[0]["cache_key"] == ac.cache_key("user_a") and "user_a" not in on.calls[0]["cache_key"]
 
 
-async def test_structured_screen_is_used_only_without_plain_screen(on):
-    await post(body=BODY | {"screen_structured": "STRUCT-1"})
-    await post(body={k: v for k, v in BODY.items() if k != "screen"} | {"screen_structured": "STRUCT-2"})
-    assert "STRUCT-1" not in on.calls[0]["user"] and "STRUCT-2" in on.calls[1]["user"]
+async def test_the_labelled_tree_replaces_the_plain_window_text_and_the_form_stays(on):
+    tree = "‹list · Messages›\n[Them:]\nAre we still on?\n‹/›\n⟦field⟧"
+    plain = "PLAIN-WINDOW Are we still on?\n⟦field⟧\n\nTo: Sam\nSubject: Friday"
+    await post(body=BODY | {"screen": plain, "screen_structured": tree})
+    user = on.calls[0]["user"]
+    assert "[Them:]" in user and "PLAIN-WINDOW" not in user
+    assert "<form>\nTo: Sam\nSubject: Friday\n</form>" in user
+    await post(body=BODY | {"screen": plain, "screen_structured": None})
+    user = on.calls[1]["user"]
+    assert "<screen>\nPLAIN-WINDOW Are we still on?\n⟦field⟧\n</screen>" in user and "<form>\nTo: Sam" in user
+
+
+@pytest.mark.parametrize(
+    "screen,form",
+    [
+        ("window ⟦field⟧\n\nTo: Sam\nSubject: Hi there", "To: Sam\nSubject: Hi there"),
+        ("window ⟦field⟧\n\nTo: Sam\nSubject: Hi there\njust a line", ""),  # not every line is a field
+        ("window\n\nNote: ⟦field⟧", ""),  # the field itself is never the form
+        ("window ⟦field⟧", ""),
+    ],
+)
+def test_form_lines_are_the_trailing_block(screen, form):
+    assert ac.split_form(screen)[1] == form
+
+
+def test_the_914_shapes_are_accepted():
+    req = ac.CompleteRequest.model_validate(
+        {
+            "style": [f"message {i} " + "x" * 500 for i in range(10)],
+            "eager": 0.75,
+            "conversation": {"kind": "dm", "header": "Sam", "recipients": []},
+            "last_is_mine": None,
+            "recent_work": [],
+            "recent_flow": [{"app_id": "a", "view": "1f-2", "pane": "3a", "now": True, "earlier": []}],
+        }
+    )
+    assert len(req.style) == 8 and all(ac.utf16_len(t) == 400 for t in req.style)
+    assert req.eager == 0.75 and req.recent_flow[0].now is True
+    assert ac.CompleteRequest.model_validate({"eager": 7}).eager == 1.0
+    with pytest.raises(ValueError):
+        ac.CompleteRequest.model_validate({"style": "chat"})  # a list now, not a hint
+    with pytest.raises(ValueError):
+        ac.CompleteRequest.model_validate({"eager": "high"})
+
+
+@pytest.mark.parametrize("eager,shown", [(1.0, True), (0.5, False), (None, False), (0.0, False)])
+async def test_eager_leans_the_bar_by_at_most_a_tenth(on, eager, shown):
+    on.text = "#36 message\n Sure."  # ln(0.36) = −1.02: just under bar −1.0, over −1.1
+    body = BODY | {"bar": -1.0} | ({"eager": eager} if eager is not None else {})
+    assert (await post(body=body)).json()["show"] is shown
 
 
 async def test_a_provider_failure_is_502(on, monkeypatch):

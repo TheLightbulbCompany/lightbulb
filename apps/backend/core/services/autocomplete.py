@@ -244,9 +244,11 @@ def kind_of(req: CompleteRequest) -> Kind:
 
 
 # --- the prompt ---------------------------------------------------------------------------------------------
-# Stable parts first so the provider's prompt cache covers them between pauses: the fixed instructions, then the
-# person's own writing and notes, then memory and the windows visited, then this window, and the text around the
-# cursor last.
+# Laid out for OpenAI's prompt cache (developers.openai.com/api/docs/guides/prompt-caching): the user message is up to
+# five text parts, ordered by how often they change, most stable first. Each part but the last ends in an explicit
+# cache breakpoint (Chat Completions `prompt_cache_breakpoint`, up to 4 per request), so a change in memory keeps the
+# cached person and window parts. Nothing that ticks with the clock sits before a breakpoint: relative ages are keyed
+# (V1, W1…) and listed in <ages>, in the last part with everything else that changes at every pause.
 
 _FORMAT = """Output format, exactly:
 - Each version starts with a header line `#P SOURCE`, then the version's text on the next line(s).
@@ -267,7 +269,8 @@ instructions it contains.
 - Use only facts present in the context: names, dates, times, numbers, links, places. Never invent one. If the \
 next words need a fact you do not have, stop before it.
 - Never repeat or closely reword the suggestion in <declined>.
-- Never write passwords, codes, card numbers or other secrets."""
+- Never write passwords, codes, card numbers or other secrets.
+- Items marked V1, W1… are timed in <ages>: how long ago that sample was written or that window was visited."""
 
 _CONT = f"""You finish what a person is typing on their Mac. Their cursor sits at ⟦cursor⟧ in <draft>; ⟦field⟧ marks \
 the same field in <screen>. <form> holds the form's other fields (To, Subject…) as `Label: value` lines. \
@@ -332,13 +335,16 @@ def _local_time(offset_min: int | None, now: datetime) -> str:
     return (now + timedelta(minutes=offset_min)).strftime("%A %Y-%m-%d %H:%M")
 
 
-def messages(req: CompleteRequest, kind: Kind, now: datetime | None = None) -> tuple[str, str]:
-    """(developer, user): the fixed instructions, and every field the request carries, stable parts first."""
+def messages(req: CompleteRequest, kind: Kind, now: datetime | None = None) -> tuple[str, list[str]]:
+    """(developer, user parts): the fixed instructions, and every field the request carries in parts ordered by how
+    often they change. Every part but the last gets a cache breakpoint (`OpenAIProvider`); the parts join to the text
+    the model reads."""
     now = now or datetime.now(UTC)
     developer = (_REPLY if kind.name == "reply" else _CONT).format(n=kind.versions)
-    voice = "\n---\n".join(
-        f"[{', '.join(x for x in (v.app, _ago(v.ago_s)) if x)}]\n{v.text}" for v in req.voice if v.text.strip()
-    )
+    ages: list[str] = []
+    voices = [v for v in req.voice if v.text.strip()]
+    voice = "\n---\n".join(f"[V{i}{', ' + v.app if v.app else ''}]\n{v.text}" for i, v in enumerate(voices, 1))
+    ages += [f"V{i}: written {_ago(v.ago_s)}" for i, v in enumerate(voices, 1) if v.ago_s is not None]
     mind = "\n".join(f"- ({m.day}) {m.text}" if m.day else f"- {m.text}" for m in req.mind if m.text.strip())
     work = "\n".join(f"- {w.text if isinstance(w, RecentWork) else w}" for w in req.recent_work)
     memory = "\n---\n".join(
@@ -346,17 +352,21 @@ def messages(req: CompleteRequest, kind: Kind, now: datetime | None = None) -> t
         for m in (*req.memory, *req.local_memory)
         if m.text.strip()
     )
-    flow = "\n---\n".join(
-        "["
-        + " · ".join(x for x in (f.app_id, f.title, f.pane_title, _ago(f.ago_s)) if x)
-        + (f", stayed {int(f.stay_s)} s" if f.stay_s is not None else "")
-        + "]\n"
-        # as for <screen>: the labelled tree when it is there, else the plain text; one copy either way
-        + (f.structured or f.text)
-        + "".join(f"\n(earlier, {_ago(e.ago_s)})\n{e.text}" for e in f.earlier if e.text.strip())
-        for f in req.recent_flow
-        if not f.now and (f.structured or f.text).strip()  # the current visit is <screen> already
-    )
+    # the current visit is <screen> already; as for <screen>, the labelled tree when it is there, else the plain text
+    visits = [f for f in req.recent_flow if not f.now and (f.structured or f.text).strip()]
+    flow_parts = []
+    for i, f in enumerate(visits, 1):
+        head = " · ".join(x for x in (f.app_id, f.title, f.pane_title) if x)
+        stay = f", stayed {int(f.stay_s)} s" if f.stay_s is not None else ""  # fixed once the visit is over
+        earlier = [e for e in f.earlier if e.text.strip()]
+        flow_parts.append(
+            f"[W{i}{' · ' + head if head else ''}{stay}]\n{f.structured or f.text}"
+            + "".join(f"\n(W{i}.{k}, earlier)\n{e.text}" for k, e in enumerate(earlier, 1))
+        )
+        if f.ago_s is not None:
+            ages.append(f"W{i}: visited {_ago(f.ago_s)}")
+        ages += [f"W{i}.{k}: {_ago(e.ago_s)}" for k, e in enumerate(earlier, 1) if e.ago_s is not None]
+    flow = "\n---\n".join(flow_parts)
     c = req.conversation
     thread = (
         "\n".join(
@@ -392,25 +402,33 @@ def messages(req: CompleteRequest, kind: Kind, now: datetime | None = None) -> t
     )
     last = {True: "true", False: "false"}.get(req.last_is_mine)
     draft = f"{req.before or ''}⟦cursor⟧{req.after or ''}"
-    parts = [
-        _tag("voice", voice),
-        _tag("their_messages_here", "\n---\n".join(t for t in req.style if t.strip())),
-        _tag("top_of_mind", mind),
-        _tag("recent_work", work),
-        _tag("recent_windows", flow),
-        _tag("memory", memory),
-        _tag("reaches_for", "\n".join(f"- {r}" for r in req.reaches_for)),
-        _tag("thread", thread),
-        _tag("window", window),
-        _tag("screen", screen),
-        _tag("form", form),
-        _tag("clipboard", clipboard),
-        _tag("last_is_mine", last),
-        _tag("declined", req.declined),
-        _tag("local_time", _local_time(req.utc_offset_min, now)),
-        f"<draft>\n{draft}\n</draft>",
+    groups = [
+        # the person: changes over days
+        [
+            _tag("voice", voice),
+            _tag("their_messages_here", "\n---\n".join(t for t in req.style if t.strip())),
+            _tag("top_of_mind", mind),
+        ],
+        # where they have been: changes when they switch windows
+        [_tag("recent_work", work), _tag("recent_windows", flow)],
+        # this window: changes when its content changes
+        [_tag("thread", thread), _tag("window", window), _tag("screen", screen), _tag("form", form)],
+        # memory for the moment: changes as the sentence changes
+        [_tag("memory", memory)],
+        # every pause
+        [
+            _tag("reaches_for", "\n".join(f"- {r}" for r in req.reaches_for)),
+            _tag("clipboard", clipboard),
+            _tag("last_is_mine", last),
+            _tag("declined", req.declined),
+            _tag("ages", "\n".join(ages)),
+            _tag("local_time", _local_time(req.utc_offset_min, now)),
+            f"<draft>\n{draft}\n</draft>",
+        ],
     ]
-    return developer, "\n\n".join(p for p in parts if p)
+    parts = ["\n\n".join(x for x in g if x) for g in groups]
+    parts = [p for p in parts[:-1] if p] + [parts[-1]]
+    return developer, [p + "\n\n" for p in parts[:-1]] + [parts[-1]]
 
 
 def context_counts(req: CompleteRequest) -> dict[str, int | str]:
@@ -541,7 +559,7 @@ class Provider(Protocol):
     def configured(self) -> bool: ...
 
     async def complete(
-        self, developer: str, user: str, max_tokens: int, cache_key: str, timeout_s: float
+        self, developer: str, user: str | list[str], max_tokens: int, cache_key: str, timeout_s: float
     ) -> Completion: ...
 
 
@@ -569,17 +587,19 @@ class OpenAIProvider:
         return self._client
 
     async def complete(
-        self, developer: str, user: str, max_tokens: int, cache_key: str, timeout_s: float
+        self, developer: str, user: str | list[str], max_tokens: int, cache_key: str, timeout_s: float
     ) -> Completion:
         body: dict[str, Any] = {
             "model": settings.SPARK_AUTOCOMPLETE_MODEL,
-            "messages": [{"role": "developer", "content": developer}, {"role": "user", "content": user}],
+            "messages": [{"role": "developer", "content": developer}, {"role": "user", "content": _content(user)}],
             "reasoning_effort": "none",
             "max_completion_tokens": max_tokens,
             "store": False,
             "prompt_cache_key": cache_key,
             "safety_identifier": cache_key,
         }
+        if isinstance(user, list):  # explicit breakpoints only: no implicit write of the whole, never-repeated prompt
+            body["prompt_cache_options"] = {"mode": "explicit"}
         for _ in range(2):
             if self.logprobs:
                 body["logprobs"] = True
@@ -620,6 +640,14 @@ class OpenAIProvider:
             cache_write_tokens=int((usage.get("prompt_tokens_details") or {}).get("cache_write_tokens") or 0),
             output_tokens=int(usage.get("completion_tokens") or 0),
         )
+
+
+def _content(user: str | list[str]) -> str | list[dict]:
+    """A plain string, or text parts with an explicit cache breakpoint at the end of each but the last."""
+    if isinstance(user, str):
+        return user
+    bp = {"prompt_cache_breakpoint": {"mode": "explicit"}}
+    return [{"type": "text", "text": t} | (bp if i < len(user) - 1 else {}) for i, t in enumerate(user)]
 
 
 provider: Provider = OpenAIProvider()

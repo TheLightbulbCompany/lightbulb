@@ -143,9 +143,13 @@ async def _gate(request: Request, auth: AuthContext, model: type[M]) -> tuple[M,
     return req, size, now
 
 
-async def _ask(user_id: str, now: int, developer: str, user: str, kind: ac.Kind) -> ac.Completion:
+def _chars(developer: str, user: str | list[str]) -> int:
+    return len(developer) + (len(user) if isinstance(user, str) else sum(map(len, user)))
+
+
+async def _ask(user_id: str, now: int, developer: str, user: str | list[str], kind: ac.Kind) -> ac.Completion:
     """The daily ceiling (one counter for both routes), then the one model call."""
-    if not await _within_daily_max(user_id, now, len(developer) + len(user)):
+    if not await _within_daily_max(user_id, now, _chars(developer, user)):
         logger.info(
             "autocomplete refused: daily max %d requests / %d chars",
             settings.SPARK_AUTOCOMPLETE_DAILY_MAX,
@@ -196,7 +200,7 @@ async def complete(request: Request, auth: AuthContext = Depends(get_human_sessi
         "complete",
         comp,
         size,
-        len(developer) + len(user),
+        _chars(developer, user),
         started,
         asked,
         kind=kind.name,
@@ -221,5 +225,5 @@ async def reach(request: Request, auth: AuthContext = Depends(get_human_session)
     asked = time.monotonic()
     comp = await _ask(auth.user_id, now, developer, user, ac.REACH)
     queries = ac.reach_queries(comp.text)
-    _log("reach", comp, size, len(developer) + len(user), started, asked, queries=len(queries), **ac.reach_counts(req))
+    _log("reach", comp, size, _chars(developer, user), started, asked, queries=len(queries), **ac.reach_counts(req))
     return {"queries": queries}

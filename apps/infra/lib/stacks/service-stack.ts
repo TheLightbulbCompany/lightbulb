@@ -232,12 +232,15 @@ export class ServiceStack extends cdk.Stack {
       // azp reflects the MINT origin: the Windows app signs in from its own page at
       // <scheme>://renderer (spark in a release build, spark-dev in a dev one), the only origin
       // off this list in 14 days of prod logs (473 times). The Mac's native tokens carry no azp
-      // and always pass. Audit mode until a release Windows app is seen passing, then enforce.
+      // and always pass. Prod rejects any other origin (401 "Invalid token origin"); after the
+      // desktop origin went on, prod logged no mismatch. Dev only logs: Vercel preview deployments
+      // sign in from per-PR origins that a fixed list cannot name. A new surface that mints tokens
+      // (a new web host, a new app) must be added here before it ships.
       CLERK_AUTHORIZED_PARTIES:
         env === "prod"
           ? `https://${rootDomain},https://www.${rootDomain},https://admin.${rootDomain},spark://renderer`
           : `https://dev.${rootDomain},https://admin.dev.${rootDomain},http://localhost:3000,spark-dev://renderer`,
-      CLERK_AZP_MODE: "audit",
+      CLERK_AZP_MODE: env === "prod" ? "enforce" : "audit",
       FRONTEND_URL:
         env === "prod" ? `https://${rootDomain}` : `https://dev.${rootDomain}`,
       // Public-facing base URL of THIS API (Spark's billing links).

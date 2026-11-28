@@ -36,9 +36,8 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 DAY_S = 86400
-TRIAL_S = (
-    7 * DAY_S
-)  # owner, 2026-11-28: from the first conversation (`_start_trial`); the voice allowance is `os_billing.TRIAL_VOICE_S`
+# owner, 2026-11-28: from the first conversation (`_start_trial`); the voice allowance is `os_billing.TRIAL_VOICE_S`.
+TRIAL_S = 7 * DAY_S
 REFERRAL_WINDOW_S = 14 * DAY_S
 MAX_FREE_DAYS = 30  # owner, 2026-11-22: the trial and every invite day a person is given, together
 _VERSION = re.compile(r"\d+\.\d+\.\d+")

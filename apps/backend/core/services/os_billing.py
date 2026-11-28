@@ -28,9 +28,8 @@ logger = logging.getLogger(__name__)
 CHECKOUT, PORTAL = "spark_checkout", "spark_portal"
 TOKEN_TTL_S = 15 * 60
 LIVE = ("active", "trialing")
-TRIAL_VOICE_S = (
-    120 * 60
-)  # owner, 2026-11-28: the trial also ends after this much voice, next to `TRIAL_S` in routers/os.py
+# owner, 2026-11-28: the trial also ends after this much voice (its days are `TRIAL_S` in routers/os.py).
+TRIAL_VOICE_S = 120 * 60
 # A trial starts at the first conversation; an account with any of these has started it, or never gets one.
 STARTED = ("os_trial_started_at", "os_voice_seconds", "os_deleted_at", "os_subscription_status")
 
@@ -223,9 +222,14 @@ async def checkout(user_id: str) -> str:
     now = _now()
     bucket = now - now % 300
     # The workspace rule: the Stripe trial ends where the free trial does, stretched to Stripe's 48-hour floor
-    # near the end (never charged early); an ended trial is charged now. The bucket start keeps retries identical.
-    trial_end = _checkout_trial_end(
-        {"subscription_status": "trial_local", "trial_end": int(row["os_trial_ends_at"])}, bucket
+    # near the end (never charged early); an ended trial, its days or its voice used up, is charged now. The bucket
+    # start keeps retries identical.
+    trial_end = (
+        None
+        if int(row.get("os_voice_seconds", 0)) >= TRIAL_VOICE_S
+        else _checkout_trial_end(
+            {"subscription_status": "trial_local", "trial_end": int(row["os_trial_ends_at"])}, bucket
+        )
     )
     metadata = {"product": "spark", "user_id": user_id}
     params = dict(

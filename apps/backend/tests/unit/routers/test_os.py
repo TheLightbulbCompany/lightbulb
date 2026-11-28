@@ -566,3 +566,41 @@ async def test_account_delete_completes_when_the_posthog_delete_fails(users, clo
     assert (await req("DELETE", "/os/account", A)).status_code == 204  # a retry: nothing left to delete, no event
     assert len([c for c in sent if c[1] == "account_deleted"]) == 1
     assert gone == ["user_a"] * 2 and called == [{"distinct_ids": ["user_a"], "delete_events": True}] * 2
+
+
+@pytest.mark.parametrize("voice_s, charged_now", [(0, False), (120 * 60, True)])
+async def test_checkout_after_the_trial_voice_is_used_up_charges_at_once(
+    users, clock, monkeypatch, voice_s, charged_now
+):
+    """Days left but the trial's voice used up: the trial is over, so checkout starts billing now (no Stripe trial,
+    which would otherwise give unlimited voice until the days ran out)."""
+    import stripe
+
+    from core.services import os_billing
+
+    users.put_item(
+        Item={
+            "user_id": "user_a",
+            "os_trial_ends_at": START + 5 * DAY,
+            "os_voice_seconds": voice_s,
+            "os_created_at": START,
+        }
+    )
+    sent = {}
+
+    async def customer(*_):
+        return "cus_test"
+
+    async def no_pending(_):
+        return None
+
+    monkeypatch.setattr(settings, "STRIPE_SPARK_PRICE_ID", "price_test")
+    monkeypatch.setattr(os_billing, "_now", lambda: START)
+    monkeypatch.setattr(os_billing, "_customer", customer)
+    monkeypatch.setattr(os_billing, "_retire_pending", no_pending)
+    monkeypatch.setattr(stripe.Subscription, "list", lambda **_: {"data": []})
+    monkeypatch.setattr(
+        stripe.checkout.Session, "create", lambda **kw: sent.update(kw) or {"id": "cs_test", "url": "https://pay"}
+    )
+    await os_billing.checkout("user_a")
+    assert ("trial_end" in sent["subscription_data"]) is not charged_now

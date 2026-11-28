@@ -751,6 +751,7 @@ def test_invites_totals_and_per_referrer_table():
             ["referral_link_copied", "user_a", "a@x.co", 3, 0, 0],
             ["referral_link_copied", "user_b", "b@x.co", 1, 0, 0],
             ["referral_applied", "user_a", "a@x.co", 2, 0, 0],
+            ["referral_applied", "user_b", "b@x.co", 0, 0, 0],  # capped: applied, but nobody got a day
             ["friend", "user_a", "a@x.co", 1, 1, 1],
             ["friend", "user_a", "a@x.co", 1, 0, 0],
             ["friend", "user_c", "", 0, 0, 0],
@@ -767,6 +768,7 @@ def test_invites_totals_and_per_referrer_table():
 def test_trials_and_invites_queries_read_the_new_events_with_the_team_filter():
     qs = sm.build_queries()
     assert "'trial_started'" in qs["trials"] and "interval 60 day" in qs["trials"]
-    for e in ("referral_link_copied", "referral_applied", "referred_by_applied", "spark_referrer"):
+    for e in ("referral_link_copied", "referral_applied", "referred_by_applied", "spark_referrer", "'capped'"):
         assert e in qs["invites"]
+    assert f"limit {sm.INSTALL_CAP}" in qs["trials"]
     assert qs["invites"].count("person_id not in") >= 3 or "1 = 1" in qs["invites"]

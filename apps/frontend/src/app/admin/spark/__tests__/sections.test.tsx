@@ -73,6 +73,7 @@ const DATA: SparkData = {
   },
   trials: {
     started: 4,
+    truncated: false,
     running: 1,
     ended_minutes: 1,
     ended_days: 1,

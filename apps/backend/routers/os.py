@@ -357,8 +357,9 @@ async def _credit(user_id: str, referrer: str, expr: str, cond: str, values: dic
             continue  # the referrer's row moved across a branch line
         if branch != "capped":
             await os_billing.extend_trial(user_id if branch == "friend" else referrer)
-        spark_events.server_event(referrer, "referral_applied", user_id)
-        return branch if branch in ("friend", "capped") else "referrer"
+        to = branch if branch in ("friend", "capped") else "referrer"  # who got the day; "capped": nobody did
+        spark_events.server_event(referrer, "referral_applied", user_id, {"to": to})
+        return to
     return ""
 
 

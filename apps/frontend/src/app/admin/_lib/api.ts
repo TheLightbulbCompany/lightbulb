@@ -136,6 +136,7 @@ export interface SparkData {
   /** Trials started in the last 60 days. null = no trial_started seen yet. */
   trials: {
     started: number;
+    truncated: boolean;
     running: number;
     ended_minutes: number;
     ended_days: number;

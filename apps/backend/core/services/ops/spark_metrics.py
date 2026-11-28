@@ -301,14 +301,17 @@ def build_queries() -> dict[str, str]:
                          and timestamp >= now() - interval 12 month) as e on e.person_id = t.person_id
             left join (select id, toString(properties.email) as email from persons) as p on p.id = t.person_id
             group by t.person_id, p.email, t.started, t.days
-            order by t.started desc limit 500""",
+            order by t.started desc limit {INSTALL_CAP}""",
         # Invites, last 60d, rows (kind, referrer user id, referrer email, a, b, c). Kinds: referral_link_copied
-        # (a = copies; one row per referrer) and referral_applied (a = days credited; one row per referrer, the event
+        # (a = copies; one row per referrer) and referral_applied (a = days given, to the referrer or the friend: `to` is not
+        # "capped", older events have no `to` and count; one row per referrer, the event
         # is on the referrer's person); friend = a person invited (referred_by_applied in the window; the person
         # carries spark_referrer): a = signed in, b = has a human task, c = has a subscription. Per-friend rows.
         "invites": f"""
-            select e.event, d.distinct_id, coalesce(p.email, ''), toInt64(count()), toInt64(0), toInt64(0)
-            from (select person_id, event from events where event in ('referral_link_copied', 'referral_applied')
+            select e.event, d.distinct_id, coalesce(p.email, ''),
+              toInt64(if(e.event = 'referral_applied', countIf(e.given_to != 'capped'), count())), toInt64(0), toInt64(0)
+            from (select person_id, event, coalesce(toString(properties.to), '') as given_to from events
+                  where event in ('referral_link_copied', 'referral_applied')
                   and {wa} and timestamp >= now() - interval {TRIAL_WINDOW_DAYS} day) as e
             join (select person_id, distinct_id from person_distinct_ids where startsWith(distinct_id, 'user_')) as d
               on d.person_id = e.person_id
@@ -513,6 +516,7 @@ def _trials(rows: list, now: datetime) -> dict | None:
         "minutes": _median_p90(mins),
         "hours_to_first_conversation": round(statistics.median(to_first), 1) if to_first else None,
         "people": people,
+        "truncated": n >= INSTALL_CAP,  # the query's row cap: the oldest trials are missing from every figure
     }
 
 
@@ -530,7 +534,7 @@ def _invites(rows: list) -> dict | None:
             copied += 1
             r["copies"] += int(a)
         elif kind == "referral_applied":
-            applied += 1
+            applied += int(a) > 0
             credited_days += int(a)
         else:
             r["friends"] += 1

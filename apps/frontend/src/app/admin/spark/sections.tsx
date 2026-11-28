@@ -301,6 +301,9 @@ export function Trials({ data }: { data: SparkData }) {
     <Card title="Trials (started in the last 60 days)">
       {t ? (
         <div className="space-y-4">
+          {t.truncated ? (
+            <p className="text-xs text-destructive">Trial list hit its 5000-row cap; the oldest trials are missing.</p>
+          ) : null}
           <div className="grid grid-cols-2 gap-4 md:grid-cols-5">
             <MetricStat label="Started" value={t.started} />
             <MetricStat label="Still running" value={t.running} />

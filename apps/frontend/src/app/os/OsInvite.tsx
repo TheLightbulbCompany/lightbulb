@@ -63,7 +63,14 @@ function Invite({ code, channel, ready, download }: { code: string; channel: str
         <p className="mb-6 text-lg leading-8 text-[var(--lb-ink)]">
           {code ? "You've been invited to Spark. Create your account, then download." : "Create your account, then download."}
         </p>
-        <SignUp routing="hash" forceRedirectUrl={here} signInForceRedirectUrl={here} signInUrl={`${here}#/sign-in`} />
+        {/* The card's "Sign in" link goes to the /sign-in page, and Clerk's redirect_url brings the person back
+            here to record the invite. Not a hash on this page: SignUp's hash router has no sign-in route. */}
+        <SignUp
+          routing="hash"
+          forceRedirectUrl={here}
+          signInForceRedirectUrl={here}
+          signInUrl={`/sign-in?${new URLSearchParams({ redirect_url: here })}`}
+        />
         {onPhone ? null : ready ? (
           <a
             href="/download/spark"
